@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/finance_provider.dart';
 import '../models/mutual_fund.dart';
+import '../utils/currency_format.dart';
 import 'add_mutual_fund_screen.dart';
 
 class MutualFundsScreen extends StatefulWidget {
@@ -140,18 +141,18 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 _buildInfoColumn('Units', mf.quantity.toStringAsFixed(2)),
-                _buildInfoColumn('NAV', '₹${mf.nav.toStringAsFixed(2)}'),
-                _buildInfoColumn('Current NAV', '₹${mf.currentNav.toStringAsFixed(2)}'),
+                _buildInfoColumn('NAV', formatInr(mf.nav)),
+                _buildInfoColumn('Current NAV', formatInr(mf.currentNav)),
               ],
             ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                _buildInfoColumn('Invested', '₹${invested.toStringAsFixed(2)}'),
+                _buildInfoColumn('Invested', formatInr(invested)),
                 _buildInfoColumn(
                   'P/L',
-                  '₹${profitLoss.toStringAsFixed(2)}',
+                  formatInr(profitLoss),
                   profitLoss >= 0 ? Colors.green : Colors.red,
                 ),
                 _buildInfoColumn(
@@ -199,10 +200,10 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
                 )),
                 DataCell(Text(mf.schemeCode)),
                 DataCell(Text(mf.quantity.toStringAsFixed(2))),
-                DataCell(Text('₹${mf.nav.toStringAsFixed(2)}')),
-                DataCell(Text('₹${mf.currentNav.toStringAsFixed(2)}')),
+                DataCell(Text(formatInr(mf.nav))),
+                DataCell(Text(formatInr(mf.currentNav))),
                 DataCell(Text(
-                  '₹${profitLoss.toStringAsFixed(2)}',
+                  formatInr(profitLoss),
                   style: TextStyle(color: profitLoss >= 0 ? Colors.green : Colors.red),
                 )),
                 DataCell(Text(

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/finance_provider.dart';
+import '../utils/currency_format.dart';
 import 'stocks_screen.dart';
 import 'mutual_funds_screen.dart';
+import 'admin_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -38,8 +40,9 @@ class _HomeScreenState extends State<HomeScreen> {
           final currentValue = (summary['current_value'] ?? 0.0).toDouble();
           final profitLoss = (summary['profit_loss'] ?? 0.0).toDouble();
           final profitLossPercentage = (summary['profit_loss_percentage'] ?? 0.0).toDouble();
+          final bySource = (summary['by_source'] as List<dynamic>?) ?? [];
 
-          return Padding(
+          return SingleChildScrollView(
             padding: const EdgeInsets.all(16.0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -55,13 +58,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _buildSummaryRow('Total Invested', '₹${totalInvested.toStringAsFixed(2)}'),
+                        _buildSummaryRow('Total Invested', formatInr(totalInvested)),
                         const SizedBox(height: 8),
-                        _buildSummaryRow('Current Value', '₹${currentValue.toStringAsFixed(2)}'),
+                        _buildSummaryRow('Current Value', formatInr(currentValue)),
                         const SizedBox(height: 8),
                         _buildSummaryRow(
                           'Profit/Loss',
-                          '₹${profitLoss.toStringAsFixed(2)}',
+                          formatInr(profitLoss),
                           profitLoss >= 0 ? Colors.green : Colors.red,
                         ),
                         const SizedBox(height: 8),
@@ -74,6 +77,67 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 24),
+                const Text(
+                  'By source',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Stock holdings only (mutual funds included in totals above).',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+                const SizedBox(height: 12),
+                if (bySource.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(16.0),
+                      child: Text('No stock holdings by source'),
+                    ),
+                  )
+                else
+                  Card(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: DataTable(
+                        columns: const [
+                          DataColumn(label: Text('Source')),
+                          DataColumn(label: Text('Invested')),
+                          DataColumn(label: Text('Current')),
+                          DataColumn(label: Text('P/L')),
+                          DataColumn(label: Text('P/L %')),
+                        ],
+                        rows: bySource.map((row) {
+                          final map = row as Map<String, dynamic>;
+                          final source = map['source'] as String? ?? '-';
+                          final invested = (map['total_invested'] ?? 0.0).toDouble();
+                          final current = (map['current_value'] ?? 0.0).toDouble();
+                          final pl = (map['profit_loss'] ?? 0.0).toDouble();
+                          final plPct = (map['profit_loss_percentage'] ?? 0.0).toDouble();
+                          final plColor = pl >= 0 ? Colors.green : Colors.red;
+
+                          return DataRow(
+                            cells: [
+                              DataCell(Text(
+                                source,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              )),
+                              DataCell(Text(formatInr(invested))),
+                              DataCell(Text(formatInr(current))),
+                              DataCell(Text(
+                                formatInr(pl),
+                                style: TextStyle(color: plColor),
+                              )),
+                              DataCell(Text(
+                                '${plPct.toStringAsFixed(2)}%',
+                                style: TextStyle(color: plColor),
+                              )),
+                            ],
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 30),
                 const Text(
                   'Manage Your Investments',
@@ -108,6 +172,17 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 16),
+                _buildNavigationCard(
+                  context,
+                  'Admin',
+                  Icons.admin_panel_settings,
+                  Colors.teal,
+                  () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const AdminScreen()),
+                  ),
                 ),
               ],
             ),

@@ -4,6 +4,7 @@ import (
 	"financetracker/handlers"
 	"financetracker/models"
 	"log"
+	"os"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -51,10 +52,30 @@ func main() {
 	}
 
 	// Auto migrate models
-	db.AutoMigrate(&models.Stock{}, &models.MutualFund{}, &models.Portfolio{}, &models.Transaction{})
+	db.AutoMigrate(
+		&models.Stock{},
+		&models.MutualFund{},
+		&models.Portfolio{},
+		&models.Transaction{},
+		&models.SymbolMapping{},
+	)
 
 	// Migrate existing stock data to transactions
 	migrateStocksToTransactions(db)
+
+	if err := handlers.SeedAndLoadSymbolMappings(db); err != nil {
+		log.Fatal("Failed to seed symbol mappings:", err)
+	}
+
+	if err := handlers.LoadNSEEquityISINIndex(); err != nil {
+		csvPath := os.Getenv("NSE_EQUITY_CSV_PATH")
+		if csvPath == "" {
+			csvPath = "data/EQUITY_L.csv"
+		}
+		if fileErr := handlers.LoadNSEEquityISINIndexFromFile(csvPath); fileErr != nil {
+			log.Printf("Warning: NSE ISIN index not loaded (Yahoo ISIN fallback still available): download=%v file=%v", err, fileErr)
+		}
+	}
 
 	// Initialize Gin router
 	r := gin.Default()
@@ -83,10 +104,19 @@ func main() {
 		api.POST("/stocks/refresh-prices", h.RefreshStockPrices)
 		api.GET("/stocks/:id", h.GetStock)
 		api.PUT("/stocks/:id", h.UpdateStock)
+		api.PUT("/stocks/:id/admin", h.UpdateStockAdminFields)
 		api.DELETE("/stocks/:id", h.DeleteStock)
+
+		// Symbol mapping (admin) routes
+		api.GET("/symbol-mappings", h.GetSymbolMappings)
+		api.POST("/symbol-mappings", h.CreateSymbolMapping)
+		api.PUT("/symbol-mappings/:id", h.UpdateSymbolMapping)
+		api.DELETE("/symbol-mappings/:id", h.DeleteSymbolMapping)
+		api.GET("/admin/unmapped-stocks", h.GetUnmappedStocks)
 
 		// Transaction routes
 		api.POST("/transactions/buy", h.CreateBuyTransaction)
+		api.POST("/transactions/buy/replace-by-source", h.ReplaceSourceBuyTransactions)
 		api.POST("/transactions/sell", h.CreateSellTransaction)
 		api.GET("/transactions", h.GetTransactions)
 

@@ -4,13 +4,37 @@ import (
 	"encoding/json"
 	"financetracker/models"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+// StockWithDetails embeds Stock with holdings computed from transactions.
+type StockWithDetails struct {
+	models.Stock
+	Quantity        float64 `json:"quantity"`
+	AverageBuyPrice float64 `json:"average_buy_price"`
+}
+
+func yahooChartURL(symbol, suffix, query string) string {
+	return yahooChartURLDirect(resolveYahooSymbol(symbol), suffix, query)
+}
+
+func yahooChartURLDirect(ticker, suffix, query string) string {
+	return fmt.Sprintf(
+		"https://query1.finance.yahoo.com/v8/finance/chart/%s%s?%s",
+		url.PathEscape(ticker),
+		suffix,
+		query,
+	)
+}
 
 type Handler struct {
 	DB *gorm.DB
@@ -20,21 +44,17 @@ func NewHandler(db *gorm.DB) *Handler {
 	return &Handler{DB: db}
 }
 
-// Stock handlers
-func (h *Handler) GetStocks(c *gin.Context) {
-	var stocks []models.Stock
-	if err := h.DB.Find(&stocks).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+func isSameCalendarDay(t *time.Time, today time.Time) bool {
+	if t == nil {
+		return false
 	}
+	loc := today.Location()
+	local := t.In(loc)
+	d := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	return d.Equal(today)
+}
 
-	// Calculate quantity and average buy price from transactions for each stock
-	type StockWithDetails struct {
-		models.Stock
-		Quantity        float64 `json:"quantity"`
-		AverageBuyPrice float64 `json:"average_buy_price"`
-	}
-
+func (h *Handler) stocksWithHoldings(stocks []models.Stock) []StockWithDetails {
 	var stocksWithDetails []StockWithDetails
 	for _, stock := range stocks {
 		var transactions []models.Transaction
@@ -42,7 +62,6 @@ func (h *Handler) GetStocks(c *gin.Context) {
 
 		totalQuantity := 0.0
 		totalInvested := 0.0
-
 		for _, tx := range transactions {
 			if tx.Type == models.TransactionTypeBuy {
 				totalQuantity += tx.RemainingQuantity
@@ -61,8 +80,17 @@ func (h *Handler) GetStocks(c *gin.Context) {
 			AverageBuyPrice: avgBuyPrice,
 		})
 	}
+	return stocksWithDetails
+}
 
-	c.JSON(http.StatusOK, stocksWithDetails)
+// Stock handlers
+func (h *Handler) GetStocks(c *gin.Context) {
+	var stocks []models.Stock
+	if err := h.DB.Find(&stocks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, h.stocksWithHoldings(stocks))
 }
 
 func (h *Handler) CreateStock(c *gin.Context) {
@@ -75,23 +103,27 @@ func (h *Handler) CreateStock(c *gin.Context) {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
-	// Fetch sector from Yahoo Finance if not fetched today
+	// Fetch sector and market cap from Yahoo Finance if not fetched today
 	if stock.LastFetchedDate == nil || stock.LastFetchedDate.Before(today) {
 		if sector, err := fetchYahooFinanceSector(stock.Symbol); err == nil {
 			stock.Sector = sector
 		}
+		if marketCap, err := fetchYahooFinanceMarketCap(stock.Symbol); err == nil {
+			stock.MarketCap = classifyMarketCap(marketCap)
+		}
 
-		// Fetch 6th highest price from Yahoo Finance
+		fetchedHistorical := false
 		if sixthHighest, err := fetchSixthHighestPrice(stock.Symbol); err == nil {
 			stock.SixthHighestPrice = sixthHighest
+			fetchedHistorical = true
 		}
-
-		// Fetch 6th lowest price from Yahoo Finance
 		if sixthLowest, err := fetchSixthLowestPrice(stock.Symbol); err == nil {
 			stock.SixthLowestPrice = sixthLowest
+			fetchedHistorical = true
 		}
-
-		stock.LastFetchedDate = &now
+		if fetchedHistorical {
+			stock.LastFetchedDate = &now
+		}
 	}
 
 	if err := h.DB.Create(&stock).Error; err != nil {
@@ -149,23 +181,27 @@ func (h *Handler) CreateStocksBulk(c *gin.Context) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
 	for i := range stocks {
-		// Fetch sector from Yahoo Finance if not fetched today
+		// Fetch sector and market cap from Yahoo Finance if not fetched today
 		if stocks[i].LastFetchedDate == nil || stocks[i].LastFetchedDate.Before(today) {
 			if sector, err := fetchYahooFinanceSector(stocks[i].Symbol); err == nil {
 				stocks[i].Sector = sector
 			}
+			if marketCap, err := fetchYahooFinanceMarketCap(stocks[i].Symbol); err == nil {
+				stocks[i].MarketCap = classifyMarketCap(marketCap)
+			}
 
-			// Fetch 6th highest price from Yahoo Finance
+			fetchedHistorical := false
 			if sixthHighest, err := fetchSixthHighestPrice(stocks[i].Symbol); err == nil {
 				stocks[i].SixthHighestPrice = sixthHighest
+				fetchedHistorical = true
 			}
-
-			// Fetch 6th lowest price from Yahoo Finance
 			if sixthLowest, err := fetchSixthLowestPrice(stocks[i].Symbol); err == nil {
 				stocks[i].SixthLowestPrice = sixthLowest
+				fetchedHistorical = true
 			}
-
-			stocks[i].LastFetchedDate = &now
+			if fetchedHistorical {
+				stocks[i].LastFetchedDate = &now
+			}
 		}
 	}
 
@@ -176,6 +212,145 @@ func (h *Handler) CreateStocksBulk(c *gin.Context) {
 	c.JSON(http.StatusCreated, stocks)
 }
 
+func (h *Handler) findOrCreateStock(symbol, name, isin string) (models.Stock, error) {
+	rawISIN := strings.ToUpper(strings.TrimSpace(isin))
+	var stock models.Stock
+	if err := h.DB.Where("symbol = ?", symbol).First(&stock).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			stock = models.Stock{
+				Symbol: symbol,
+				ISIN:   rawISIN,
+				Name:   name,
+			}
+			h.applyYahooDataWithAutoMapping(&stock, models.SourceFormatManual)
+
+			if err := h.DB.Create(&stock).Error; err != nil {
+				return stock, err
+			}
+			return stock, nil
+		}
+		return stock, err
+	}
+	if name != "" && stock.Name != name {
+		stock.Name = name
+		_ = h.DB.Model(&stock).Update("name", name)
+	}
+	if rawISIN != "" && strings.TrimSpace(stock.ISIN) == "" {
+		stock.ISIN = rawISIN
+		_ = h.DB.Model(&stock).Update("isin", rawISIN)
+	}
+	if stock.CurrentPrice == 0 || stock.SixthHighestPrice < 1 || stock.SixthLowestPrice < 1 {
+		h.applyYahooDataWithAutoMapping(&stock, models.SourceFormatManual)
+		h.persistYahooStockFields(&stock)
+	}
+	return stock, nil
+}
+
+func applyYahooDataToStock(symbol string, stock *models.Stock) {
+	now := time.Now()
+	fetchedHistorical := false
+
+	if sector, err := fetchYahooFinanceSector(symbol); err == nil {
+		stock.Sector = sector
+	}
+	if marketCap, err := fetchYahooFinanceMarketCap(symbol); err == nil {
+		stock.MarketCap = classifyMarketCap(marketCap)
+	}
+	if sixthHighest, err := fetchSixthHighestPrice(symbol); err == nil {
+		stock.SixthHighestPrice = sixthHighest
+		fetchedHistorical = true
+	}
+	if sixthLowest, err := fetchSixthLowestPrice(symbol); err == nil {
+		stock.SixthLowestPrice = sixthLowest
+		fetchedHistorical = true
+	}
+	if currentPrice, err := fetchYahooFinancePrice(symbol); err == nil {
+		stock.CurrentPrice = currentPrice
+		stock.LastPriceFetchedDate = &now
+	}
+	if fetchedHistorical {
+		stock.LastFetchedDate = &now
+	}
+}
+
+func (h *Handler) persistYahooStockFields(stock *models.Stock) {
+	updates := map[string]interface{}{
+		"sector":                  stock.Sector,
+		"market_cap":              stock.MarketCap,
+		"sixth_highest_price":     stock.SixthHighestPrice,
+		"sixth_lowest_price":      stock.SixthLowestPrice,
+		"current_price":           stock.CurrentPrice,
+		"last_fetched_date":       stock.LastFetchedDate,
+		"last_price_fetched_date": stock.LastPriceFetchedDate,
+	}
+	_ = h.DB.Model(stock).Updates(updates).Error
+}
+
+func needsYahooHistoricalData(stock *models.Stock) bool {
+	return stock == nil || stock.SixthHighestPrice < 1 || stock.SixthLowestPrice < 1
+}
+
+func needsYahooAnyData(stock *models.Stock) bool {
+	return stock == nil || stock.CurrentPrice == 0 || needsYahooHistoricalData(stock)
+}
+
+// applyYahooDataWithAutoMapping retries Yahoo fetches after resolving the stock's
+// broker symbol from ISIN or name and persisting the symbol mapping.
+func (h *Handler) applyYahooDataWithAutoMapping(stock *models.Stock, sourceFormat string) {
+	if stock == nil {
+		return
+	}
+
+	applyYahooDataToStock(stock.Symbol, stock)
+	if !needsYahooAnyData(stock) {
+		return
+	}
+
+	if sourceFormat == "" {
+		sourceFormat = models.SourceFormatManual
+	}
+
+	isin := normalizeISIN(stock.ISIN)
+	if isin != "" {
+		createdMapping, err := EnsureSymbolMappingFromISIN(h.DB, stock.Symbol, isin, sourceFormat)
+		if err != nil {
+			log.Printf("stock ISIN auto-map error for %s (%s): %v", stock.Symbol, isin, err)
+		} else {
+			mapped := resolveYahooSymbol(stock.Symbol)
+			log.Printf("stock ISIN auto-map result for %s: isin=%s created=%v yahoo=%s", stock.Symbol, isin, createdMapping, mapped)
+			if createdMapping || mapped != stock.Symbol {
+				applyYahooDataToStock(stock.Symbol, stock)
+				log.Printf("stock ISIN auto-map refetch for %s: price=%.2f high6=%.2f low6=%.2f",
+					stock.Symbol, stock.CurrentPrice, stock.SixthHighestPrice, stock.SixthLowestPrice)
+			}
+		}
+		if !needsYahooAnyData(stock) {
+			return
+		}
+	}
+
+	name := strings.TrimSpace(stock.Name)
+	if name == "" {
+		log.Printf("stock auto-map: no name for %s — name fallback skipped", stock.Symbol)
+		return
+	}
+
+	createdMapping, err := EnsureSymbolMappingFromName(h.DB, stock.Symbol, name, isin, sourceFormat)
+	if err != nil {
+		log.Printf("stock name auto-map error for %s (%q): %v", stock.Symbol, name, err)
+		return
+	}
+	mapped := resolveYahooSymbol(stock.Symbol)
+	log.Printf("stock name auto-map result for %s: name=%q created=%v yahoo=%s", stock.Symbol, name, createdMapping, mapped)
+	if createdMapping || mapped != stock.Symbol {
+		applyYahooDataToStock(stock.Symbol, stock)
+		log.Printf("stock name auto-map refetch for %s: price=%.2f high6=%.2f low6=%.2f",
+			stock.Symbol, stock.CurrentPrice, stock.SixthHighestPrice, stock.SixthLowestPrice)
+	} else {
+		log.Printf("stock name auto-map: no mapping created for %s — Yahoo refetch skipped", stock.Symbol)
+	}
+}
+
 // Transaction handlers
 func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 	var req struct {
@@ -183,6 +358,8 @@ func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 		Quantity        float64   `json:"quantity" binding:"required"`
 		Price           float64   `json:"price" binding:"required"`
 		TransactionDate time.Time `json:"transaction_date" binding:"required"`
+		Source          string    `json:"source"`
+		Name            string    `json:"name"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -190,40 +367,15 @@ func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 		return
 	}
 
-	// Find or create stock
-	var stock models.Stock
-	if err := h.DB.Where("symbol = ?", req.Symbol).First(&stock).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			// Create new stock
-			stock = models.Stock{
-				Symbol: req.Symbol,
-			}
+	source := req.Source
+	if source == "" {
+		source = models.SourceManualAdd
+	}
 
-			// Fetch sector and other data
-			now := time.Now()
-
-			if sector, err := fetchYahooFinanceSector(req.Symbol); err == nil {
-				stock.Sector = sector
-			}
-			if sixthHighest, err := fetchSixthHighestPrice(req.Symbol); err == nil {
-				stock.SixthHighestPrice = sixthHighest
-			}
-			if sixthLowest, err := fetchSixthLowestPrice(req.Symbol); err == nil {
-				stock.SixthLowestPrice = sixthLowest
-			}
-			if currentPrice, err := fetchYahooFinancePrice(req.Symbol); err == nil {
-				stock.CurrentPrice = currentPrice
-			}
-			stock.LastFetchedDate = &now
-
-			if err := h.DB.Create(&stock).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+	stock, err := h.findOrCreateStock(req.Symbol, req.Name, "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	// Create buy transaction
@@ -234,6 +386,7 @@ func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 		Price:             req.Price,
 		RemainingQuantity: req.Quantity,
 		TransactionDate:   req.TransactionDate,
+		Source:            source,
 	}
 
 	if err := h.DB.Create(&transaction).Error; err != nil {
@@ -242,6 +395,101 @@ func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, transaction)
+}
+
+func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
+	var req struct {
+		Source string `json:"source" binding:"required"`
+		Items  []struct {
+			Symbol          string    `json:"symbol" binding:"required"`
+			Quantity        float64   `json:"quantity" binding:"required"`
+			Price           float64   `json:"price" binding:"required"`
+			TransactionDate time.Time `json:"transaction_date" binding:"required"`
+			Name            string    `json:"name"`
+			ISIN            string    `json:"isin"`
+		} `json:"items" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	source := req.Source
+	if !models.IsReplaceableImportSource(source) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source must be a bulk import source, not Manual Add"})
+		return
+	}
+
+	tx := h.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": tx.Error.Error()})
+		return
+	}
+
+	if err := tx.Where("source = ? AND type = ?", source, models.TransactionTypeBuy).
+		Delete(&models.Transaction{}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	created := make([]models.Transaction, 0, len(req.Items))
+	for _, item := range req.Items {
+		normISIN := normalizeISIN(item.ISIN)
+		if normISIN == "" && strings.TrimSpace(item.ISIN) != "" {
+			log.Printf("import: invalid ISIN for %s: %q", item.Symbol, item.ISIN)
+		}
+
+		stock, err := h.findOrCreateStock(item.Symbol, item.Name, item.ISIN)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		fetchFailed := needsYahooAnyData(&stock)
+
+		createdMapping := false
+		if fetchFailed && strings.TrimSpace(item.ISIN) != "" {
+			createdMapping, err = EnsureSymbolMappingFromISIN(tx, item.Symbol, item.ISIN, source)
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if createdMapping {
+			applyYahooDataToStock(item.Symbol, &stock)
+			h.persistYahooStockFields(&stock)
+		}
+
+		transaction := models.Transaction{
+			StockID:           stock.ID,
+			Type:              models.TransactionTypeBuy,
+			Quantity:          item.Quantity,
+			Price:             item.Price,
+			RemainingQuantity: item.Quantity,
+			TransactionDate:   item.TransactionDate,
+			Source:            source,
+		}
+		if err := tx.Create(&transaction).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		created = append(created, transaction)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	_ = ReloadSymbolCache(h.DB)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"count":        len(created),
+		"transactions": created,
+	})
 }
 
 func (h *Handler) CreateSellTransaction(c *gin.Context) {
@@ -372,12 +620,21 @@ func (h *Handler) GetStockTransactions(c *gin.Context) {
 }
 
 func fetchYahooFinancePrice(symbol string) (float64, error) {
-	suffixes := []string{"", ".NS", ".BO"}
+	return fetchYahooFinancePriceForTicker(resolveYahooSymbol(symbol))
+}
+
+func fetchYahooFinancePriceForTicker(nseBase string) (float64, error) {
+	nseBase = strings.TrimSpace(nseBase)
+	if nseBase == "" {
+		return 0, fmt.Errorf("empty ticker")
+	}
+	// Prefer Indian exchanges so short codes like TMCV don't match unrelated US tickers.
+	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 8 * time.Second}
 
 	for _, suffix := range suffixes {
-		url := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s%s?interval=1d&range=1d", symbol, suffix)
-		req, err := http.NewRequest("GET", url, nil)
+		reqURL := yahooChartURLDirect(nseBase, suffix, "interval=1d&range=1d")
+		req, err := http.NewRequest("GET", reqURL, nil)
 		if err != nil {
 			continue
 		}
@@ -413,30 +670,31 @@ func fetchYahooFinancePrice(symbol string) (float64, error) {
 			return result.Chart.Result[0].Meta.RegularMarketPrice, nil
 		}
 	}
-	return 0, fmt.Errorf("price not found for %s", symbol)
+	return 0, fmt.Errorf("price not found for %s", nseBase)
 }
 
 func fetchYahooFinanceSector(symbol string) (string, error) {
-	suffixes := []string{"", ".NS", ".BO"}
-	client := &http.Client{Timeout: 8 * time.Second}
+	suffixes := []string{".NS", ".BO", ""}
+	resolved := resolveYahooSymbol(symbol)
 
-	// Try using the quoteSummary endpoint with proper headers
 	for _, suffix := range suffixes {
-		url := fmt.Sprintf("https://query1.finance.yahoo.com/v10/finance/quoteSummary/%s%s?modules=assetProfile", symbol, suffix)
-		req, err := http.NewRequest("GET", url, nil)
+		reqURL := fmt.Sprintf(
+			"https://query1.finance.yahoo.com/v10/finance/quoteSummary/%s%s?modules=assetProfile",
+			url.PathEscape(resolved),
+			suffix,
+		)
+		req, err := http.NewRequest("GET", reqURL, nil)
 		if err != nil {
 			continue
 		}
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
-		resp, err := client.Do(req)
+		resp, err := yahooDo(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			if resp != nil {
 				resp.Body.Close()
 			}
 			continue
 		}
-		defer resp.Body.Close()
 
 		var result struct {
 			QuoteSummary struct {
@@ -449,7 +707,9 @@ func fetchYahooFinanceSector(symbol string) (string, error) {
 			} `json:"quoteSummary"`
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if decodeErr != nil {
 			continue
 		}
 		if result.QuoteSummary.Error != nil {
@@ -480,14 +740,39 @@ func fetchYahooFinanceSector(symbol string) (string, error) {
 		"HINDUNILVR": "Consumer Goods",
 		"NESTLEIND":  "Consumer Goods",
 		"TATAMOTORS": "Automobile",
+		"TMPV":       "Automobile",
+		"TMCV":       "Automobile",
 		"M&M":        "Automobile",
 		"MARUTI":     "Automobile",
+		"HEROMOTOCO": "Automobile",
+		"TVSMOTOR":   "Automobile",
 		"LT":         "Infrastructure",
 		"SUNPHARMA":  "Healthcare",
 		"DRREDDY":    "Healthcare",
 		"CIPLA":      "Healthcare",
+		"ULTRACEMCO": "Materials",
+		"ORIENTCEM":  "Materials",
+		"STARCEMENT": "Materials",
+		"ACC":        "Materials",
+		"TITAN":      "Consumer Cyclical",
+		"GODREJCP":   "Consumer Defensive",
+		"DLF":        "Real Estate",
+		"PHOENIXLTD": "Real Estate",
+		"COROMANDEL": "Basic Materials",
+		"CROMPTON":   "Consumer Cyclical",
+		"GREENPLY":   "Basic Materials",
+		"NCC":        "Industrials",
+		"JIOFIN":     "Financial Services",
+		"IDFCFIRSTB": "Financial Services",
+		"HDFCGOLD":   "Financial Services",
+		"GOLDIETF":   "Financial Services",
+		"NIFTYIETF":  "Financial Services",
+		"MID150BEES": "Financial Services",
 	}
 
+	if sector, exists := sectorMap[resolved]; exists {
+		return sector, nil
+	}
 	if sector, exists := sectorMap[symbol]; exists {
 		return sector, nil
 	}
@@ -495,13 +780,96 @@ func fetchYahooFinanceSector(symbol string) (string, error) {
 	return "", fmt.Errorf("sector not found for %s", symbol)
 }
 
+// classifyMarketCap maps Yahoo marketCap (INR rupees for .NS/.BO) to Indian segment labels.
+func classifyMarketCap(value float64) string {
+	if value <= 0 {
+		return ""
+	}
+	const (
+		crore       = 1e7
+		largeCapMin = 20000 * crore // ₹20,000 crore
+		midCapMin   = 5000 * crore  // ₹5,000 crore
+	)
+	if value >= largeCapMin {
+		return "Large Cap"
+	}
+	if value >= midCapMin {
+		return "Mid Cap"
+	}
+	return "Small Cap"
+}
+
+func fetchYahooFinanceMarketCap(symbol string) (float64, error) {
+	suffixes := []string{".NS", ".BO", ""}
+	resolved := resolveYahooSymbol(symbol)
+
+	for _, suffix := range suffixes {
+		reqURL := fmt.Sprintf(
+			"https://query1.finance.yahoo.com/v10/finance/quoteSummary/%s%s?modules=summaryDetail,price",
+			url.PathEscape(resolved),
+			suffix,
+		)
+		req, err := http.NewRequest("GET", reqURL, nil)
+		if err != nil {
+			continue
+		}
+
+		resp, err := yahooDo(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
+		}
+
+		var result struct {
+			QuoteSummary struct {
+				Result []struct {
+					SummaryDetail struct {
+						MarketCap struct {
+							Raw float64 `json:"raw"`
+						} `json:"marketCap"`
+					} `json:"summaryDetail"`
+					Price struct {
+						MarketCap struct {
+							Raw float64 `json:"raw"`
+						} `json:"marketCap"`
+					} `json:"price"`
+				} `json:"result"`
+				Error interface{} `json:"error"`
+			} `json:"quoteSummary"`
+		}
+
+		decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+		resp.Body.Close()
+		if decodeErr != nil {
+			continue
+		}
+		if result.QuoteSummary.Error != nil {
+			continue
+		}
+		if len(result.QuoteSummary.Result) == 0 {
+			continue
+		}
+		row := result.QuoteSummary.Result[0]
+		if row.SummaryDetail.MarketCap.Raw > 0 {
+			return row.SummaryDetail.MarketCap.Raw, nil
+		}
+		if row.Price.MarketCap.Raw > 0 {
+			return row.Price.MarketCap.Raw, nil
+		}
+	}
+
+	return 0, fmt.Errorf("market cap not found for %s", symbol)
+}
+
 func fetchSixthHighestPrice(symbol string) (float64, error) {
-	suffixes := []string{"", ".NS", ".BO"}
+	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	for _, suffix := range suffixes {
-		url := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s%s?interval=1d&range=1y", symbol, suffix)
-		req, err := http.NewRequest("GET", url, nil)
+		reqURL := yahooChartURL(symbol, suffix, "interval=1d&range=1y")
+		req, err := http.NewRequest("GET", reqURL, nil)
 		if err != nil {
 			continue
 		}
@@ -570,12 +938,12 @@ func fetchSixthHighestPrice(symbol string) (float64, error) {
 }
 
 func fetchSixthLowestPrice(symbol string) (float64, error) {
-	suffixes := []string{"", ".NS", ".BO"}
+	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	for _, suffix := range suffixes {
-		url := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s%s?interval=1d&range=1y", symbol, suffix)
-		req, err := http.NewRequest("GET", url, nil)
+		reqURL := yahooChartURL(symbol, suffix, "interval=1d&range=1y")
+		req, err := http.NewRequest("GET", reqURL, nil)
 		if err != nil {
 			continue
 		}
@@ -647,21 +1015,21 @@ type StockTrend struct {
 	StockID       uint    `json:"stock_id"`
 	Symbol        string  `json:"symbol"`
 	CurrentPrice  float64 `json:"current_price"`
+	MA7           float64 `json:"ma7"`
 	MA20          float64 `json:"ma20"`
-	MA50          float64 `json:"ma50"`
 	StockDelta    float64 `json:"stock_delta"`
 	MarketDelta   float64 `json:"market_delta"`
 	AdjustedDelta float64 `json:"adjusted_delta"`
 	Trend         string  `json:"trend"`
 }
 
-func fetchMovingAverages(symbol string) (currentPrice, ma20, ma50, delta float64, err error) {
-	suffixes := []string{"", ".NS", ".BO"}
+func fetchMovingAverages(symbol string) (currentPrice, ma7, ma20, delta float64, err error) {
+	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 10 * time.Second}
 
 	for _, suffix := range suffixes {
-		url := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s%s?interval=1d&range=3mo", symbol, suffix)
-		req, e := http.NewRequest("GET", url, nil)
+		reqURL := yahooChartURL(symbol, suffix, "interval=1d&range=3mo")
+		req, e := http.NewRequest("GET", reqURL, nil)
 		if e != nil {
 			continue
 		}
@@ -716,29 +1084,29 @@ func fetchMovingAverages(symbol string) (currentPrice, ma20, ma50, delta float64
 		}
 
 		n := len(closes)
-		if n < 20 {
+		if n < 7 {
 			return 0, 0, 0, 0, fmt.Errorf("insufficient data for %s", symbol)
 		}
 
-		sum20 := 0.0
-		for _, c := range closes[n-20:] {
-			sum20 += c
+		sum7 := 0.0
+		for _, c := range closes[n-7:] {
+			sum7 += c
 		}
-		ma20 = sum20 / 20
+		ma7 = sum7 / 7
 
-		if n >= 50 {
-			sum50 := 0.0
-			for _, c := range closes[n-50:] {
-				sum50 += c
+		if n >= 20 {
+			sum20 := 0.0
+			for _, c := range closes[n-20:] {
+				sum20 += c
 			}
-			ma50 = sum50 / 50
+			ma20 = sum20 / 20
 		}
 
-		if ma50 > 0 {
-			delta = ((ma20 - ma50) / ma50) * 100
+		if ma20 > 0 {
+			delta = ((ma7 - ma20) / ma20) * 100
 		}
 
-		return currentPrice, ma20, ma50, delta, nil
+		return currentPrice, ma7, ma20, delta, nil
 	}
 	return 0, 0, 0, 0, fmt.Errorf("data not found for %s", symbol)
 }
@@ -755,13 +1123,13 @@ func (h *Handler) GetStockHistory(c *gin.Context) {
 		return
 	}
 
-	suffixes := []string{"", ".NS", ".BO"}
+	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 10 * time.Second}
 	var history []HistoricalDataPoint
 
 	for _, suffix := range suffixes {
-		url := fmt.Sprintf("https://query1.finance.yahoo.com/v8/finance/chart/%s%s?interval=1d&range=3mo", symbol, suffix)
-		req, e := http.NewRequest("GET", url, nil)
+		reqURL := yahooChartURL(symbol, suffix, "interval=1d&range=3mo")
+		req, e := http.NewRequest("GET", reqURL, nil)
 		if e != nil {
 			continue
 		}
@@ -843,7 +1211,7 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 	_, _, _, marketDelta, _ := fetchMovingAverages("^BSESN")
 
 	for _, stock := range stocks {
-		currentPrice, ma20, ma50, stockDelta, err := fetchMovingAverages(stock.Symbol)
+		currentPrice, ma7, ma20, stockDelta, err := fetchMovingAverages(stock.Symbol)
 		if err != nil {
 			trends = append(trends, StockTrend{
 				StockID:      stock.ID,
@@ -857,42 +1225,28 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 		adjustedDelta := stockDelta - marketDelta
 
 		trend := "neutral"
-		if ma20 > 0 && ma50 > 0 {
-			if currentPrice > ma20 && ma20 > ma50 {
+		if ma7 > 0 && ma20 > 0 {
+			if currentPrice > ma7 && ma7 > ma20 {
 				if adjustedDelta > 0 {
 					trend = "bullish"
 				} else {
 					trend = "moderately bullish"
 				}
-			} else if currentPrice < ma20 && ma20 < ma50 {
-				if adjustedDelta < 0 {
+			} else if currentPrice < ma7 && ma7 < ma20 {
+				if adjustedDelta < -10 {
 					trend = "bearish"
 				} else {
 					trend = "moderately bearish"
 				}
-			} else if ma20 > ma50 {
+			} else if ma7 > ma20 {
 				if adjustedDelta > 0 {
 					trend = "moderately bullish"
 				} else {
 					trend = "neutral"
 				}
 			} else {
-				if adjustedDelta < 0 {
+				if adjustedDelta < -10 {
 					trend = "moderately bearish"
-				} else {
-					trend = "neutral"
-				}
-			}
-		} else if ma20 > 0 {
-			if currentPrice >= ma20 {
-				if adjustedDelta > 0 {
-					trend = "bullish"
-				} else {
-					trend = "neutral"
-				}
-			} else {
-				if adjustedDelta < 0 {
-					trend = "bearish"
 				} else {
 					trend = "neutral"
 				}
@@ -903,8 +1257,8 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 			StockID:       stock.ID,
 			Symbol:        stock.Symbol,
 			CurrentPrice:  currentPrice,
+			MA7:           ma7,
 			MA20:          ma20,
-			MA50:          ma50,
 			StockDelta:    stockDelta,
 			MarketDelta:   marketDelta,
 			AdjustedDelta: adjustedDelta,
@@ -924,33 +1278,113 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	log.Printf("RefreshStockPrices: starting for %d stocks", len(stocks))
 
 	for i := range stocks {
-		// Always fetch current price
-		if price, err := fetchYahooFinancePrice(stocks[i].Symbol); err == nil {
-			stocks[i].CurrentPrice = price
-			h.DB.Model(&stocks[i]).Update("current_price", price)
+		s := &stocks[i]
+		yahoo := resolveYahooSymbol(s.Symbol)
+		normISIN := normalizeISIN(s.ISIN)
+		log.Printf("RefreshStockPrices [%s]: yahoo=%s isin_raw=%q isin_norm=%q price=%.2f high6=%.2f low6=%.2f",
+			s.Symbol, yahoo, s.ISIN, normISIN, s.CurrentPrice, s.SixthHighestPrice, s.SixthLowestPrice)
+
+		priceFetchedToday := isSameCalendarDay(s.LastPriceFetchedDate, today)
+		priceErr := ""
+		if !priceFetchedToday {
+			if price, err := fetchYahooFinancePrice(s.Symbol); err == nil {
+				s.CurrentPrice = price
+				s.LastPriceFetchedDate = &now
+				h.DB.Model(s).Updates(map[string]interface{}{
+					"current_price":           price,
+					"last_price_fetched_date": now,
+				})
+				log.Printf("RefreshStockPrices [%s]: price OK %.2f (via %s)", s.Symbol, price, yahoo)
+			} else {
+				priceErr = err.Error()
+				log.Printf("RefreshStockPrices [%s]: price FAIL via %s: %v", s.Symbol, yahoo, err)
+			}
+		} else {
+			log.Printf("RefreshStockPrices [%s]: price skipped (already fetched today)", s.Symbol)
 		}
 
-		// Only fetch historical data if not fetched today
-		if stocks[i].LastFetchedDate == nil || stocks[i].LastFetchedDate.Before(today) {
-			if sector, err := fetchYahooFinanceSector(stocks[i].Symbol); err == nil {
-				stocks[i].Sector = sector
-				h.DB.Model(&stocks[i]).Update("sector", sector)
-			}
-			if sixthHighest, err := fetchSixthHighestPrice(stocks[i].Symbol); err == nil {
-				stocks[i].SixthHighestPrice = sixthHighest
-				h.DB.Model(&stocks[i]).Update("sixth_highest_price", sixthHighest)
-			}
-			if sixthLowest, err := fetchSixthLowestPrice(stocks[i].Symbol); err == nil {
-				stocks[i].SixthLowestPrice = sixthLowest
-				h.DB.Model(&stocks[i]).Update("sixth_lowest_price", sixthLowest)
-			}
-			stocks[i].LastFetchedDate = &now
-			h.DB.Model(&stocks[i]).Update("last_fetched_date", now)
+		if s.CurrentPrice == 0 && strings.TrimSpace(s.ISIN) != "" {
+			log.Printf("RefreshStockPrices [%s]: attempting ISIN auto-map (price still 0, isin present)", s.Symbol)
+			h.applyYahooDataWithAutoMapping(s, models.SourceFormatManual)
+			h.persistYahooStockFields(s)
+			yahoo = resolveYahooSymbol(s.Symbol)
+			log.Printf("RefreshStockPrices [%s]: after ISIN auto-map yahoo=%s price=%.2f", s.Symbol, yahoo, s.CurrentPrice)
+		} else if s.CurrentPrice == 0 && strings.TrimSpace(s.ISIN) == "" {
+			log.Printf("RefreshStockPrices [%s]: price=0 and no ISIN — cannot auto-map", s.Symbol)
 		}
+
+		// Fill blank market cap even when historical data was already fetched today
+		if s.MarketCap == "" {
+			if marketCap, err := fetchYahooFinanceMarketCap(s.Symbol); err == nil {
+				label := classifyMarketCap(marketCap)
+				s.MarketCap = label
+				h.DB.Model(s).Update("market_cap", label)
+			}
+		}
+
+		needsHistorical := s.LastFetchedDate == nil ||
+			s.LastFetchedDate.Before(today) ||
+			needsYahooHistoricalData(s)
+
+		if needsHistorical {
+			if sector, err := fetchYahooFinanceSector(s.Symbol); err == nil {
+				s.Sector = sector
+				h.DB.Model(s).Update("sector", sector)
+			}
+			if s.MarketCap == "" {
+				if marketCap, err := fetchYahooFinanceMarketCap(s.Symbol); err == nil {
+					label := classifyMarketCap(marketCap)
+					s.MarketCap = label
+					h.DB.Model(s).Update("market_cap", label)
+				}
+			}
+
+			fetchedHigh := false
+			fetchedLow := false
+			if sixthHighest, err := fetchSixthHighestPrice(s.Symbol); err == nil {
+				s.SixthHighestPrice = sixthHighest
+				h.DB.Model(s).Update("sixth_highest_price", sixthHighest)
+				fetchedHigh = true
+			} else {
+				log.Printf("RefreshStockPrices [%s]: sixth-high FAIL via %s: %v", s.Symbol, resolveYahooSymbol(s.Symbol), err)
+			}
+			if sixthLowest, err := fetchSixthLowestPrice(s.Symbol); err == nil {
+				s.SixthLowestPrice = sixthLowest
+				h.DB.Model(s).Update("sixth_lowest_price", sixthLowest)
+				fetchedLow = true
+			} else {
+				log.Printf("RefreshStockPrices [%s]: sixth-low FAIL via %s: %v", s.Symbol, resolveYahooSymbol(s.Symbol), err)
+			}
+
+			// Only stamp LastFetchedDate when historical data was retrieved,
+			// so failed symbols (e.g. unmapped tickers) are retried later.
+			if fetchedHigh || fetchedLow {
+				s.LastFetchedDate = &now
+				h.DB.Model(s).Update("last_fetched_date", now)
+			}
+
+			if needsYahooHistoricalData(s) && strings.TrimSpace(s.ISIN) != "" {
+				log.Printf("RefreshStockPrices [%s]: historical still missing — ISIN auto-map retry", s.Symbol)
+				h.applyYahooDataWithAutoMapping(s, models.SourceFormatManual)
+				h.persistYahooStockFields(s)
+			}
+		} else {
+			log.Printf("RefreshStockPrices [%s]: historical skipped (fresh)", s.Symbol)
+		}
+
+		status := "OK"
+		if needsYahooAnyData(s) {
+			status = "INCOMPLETE"
+		}
+		log.Printf("RefreshStockPrices [%s]: DONE status=%s yahoo=%s price=%.2f high6=%.2f low6=%.2f sector=%q mcap=%q priceErr=%q",
+			s.Symbol, status, resolveYahooSymbol(s.Symbol), s.CurrentPrice, s.SixthHighestPrice, s.SixthLowestPrice,
+			s.Sector, s.MarketCap, priceErr)
 	}
-	c.JSON(http.StatusOK, stocks)
+	log.Printf("RefreshStockPrices: finished %d stocks", len(stocks))
+	c.JSON(http.StatusOK, h.stocksWithHoldings(stocks))
 }
 
 // Mutual Fund handlers
@@ -1037,6 +1471,12 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 	totalInvested := 0.0
 	currentValue := 0.0
 
+	type sourceTotals struct {
+		invested float64
+		current  float64
+	}
+	bySourceMap := map[string]sourceTotals{}
+
 	for _, stock := range stocks {
 		// Calculate from transactions
 		var transactions []models.Transaction
@@ -1049,6 +1489,17 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 			if tx.Type == models.TransactionTypeBuy {
 				stockQuantity += tx.RemainingQuantity
 				stockInvested += tx.Price * tx.RemainingQuantity
+
+				if tx.RemainingQuantity > 0 {
+					src := tx.Source
+					if src == "" {
+						src = models.SourceManualAdd
+					}
+					t := bySourceMap[src]
+					t.invested += tx.Price * tx.RemainingQuantity
+					t.current += stock.CurrentPrice * tx.RemainingQuantity
+					bySourceMap[src] = t
+				}
 			}
 		}
 
@@ -1063,10 +1514,39 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 
 	profitLoss := currentValue - totalInvested
 
+	profitLossPct := 0.0
+	if totalInvested > 0 {
+		profitLossPct = (profitLoss / totalInvested) * 100
+	}
+
+	sourceNames := make([]string, 0, len(bySourceMap))
+	for name := range bySourceMap {
+		sourceNames = append(sourceNames, name)
+	}
+	sort.Strings(sourceNames)
+
+	bySource := make([]gin.H, 0, len(sourceNames))
+	for _, name := range sourceNames {
+		t := bySourceMap[name]
+		pl := t.current - t.invested
+		plPct := 0.0
+		if t.invested > 0 {
+			plPct = (pl / t.invested) * 100
+		}
+		bySource = append(bySource, gin.H{
+			"source":                 name,
+			"total_invested":         t.invested,
+			"current_value":          t.current,
+			"profit_loss":            pl,
+			"profit_loss_percentage": plPct,
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"total_invested":         totalInvested,
 		"current_value":          currentValue,
 		"profit_loss":            profitLoss,
-		"profit_loss_percentage": (profitLoss / totalInvested) * 100,
+		"profit_loss_percentage": profitLossPct,
+		"by_source":              bySource,
 	})
 }

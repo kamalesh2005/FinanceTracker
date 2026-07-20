@@ -10,6 +10,7 @@ class FinanceProvider with ChangeNotifier {
   List<StockTrend> _stockTrends = [];
   Map<String, dynamic> _portfolioSummary = {};
   bool _isLoading = false;
+  bool _isRefreshingPrices = false;
   String? _error;
 
   List<Stock> get stocks => _stocks;
@@ -17,6 +18,7 @@ class FinanceProvider with ChangeNotifier {
   List<StockTrend> get stockTrends => _stockTrends;
   Map<String, dynamic> get portfolioSummary => _portfolioSummary;
   bool get isLoading => _isLoading;
+  bool get isRefreshingPrices => _isRefreshingPrices;
   String? get error => _error;
 
   Future<void> loadStocks() async {
@@ -74,7 +76,7 @@ class FinanceProvider with ChangeNotifier {
   }
 
   Future<void> refreshStockPrices() async {
-    _isLoading = true;
+    _isRefreshingPrices = true;
     _error = null;
     notifyListeners();
 
@@ -83,12 +85,12 @@ class FinanceProvider with ChangeNotifier {
     } catch (e) {
       _error = e.toString();
     } finally {
-      _isLoading = false;
+      _isRefreshingPrices = false;
       notifyListeners();
     }
   }
 
-  Future<void> addStock(Stock stock) async {
+  Future<void> addStock(Stock stock, {DateTime? transactionDate}) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -98,7 +100,9 @@ class FinanceProvider with ChangeNotifier {
         symbol: stock.symbol,
         quantity: stock.quantity,
         price: stock.buyPrice,
-        transactionDate: DateTime.now(),
+        transactionDate: transactionDate ?? DateTime.now(),
+        source: 'Manual Add',
+        name: stock.name,
       );
       await loadStocks();
     } catch (e) {
@@ -109,20 +113,17 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
-  Future<void> addStocksBulk(List<Stock> stocks) async {
+  Future<void> addStocksBulk(List<Stock> stocks, {required String source}) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
-      for (var stock in stocks) {
-        await ApiService.createBuyTransaction(
-          symbol: stock.symbol,
-          quantity: stock.quantity,
-          price: stock.buyPrice,
-          transactionDate: DateTime.now(),
-        );
-      }
+      await ApiService.replaceBuyTransactionsBySource(
+        source: source,
+        stocks: stocks,
+        transactionDate: DateTime.now(),
+      );
       await loadStocks();
     } catch (e) {
       _error = e.toString();
