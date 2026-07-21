@@ -276,9 +276,15 @@ class _StocksScreenState extends State<StocksScreen> {
         stock.currentPrice > stock.buyPrice * 1.1) {
       parts.add('BUY');
     }
-    if ((trend != null && trend.trend == 'bearish') ||
+    if (trend != null &&
+        (trend.trend == 'bearish' || trend.trend == 'moderately bearish') &&
         stock.currentPrice < stock.buyPrice * 0.9) {
       parts.add('SELL');
+    }
+    if (trend != null &&
+        trend.trend == 'moderately bullish' &&
+        stock.currentPrice < stock.buyPrice * 0.9) {
+      parts.add('WATCH');
     }
     if (parts.isEmpty) return 'NO ACTION REQD';
     return parts.join(' & ');
@@ -288,6 +294,7 @@ class _StocksScreenState extends State<StocksScreen> {
     if (recommendation.contains('SELL')) return Colors.red;
     if (recommendation.contains('Book Profit')) return Colors.orange;
     if (recommendation.contains('BUY')) return Colors.green;
+    if (recommendation.contains('WATCH')) return Colors.blue;
     return Colors.grey;
   }
 
