@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/symbol_mapping.dart';
 import '../services/api_service.dart';
+import '../widgets/auth_app_bar_actions.dart';
 import 'edit_symbol_mapping_screen.dart';
 
 class UnmappedStocksScreen extends StatefulWidget {
@@ -78,9 +79,12 @@ class _UnmappedStocksScreenState extends State<UnmappedStocksScreen> {
       appBar: AppBar(
         title: const Text('Unmapped Stocks'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
-        ],
+        actions: authAppBarActions(
+          context,
+          extra: [
+            IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+          ],
+        ),
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())

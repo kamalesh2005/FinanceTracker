@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/symbol_mapping.dart';
 import '../services/api_service.dart';
+import '../widgets/auth_app_bar_actions.dart';
 
 class EditSymbolMappingScreen extends StatefulWidget {
   final SymbolMapping? mapping;
@@ -103,6 +104,7 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
       appBar: AppBar(
         title: Text(isEdit ? 'Edit Mapping' : 'Add Mapping'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),

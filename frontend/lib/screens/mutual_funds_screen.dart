@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/finance_provider.dart';
 import '../models/mutual_fund.dart';
 import '../utils/currency_format.dart';
+import '../widgets/auth_app_bar_actions.dart';
 import 'add_mutual_fund_screen.dart';
 
 class MutualFundsScreen extends StatefulWidget {
@@ -29,17 +30,20 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
       appBar: AppBar(
         title: const Text('Mutual Funds'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: [
-          IconButton(
-            icon: Icon(_isTableView ? Icons.view_module : Icons.table_rows),
-            onPressed: () {
-              setState(() {
-                _isTableView = !_isTableView;
-              });
-            },
-            tooltip: _isTableView ? 'Card view' : 'Table view',
-          ),
-        ],
+        actions: authAppBarActions(
+          context,
+          extra: [
+            IconButton(
+              icon: Icon(_isTableView ? Icons.view_module : Icons.table_rows),
+              onPressed: () {
+                setState(() {
+                  _isTableView = !_isTableView;
+                });
+              },
+              tooltip: _isTableView ? 'Card view' : 'Table view',
+            ),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {

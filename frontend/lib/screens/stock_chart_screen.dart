@@ -3,6 +3,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../utils/currency_format.dart';
+import '../widgets/auth_app_bar_actions.dart';
 
 class StockChartScreen extends StatefulWidget {
   final String symbol;
@@ -60,6 +61,7 @@ class _StockChartScreenState extends State<StockChartScreen> {
       appBar: AppBar(
         title: Text(widget.symbol),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -260,10 +262,11 @@ class _StockChartScreenState extends State<StockChartScreen> {
                 final isBuy = type == 'buy';
                 final dateStr = tx['transaction_date'] as String?;
                 final date = dateStr != null ? DateTime.parse(dateStr).toLocal() : null;
-                final quantity = (tx['quantity'] as num?)?.toDouble() ?? 0;
+                final remaining = (tx['quantity'] as num?)?.toDouble() ?? 0;
+                final originalQty = (tx['original_quantity'] as num?)?.toDouble() ?? remaining;
                 final price = (tx['price'] as num?)?.toDouble() ?? 0;
-                final remaining = (tx['remaining_quantity'] as num?)?.toDouble() ?? 0;
                 final source = tx['source'] as String? ?? '';
+                final qtyDisplay = isBuy ? originalQty : remaining;
 
                 return DataRow(
                   cells: [
@@ -279,8 +282,8 @@ class _StockChartScreenState extends State<StockChartScreen> {
                         ),
                       ),
                     ),
-                    DataCell(Text(quantity.toStringAsFixed(
-                      quantity == quantity.roundToDouble() ? 0 : 2,
+                    DataCell(Text(qtyDisplay.toStringAsFixed(
+                      qtyDisplay == qtyDisplay.roundToDouble() ? 0 : 2,
                     ))),
                     DataCell(Text(formatInr(price))),
                     DataCell(Text(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/stock.dart';
 import '../services/api_service.dart';
+import '../widgets/auth_app_bar_actions.dart';
 
 class AdminStockDataScreen extends StatefulWidget {
   const AdminStockDataScreen({super.key});
@@ -143,6 +144,7 @@ class _AdminStockDataScreenState extends State<AdminStockDataScreen> {
       appBar: AppBar(
         title: const Text('Update Stock Data'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       body: Column(
         children: [

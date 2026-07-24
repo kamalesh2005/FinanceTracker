@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import '../widgets/auth_app_bar_actions.dart';
 import 'symbol_mappings_screen.dart';
 import 'unmapped_stocks_screen.dart';
 import 'admin_stock_data_screen.dart';
+import 'admin_users_screen.dart';
+import 'admin_app_settings_screen.dart';
 
 class AdminScreen extends StatelessWidget {
   const AdminScreen({super.key});
@@ -12,6 +15,7 @@ class AdminScreen extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Admin'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -22,10 +26,31 @@ class AdminScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Manage broker-to-Yahoo symbol mappings and correct Yahoo-sourced stock data.',
+            'Manage users, app defaults, broker-to-Yahoo symbol mappings, and Yahoo-sourced stock data.',
             style: TextStyle(color: Colors.grey.shade700),
           ),
           const SizedBox(height: 24),
+          _AdminTile(
+            icon: Icons.people_outline,
+            color: Colors.indigo,
+            title: 'Users',
+            subtitle: 'View users and enable or disable accounts',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AdminUsersScreen()),
+            ),
+          ),
+          _AdminTile(
+            icon: Icons.tune,
+            color: Colors.deepPurple,
+            title: 'App Settings',
+            subtitle:
+                'Default fluctuation to ignore recommendations post any buy/sell',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AdminAppSettingsScreen()),
+            ),
+          ),
           _AdminTile(
             icon: Icons.warning_amber_rounded,
             color: Colors.orange,

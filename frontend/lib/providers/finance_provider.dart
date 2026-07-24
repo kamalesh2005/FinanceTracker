@@ -21,9 +21,22 @@ class FinanceProvider with ChangeNotifier {
   bool get isRefreshingPrices => _isRefreshingPrices;
   String? get error => _error;
 
+  /// Clears all cached portfolio data (call on logout / user switch).
+  void clear() {
+    _stocks = [];
+    _mutualFunds = [];
+    _stockTrends = [];
+    _portfolioSummary = {};
+    _isLoading = false;
+    _isRefreshingPrices = false;
+    _error = null;
+    notifyListeners();
+  }
+
   Future<void> loadStocks() async {
     _isLoading = true;
     _error = null;
+    _stocks = [];
     notifyListeners();
 
     try {
@@ -39,6 +52,7 @@ class FinanceProvider with ChangeNotifier {
   Future<void> loadMutualFunds() async {
     _isLoading = true;
     _error = null;
+    _mutualFunds = [];
     notifyListeners();
 
     try {
@@ -54,6 +68,7 @@ class FinanceProvider with ChangeNotifier {
   Future<void> loadPortfolioSummary() async {
     _isLoading = true;
     _error = null;
+    _portfolioSummary = {};
     notifyListeners();
 
     try {
@@ -113,6 +128,70 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
+  Future<bool> buyStockTransaction({
+    required String symbol,
+    required double quantity,
+    required double price,
+    required DateTime transactionDate,
+    required String source,
+    String name = '',
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final src = source.trim().isEmpty ? 'Manual Add' : source.trim();
+      await ApiService.createBuyTransaction(
+        symbol: symbol,
+        quantity: quantity,
+        price: price,
+        transactionDate: transactionDate,
+        source: src,
+        name: name,
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> sellStockTransaction({
+    required String symbol,
+    required double quantity,
+    required double price,
+    required DateTime transactionDate,
+    required String source,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final src = source.trim().isEmpty ? 'Manual Add' : source.trim();
+      await ApiService.createSellTransaction(
+        symbol: symbol,
+        quantity: quantity,
+        price: price,
+        transactionDate: transactionDate,
+        source: src,
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> addStocksBulk(List<Stock> stocks, {required String source}) async {
     _isLoading = true;
     _error = null;
@@ -143,6 +222,34 @@ class FinanceProvider with ChangeNotifier {
       await loadStocks();
     } catch (e) {
       _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> updateStockHoldings({
+    required int stockId,
+    required String symbol,
+    required double quantity,
+    required double price,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await ApiService.updateStockHoldings(
+        stockId: stockId,
+        symbol: symbol,
+        quantity: quantity,
+        price: price,
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
     } finally {
       _isLoading = false;
       notifyListeners();

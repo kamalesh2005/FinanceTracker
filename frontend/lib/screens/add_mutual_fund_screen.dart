@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/finance_provider.dart';
 import '../models/mutual_fund.dart';
+import '../widgets/auth_app_bar_actions.dart';
 
 class AddMutualFundScreen extends StatefulWidget {
   final MutualFund? mutualFund;
@@ -51,6 +52,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
       appBar: AppBar(
         title: Text(widget.mutualFund == null ? 'Add Mutual Fund' : 'Edit Mutual Fund'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),

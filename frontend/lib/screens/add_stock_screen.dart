@@ -11,7 +11,9 @@ import 'package:provider/provider.dart';
 
 import '../models/stock.dart';
 import '../providers/finance_provider.dart';
+import '../providers/auth_provider.dart';
 import '../utils/currency_format.dart';
+import '../widgets/auth_app_bar_actions.dart';
 
 class AddStockScreen extends StatefulWidget {
   final Stock? stock;
@@ -39,10 +41,21 @@ class _AddStockScreenState extends State<AddStockScreen> {
     super.initState();
     _symbolController = TextEditingController(text: widget.stock?.symbol ?? '');
     _nameController = TextEditingController(text: widget.stock?.name ?? '');
-    _quantityController = TextEditingController(text: widget.stock?.quantity.toString() ?? '');
-    _buyPriceController = TextEditingController(text: widget.stock?.buyPrice.toString() ?? '');
-    _currentPriceController = TextEditingController(text: widget.stock?.currentPrice.toString() ?? '');
+    _quantityController = TextEditingController(
+      text: widget.stock?.quantity.toString() ?? '',
+    );
+    _buyPriceController =
+        TextEditingController(text: widget.stock?.buyPrice.toString() ?? '');
+    _currentPriceController =
+        TextEditingController(text: widget.stock?.currentPrice.toString() ?? '');
     _transactionDate = DateTime.now();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (context.read<AuthProvider>().useAsStockWatchList) {
+        _quantityController.text = '1';
+        setState(() {});
+      }
+    });
   }
 
   @override
@@ -743,7 +756,36 @@ class _AddStockScreenState extends State<AddStockScreen> {
     if (_importedStocks.isEmpty || _importSource == null) return;
 
     final provider = context.read<FinanceProvider>();
-    await provider.addStocksBulk(_importedStocks, source: _importSource!);
+    final watchList = context.read<AuthProvider>().useAsStockWatchList;
+    final toSave = watchList
+        ? _importedStocks
+            .map(
+              (s) => Stock(
+                id: s.id,
+                symbol: s.symbol,
+                name: s.name,
+                sector: s.sector,
+                marketCap: s.marketCap,
+                source: s.source,
+                quantity: 1,
+                buyPrice: s.buyPrice,
+                currentPrice: s.currentPrice,
+                sixthHighestPrice: s.sixthHighestPrice,
+                sixthLowestPrice: s.sixthLowestPrice,
+                lastFetchedDate: s.lastFetchedDate,
+                lastPriceFetchedDate: s.lastPriceFetchedDate,
+                createdAt: s.createdAt,
+                updatedAt: s.updatedAt,
+                isin: s.isin,
+                lastBuyPrice: s.lastBuyPrice,
+                lastBuyDate: s.lastBuyDate,
+                lastSalePrice: s.lastSalePrice,
+                lastSaleDate: s.lastSaleDate,
+              ),
+            )
+            .toList()
+        : _importedStocks;
+    await provider.addStocksBulk(toSave, source: _importSource!);
 
     if (provider.error != null) {
       if (context.mounted) {
@@ -785,6 +827,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
       appBar: AppBar(
         title: Text(widget.stock == null ? 'Add Stock' : 'Edit Stock'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -1009,22 +1052,35 @@ class _AddStockScreenState extends State<AddStockScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              TextFormField(
-                controller: _quantityController,
-                decoration: const InputDecoration(
-                  labelText: 'Quantity *',
-                  hintText: 'e.g., 10',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter quantity';
+              Builder(
+                builder: (context) {
+                  final watchList =
+                      context.watch<AuthProvider>().useAsStockWatchList;
+                  if (watchList && _quantityController.text != '1') {
+                    _quantityController.text = '1';
                   }
-                  if (double.tryParse(value) == null) {
-                    return 'Please enter a valid number';
-                  }
-                  return null;
+                  return TextFormField(
+                    controller: _quantityController,
+                    enabled: !watchList,
+                    decoration: InputDecoration(
+                      labelText: 'Quantity *',
+                      hintText: watchList ? 'Fixed to 1 (watch list)' : 'e.g., 10',
+                      border: const OutlineInputBorder(),
+                      helperText: watchList
+                          ? 'Watch list mode always saves quantity as 1'
+                          : null,
+                    ),
+                    keyboardType: TextInputType.number,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter quantity';
+                      }
+                      if (double.tryParse(value) == null) {
+                        return 'Please enter a valid number';
+                      }
+                      return null;
+                    },
+                  );
                 },
               ),
               const SizedBox(height: 16),
@@ -1108,11 +1164,17 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ? null
                         : () async {
                             if (_formKey.currentState!.validate()) {
+                              final watchList = context
+                                  .read<AuthProvider>()
+                                  .useAsStockWatchList;
+                              final qty = watchList
+                                  ? 1.0
+                                  : double.parse(_quantityController.text);
                               final stock = Stock(
                                 id: widget.stock?.id ?? 0,
                                 symbol: _symbolController.text.toUpperCase(),
                                 name: _nameController.text,
-                                quantity: double.parse(_quantityController.text),
+                                quantity: qty,
                                 buyPrice: double.parse(_buyPriceController.text),
                                 currentPrice: _currentPriceController.text.isEmpty
                                     ? 0.0

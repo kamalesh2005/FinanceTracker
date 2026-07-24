@@ -6,20 +6,29 @@ import (
 )
 
 type Stock struct {
-	ID                uint          `json:"id" gorm:"primaryKey"`
-	Symbol            string        `json:"symbol" gorm:"not null;uniqueIndex"`
-	ISIN              string        `json:"isin" gorm:"size:64;index"`
-	Name              string        `json:"name"`
-	Sector            string        `json:"sector"`
-	MarketCap         string        `json:"market_cap"` // "Large Cap" | "Mid Cap" | "Small Cap" | ""
-	CurrentPrice      float64       `json:"current_price"`
-	SixthHighestPrice float64       `json:"sixth_highest_price"`
-	SixthLowestPrice  float64       `json:"sixth_lowest_price"`
-	LastFetchedDate      *time.Time `json:"last_fetched_date"`
-	LastPriceFetchedDate *time.Time `json:"last_price_fetched_date"`
-	CreatedAt         time.Time     `json:"created_at"`
-	UpdatedAt         time.Time     `json:"updated_at"`
-	Transactions      []Transaction `json:"transactions" gorm:"foreignKey:StockID"`
+	ID                   uint        `json:"id" gorm:"primaryKey"`
+	Symbol               string      `json:"symbol" gorm:"not null;uniqueIndex"`
+	ISIN                 string      `json:"isin" gorm:"size:64;index"`
+	Name                 string      `json:"name"`
+	Sector               string      `json:"sector"`
+	MarketCap            string      `json:"market_cap"` // "Large Cap" | "Mid Cap" | "Small Cap" | ""
+	CurrentPrice         float64     `json:"current_price"`
+	SixthHighestPrice    float64     `json:"sixth_highest_price"`
+	SixthLowestPrice     float64     `json:"sixth_lowest_price"`
+	MA7                  float64     `json:"ma7"`
+	MA20                 float64     `json:"ma20"`
+	SensexMA7            float64     `json:"sensex_ma7"`
+	SensexMA20           float64     `json:"sensex_ma20"`
+	StockDelta           float64     `json:"stock_delta"`
+	MarketDelta          float64     `json:"market_delta"`
+	AdjustedDelta        float64     `json:"adjusted_delta"`
+	Trend                string      `json:"trend"`
+	LastFetchedDate      *time.Time  `json:"last_fetched_date"`
+	LastPriceFetchedDate *time.Time  `json:"last_price_fetched_date"`
+	LastTrendFetchedDate *time.Time  `json:"last_trend_fetched_date"`
+	CreatedAt            time.Time   `json:"created_at"`
+	UpdatedAt            time.Time   `json:"updated_at"`
+	UserStocks           []UserStock `json:"user_stocks,omitempty" gorm:"foreignKey:StockID"`
 	// Legacy fields for migration - will be removed after migration
 	LegacyQuantity     float64   `json:"-" gorm:"column:quantity"`
 	LegacyBuyPrice     float64   `json:"-" gorm:"column:buy_price"`
@@ -40,30 +49,51 @@ const (
 	SourceHDFCSec          = "HDFCSec"
 )
 
-// IsReplaceableImportSource reports whether a bulk save should replace all prior buy lots for this source.
+// IsReplaceableImportSource reports whether a bulk save should upsert buy lots for this source
+// (update existing source+stock, insert missing, zero stale lots not in the upload).
 // Any non-empty source except Manual Add is replaceable (brokers, Manual Bulk Upload, future sources).
 func IsReplaceableImportSource(source string) bool {
 	source = strings.TrimSpace(source)
 	return source != "" && source != SourceManualAdd
 }
 
+// UserStock is the final holding for a user+source+stock.
+type UserStock struct {
+	ID            uint       `json:"id" gorm:"primaryKey"`
+	UserID        uint       `json:"user_id" gorm:"not null;uniqueIndex:idx_user_stock_source;index;default:0"`
+	StockID       uint       `json:"stock_id" gorm:"not null;uniqueIndex:idx_user_stock_source;index"`
+	Source        string     `json:"source" gorm:"not null;uniqueIndex:idx_user_stock_source;index;size:64"`
+	Quantity      float64    `json:"quantity" gorm:"not null;default:0"`
+	AvgBuyPrice   float64    `json:"avg_buy_price" gorm:"not null;default:0"`
+	LastBuyPrice  float64    `json:"last_buy_price" gorm:"not null;default:0"`
+	LastBuyDate   *time.Time `json:"last_buy_date"`
+	LastSalePrice float64    `json:"last_sale_price" gorm:"not null;default:0"`
+	LastSaleDate  *time.Time `json:"last_sale_date"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	Stock         Stock      `json:"stock" gorm:"foreignKey:StockID"`
+}
 
-type Transaction struct {
-	ID                uint            `json:"id" gorm:"primaryKey"`
-	StockID           uint            `json:"stock_id" gorm:"not null;index"`
-	Type              TransactionType `json:"type" gorm:"not null"`
-	Quantity          float64         `json:"quantity" gorm:"not null"`
-	Price             float64         `json:"price" gorm:"not null"`
-	RemainingQuantity float64         `json:"remaining_quantity" gorm:"not null"`
-	TransactionDate   time.Time       `json:"transaction_date" gorm:"not null"`
-	Source            string          `json:"source" gorm:"index"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
-	Stock             Stock           `json:"stock" gorm:"foreignKey:StockID"`
+// UserStockTransaction is a buy/sell ledger entry.
+// For buys, Quantity is remaining open lot size; OriginalQuantity is the size at insert.
+// Sell FIFO reduces buy Quantity only (never OriginalQuantity). Sell rows are immutable.
+type UserStockTransaction struct {
+	ID               uint            `json:"id" gorm:"primaryKey"`
+	UserID           uint            `json:"user_id" gorm:"not null;index;default:0"`
+	StockID          uint            `json:"stock_id" gorm:"not null;index"`
+	Source           string          `json:"source" gorm:"not null;index;size:64"`
+	Type             TransactionType `json:"type" gorm:"not null;size:16"`
+	Quantity         float64         `json:"quantity" gorm:"not null"`
+	OriginalQuantity float64         `json:"original_quantity" gorm:"not null;default:0"`
+	Price            float64         `json:"price" gorm:"not null"`
+	TransactionDate  time.Time       `json:"transaction_date" gorm:"not null"`
+	CreatedAt        time.Time       `json:"created_at"`
+	Stock            Stock           `json:"stock" gorm:"foreignKey:StockID"`
 }
 
 type MutualFund struct {
 	ID           uint      `json:"id" gorm:"primaryKey"`
+	UserID       uint      `json:"user_id" gorm:"not null;index;default:0"`
 	SchemeCode   string    `json:"scheme_code" gorm:"not null"`
 	SchemeName   string    `json:"scheme_name"`
 	FundHouse    string    `json:"fund_house"`
@@ -73,6 +103,61 @@ type MutualFund struct {
 	PurchaseDate time.Time `json:"purchase_date"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// UserConfig stores per-user UI preferences.
+type UserConfig struct {
+	ID                  uint   `json:"id" gorm:"primaryKey"`
+	UserID              uint   `json:"user_id" gorm:"uniqueIndex;not null"`
+	HiddenStockColumns  string `json:"hidden_stock_columns" gorm:"type:text"`
+	UseAsStockWatchList bool   `json:"use_as_stock_watch_list" gorm:"not null;default:false"`
+	// nil = inherit AppConfig default; set = user override (percent points, e.g. 5 = 5%).
+	RecommendationFluctuationPct *float64  `json:"recommendation_fluctuation_pct"`
+	CreatedAt                    time.Time `json:"created_at"`
+	UpdatedAt                    time.Time `json:"updated_at"`
+}
+
+// AppConfig is a singleton (id=1) for admin-managed app defaults.
+type AppConfig struct {
+	ID                                  uint      `json:"id" gorm:"primaryKey"`
+	DefaultRecommendationFluctuationPct float64   `json:"default_recommendation_fluctuation_pct" gorm:"not null;default:5"`
+	CreatedAt                           time.Time `json:"created_at"`
+	UpdatedAt                           time.Time `json:"updated_at"`
+}
+
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+)
+
+// User is an application account (platform admin or end-user).
+type User struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	Username     *string   `json:"username,omitempty" gorm:"uniqueIndex;size:64"`
+	Email        *string   `json:"email,omitempty" gorm:"uniqueIndex;size:255"`
+	Mobile       *string   `json:"mobile,omitempty" gorm:"uniqueIndex;size:32"`
+	PasswordHash string    `json:"-" gorm:"not null"`
+	Role         string    `json:"role" gorm:"not null;size:16;default:user"`
+	Enabled      bool      `json:"enabled" gorm:"not null;default:true"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+const (
+	OTPChannelEmail = "email"
+	OTPChannelSMS   = "sms"
+)
+
+// PasswordResetOTP stores hashed one-time codes for password reset.
+type PasswordResetOTP struct {
+	ID          uint       `json:"id" gorm:"primaryKey"`
+	UserID      uint       `json:"user_id" gorm:"not null;index"`
+	Channel     string     `json:"channel" gorm:"not null;size:16"`
+	Destination string     `json:"destination" gorm:"not null;size:255"`
+	CodeHash    string     `json:"-" gorm:"not null"`
+	ExpiresAt   time.Time  `json:"expires_at" gorm:"not null"`
+	UsedAt      *time.Time `json:"used_at"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type Portfolio struct {

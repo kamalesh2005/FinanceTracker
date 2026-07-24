@@ -2097,16 +2097,22 @@ class MyApp extends StatelessWidget {
 A relational database organizes data into tables with relationships between them. For our finance tracker, we need:
 
 **Tables:**
-1. **stocks**: Stock information
-2. **transactions**: Buy/sell transactions
-3. **mutual_funds**: Mutual fund investments
-4. **portfolios**: Portfolio summaries
+1. **Global_Stocks**: Shared stock catalog (prices, trends, metadata)
+2. **Global_SymbolMappings**: Broker symbol → Yahoo/NSE mappings (admin)
+3. **Global_Users**: Application accounts (admin + end users)
+4. **User_Stocks**: Per-user position per source (final qty + avg buy price + last buy/sell)
+5. **User_Stock_Transactions**: Buy/sell ledger that produced each position
+6. **User_MutualFunds**: Per-user mutual fund holdings
+7. **User_PasswordResetOTPs**: Password reset codes
+8. **User_Portfolios**: Legacy portfolio table (API summary is computed from holdings)
 
 #### ER Diagram
 ```
-stocks (1) ----< (many) transactions
-mutual_funds (standalone)
-portfolios (standalone)
+Global_Stocks (1) ----< (many) User_Stocks
+Global_Stocks (1) ----< (many) User_Stock_Transactions
+Global_Users (1) ----< User_Stocks, User_Stock_Transactions, User_MutualFunds, User_PasswordResetOTPs
+User_MutualFunds (scoped by user_id)
+User_Portfolios (legacy; unused by handlers)
 ```
 
 ### 2. Advanced Database Operations

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/symbol_mapping.dart';
 import '../services/api_service.dart';
+import '../widgets/auth_app_bar_actions.dart';
 import 'edit_symbol_mapping_screen.dart';
 
 class SymbolMappingsScreen extends StatefulWidget {
@@ -93,6 +94,7 @@ class _SymbolMappingsScreenState extends State<SymbolMappingsScreen> {
       appBar: AppBar(
         title: const Text('Symbol Mappings'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: authAppBarActions(context),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openEditor(),

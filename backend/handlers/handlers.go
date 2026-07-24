@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"financetracker/middleware"
 	"financetracker/models"
 	"fmt"
 	"log"
@@ -16,11 +17,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// StockWithDetails embeds Stock with holdings computed from transactions.
+// StockWithDetails embeds Stock with one User_Stocks position (per source).
 type StockWithDetails struct {
 	models.Stock
-	Quantity        float64 `json:"quantity"`
-	AverageBuyPrice float64 `json:"average_buy_price"`
+	Source          string     `json:"source"`
+	Quantity        float64    `json:"quantity"`
+	AverageBuyPrice float64    `json:"average_buy_price"`
+	LastBuyPrice    float64    `json:"last_buy_price"`
+	LastBuyDate     *time.Time `json:"last_buy_date"`
+	LastSalePrice   float64    `json:"last_sale_price"`
+	LastSaleDate    *time.Time `json:"last_sale_date"`
 }
 
 func yahooChartURL(symbol, suffix, query string) string {
@@ -54,43 +60,69 @@ func isSameCalendarDay(t *time.Time, today time.Time) bool {
 	return d.Equal(today)
 }
 
-func (h *Handler) stocksWithHoldings(stocks []models.Stock) []StockWithDetails {
-	var stocksWithDetails []StockWithDetails
+func (h *Handler) stocksWithHoldings(stocks []models.Stock, userID uint) []StockWithDetails {
+	stocksWithDetails := make([]StockWithDetails, 0, len(stocks))
 	for _, stock := range stocks {
-		var transactions []models.Transaction
-		h.DB.Where("stock_id = ?", stock.ID).Find(&transactions)
+		var positions []models.UserStock
+		h.DB.Where("stock_id = ? AND user_id = ? AND quantity > 0", stock.ID, userID).
+			Order("source asc").
+			Find(&positions)
 
-		totalQuantity := 0.0
-		totalInvested := 0.0
-		for _, tx := range transactions {
-			if tx.Type == models.TransactionTypeBuy {
-				totalQuantity += tx.RemainingQuantity
-				totalInvested += tx.Price * tx.RemainingQuantity
+		for _, pos := range positions {
+			source := strings.TrimSpace(pos.Source)
+			if source == "" {
+				source = models.SourceManualAdd
 			}
+			stocksWithDetails = append(stocksWithDetails, StockWithDetails{
+				Stock:           stock,
+				Source:          source,
+				Quantity:        pos.Quantity,
+				AverageBuyPrice: pos.AvgBuyPrice,
+				LastBuyPrice:    pos.LastBuyPrice,
+				LastBuyDate:     pos.LastBuyDate,
+				LastSalePrice:   pos.LastSalePrice,
+				LastSaleDate:    pos.LastSaleDate,
+			})
 		}
-
-		avgBuyPrice := 0.0
-		if totalQuantity > 0 {
-			avgBuyPrice = totalInvested / totalQuantity
-		}
-
-		stocksWithDetails = append(stocksWithDetails, StockWithDetails{
-			Stock:           stock,
-			Quantity:        totalQuantity,
-			AverageBuyPrice: avgBuyPrice,
-		})
 	}
 	return stocksWithDetails
 }
 
+func (h *Handler) stocksForUser(userID uint) ([]models.Stock, error) {
+	var stockIDs []uint
+	if err := h.DB.Model(&models.UserStock{}).
+		Where("user_id = ? AND quantity > 0", userID).
+		Distinct("stock_id").
+		Pluck("stock_id", &stockIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(stockIDs) == 0 {
+		return []models.Stock{}, nil
+	}
+	var stocks []models.Stock
+	if err := h.DB.Where("id IN ?", stockIDs).Find(&stocks).Error; err != nil {
+		return nil, err
+	}
+	return stocks, nil
+}
+
 // Stock handlers
 func (h *Handler) GetStocks(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
+	role, _ := c.Get(middleware.ContextRoleKey)
+
 	var stocks []models.Stock
-	if err := h.DB.Find(&stocks).Error; err != nil {
+	var err error
+	if role == models.RoleAdmin {
+		err = h.DB.Find(&stocks).Error
+	} else {
+		stocks, err = h.stocksForUser(userID)
+	}
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, h.stocksWithHoldings(stocks))
+	c.JSON(http.StatusOK, h.stocksWithHoldings(stocks, userID))
 }
 
 func (h *Handler) CreateStock(c *gin.Context) {
@@ -159,6 +191,156 @@ func (h *Handler) UpdateStock(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, stock)
+}
+
+// UpdateStockHoldings adjusts Manual Add position via buy/sell ledger deltas.
+// Optional symbol change moves this user's Manual Add rows to findOrCreateStock(newSymbol).
+func (h *Handler) UpdateStockHoldings(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid stock id"})
+		return
+	}
+
+	var req struct {
+		Symbol   string  `json:"symbol" binding:"required"`
+		Quantity float64 `json:"quantity" binding:"required"`
+		Price    float64 `json:"price" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+	if req.Quantity <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be greater than 0"})
+		return
+	}
+	if req.Price <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price must be greater than 0"})
+		return
+	}
+
+	userID := middleware.CurrentUserID(c)
+	watchList := h.userUsesWatchList(userID)
+	if watchList {
+		req.Quantity = 1
+	}
+
+	var stock models.Stock
+	if err := h.DB.First(&stock, uint(id)).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+		return
+	}
+
+	var userPosCount int64
+	if err := h.DB.Model(&models.UserStock{}).
+		Where("user_id = ? AND stock_id = ?", userID, stock.ID).
+		Count(&userPosCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if userPosCount == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "no holdings for this stock"})
+		return
+	}
+
+	targetStock := stock
+	if !strings.EqualFold(strings.TrimSpace(stock.Symbol), symbol) {
+		created, err := h.findOrCreateStock(symbol, stock.Name, stock.ISIN)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		targetStock = created
+	}
+
+	tx := h.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": tx.Error.Error()})
+		return
+	}
+
+	if targetStock.ID != stock.ID {
+		if err := tx.Model(&models.UserStock{}).
+			Where("user_id = ? AND stock_id = ?", userID, stock.ID).
+			Update("stock_id", targetStock.ID).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if err := tx.Model(&models.UserStockTransaction{}).
+			Where("user_id = ? AND stock_id = ?", userID, stock.ID).
+			Update("stock_id", targetStock.ID).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	var pos models.UserStock
+	err = tx.Where("user_id = ? AND stock_id = ? AND source = ?", userID, targetStock.ID, models.SourceManualAdd).
+		First(&pos).Error
+	currentQty := 0.0
+	if err == nil {
+		currentQty = pos.Quantity
+	} else if err != gorm.ErrRecordNotFound {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	delta := req.Quantity - currentQty
+	txDate := time.Now()
+	if delta > 1e-9 {
+		if _, _, err := applyManualStockTransaction(tx, userID, targetStock.ID, models.TransactionTypeBuy, delta, req.Price, txDate, models.SourceManualAdd); err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	} else if delta < -1e-9 {
+		if _, _, err := applyManualStockTransaction(tx, userID, targetStock.ID, models.TransactionTypeSell, -delta, req.Price, txDate, models.SourceManualAdd); err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	if watchList {
+		var updated models.UserStock
+		if err := tx.Where("user_id = ? AND stock_id = ? AND source = ?", userID, targetStock.ID, models.SourceManualAdd).
+			First(&updated).Error; err == nil {
+			if err := normalizePositionLotsToOne(tx, updated); err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	details := h.stocksWithHoldings([]models.Stock{targetStock}, userID)
+	if len(details) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load updated holding"})
+		return
+	}
+	updated := details[0]
+	for _, d := range details {
+		if d.Source == models.SourceManualAdd {
+			updated = d
+			break
+		}
+	}
+	c.JSON(http.StatusOK, updated)
 }
 
 func (h *Handler) DeleteStock(c *gin.Context) {
@@ -367,34 +549,34 @@ func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 		return
 	}
 
-	source := req.Source
-	if source == "" {
-		source = models.SourceManualAdd
-	}
-
+	source := normalizeSource(req.Source)
 	stock, err := h.findOrCreateStock(req.Symbol, req.Name, "")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Create buy transaction
-	transaction := models.Transaction{
-		StockID:           stock.ID,
-		Type:              models.TransactionTypeBuy,
-		Quantity:          req.Quantity,
-		Price:             req.Price,
-		RemainingQuantity: req.Quantity,
-		TransactionDate:   req.TransactionDate,
-		Source:            source,
+	userID := middleware.CurrentUserID(c)
+	qty := req.Quantity
+	if h.userUsesWatchList(userID) {
+		qty = 1
 	}
-
-	if err := h.DB.Create(&transaction).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	ledger, pos, err := applyManualStockTransaction(
+		h.DB, userID, stock.ID, models.TransactionTypeBuy,
+		qty, req.Price, req.TransactionDate, source,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if h.userUsesWatchList(userID) && pos.Quantity > 1+1e-9 {
+		if err := normalizePositionLotsToOne(h.DB, pos); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
-	c.JSON(http.StatusCreated, transaction)
+	c.JSON(http.StatusCreated, ledger)
 }
 
 func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
@@ -421,20 +603,19 @@ func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
 		return
 	}
 
+	userID := middleware.CurrentUserID(c)
+	watchList := h.userUsesWatchList(userID)
+
 	tx := h.DB.Begin()
 	if tx.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": tx.Error.Error()})
 		return
 	}
 
-	if err := tx.Where("source = ? AND type = ?", source, models.TransactionTypeBuy).
-		Delete(&models.Transaction{}).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
+	touchedStockIDs := make(map[uint]struct{})
+	result := make([]models.UserStock, 0, len(req.Items))
+	deltas := make([]models.UserStockTransaction, 0)
 
-	created := make([]models.Transaction, 0, len(req.Items))
 	for _, item := range req.Items {
 		normISIN := normalizeISIN(item.ISIN)
 		if normISIN == "" && strings.TrimSpace(item.ISIN) != "" {
@@ -463,21 +644,60 @@ func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
 			h.persistYahooStockFields(&stock)
 		}
 
-		transaction := models.Transaction{
-			StockID:           stock.ID,
-			Type:              models.TransactionTypeBuy,
-			Quantity:          item.Quantity,
-			Price:             item.Price,
-			RemainingQuantity: item.Quantity,
-			TransactionDate:   item.TransactionDate,
-			Source:            source,
+		qty := item.Quantity
+		if watchList && qty > 0 {
+			qty = 1
 		}
-		if err := tx.Create(&transaction).Error; err != nil {
+		currentPrice := stock.CurrentPrice
+		if currentPrice <= 0 {
+			currentPrice = yahooPriceForUpload(stock.Symbol)
+		}
+		pos, delta, err := applyUploadPosition(tx, userID, stock.ID, stock.Symbol, source, qty, item.Price, item.TransactionDate, watchList, currentPrice)
+		if err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		created = append(created, transaction)
+		if pos.ID != 0 {
+			touchedStockIDs[stock.ID] = struct{}{}
+			result = append(result, pos)
+		}
+		if delta != nil {
+			deltas = append(deltas, *delta)
+		}
+	}
+
+	// Zero positions for this source that were not in the upload.
+	var stale []models.UserStock
+	if err := tx.Where("user_id = ? AND source = ? AND quantity > 0", userID, source).Find(&stale).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	zeroed := 0
+	now := time.Now()
+	for _, t := range stale {
+		if _, ok := touchedStockIDs[t.StockID]; ok {
+			continue
+		}
+		var catalog models.Stock
+		symbol := ""
+		if err := tx.First(&catalog, t.StockID).Error; err == nil {
+			symbol = catalog.Symbol
+		}
+		pos, delta, err := applyUploadPosition(tx, userID, t.StockID, symbol, source, 0, t.AvgBuyPrice, now, false, 0)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if pos.ID != 0 {
+			result = append(result, pos)
+		}
+		if delta != nil {
+			deltas = append(deltas, *delta)
+		}
+		zeroed++
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -487,8 +707,10 @@ func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
 	_ = ReloadSymbolCache(h.DB)
 
 	c.JSON(http.StatusCreated, gin.H{
-		"count":        len(created),
-		"transactions": created,
+		"count":        len(result),
+		"zeroed":       zeroed,
+		"positions":    result,
+		"transactions": deltas,
 	})
 }
 
@@ -498,6 +720,7 @@ func (h *Handler) CreateSellTransaction(c *gin.Context) {
 		Quantity        float64   `json:"quantity" binding:"required"`
 		Price           float64   `json:"price" binding:"required"`
 		TransactionDate time.Time `json:"transaction_date" binding:"required"`
+		Source          string    `json:"source"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -505,7 +728,9 @@ func (h *Handler) CreateSellTransaction(c *gin.Context) {
 		return
 	}
 
-	// Find stock
+	userID := middleware.CurrentUserID(c)
+	source := normalizeSource(req.Source)
+
 	var stock models.Stock
 	if err := h.DB.Where("symbol = ?", req.Symbol).First(&stock).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -516,72 +741,24 @@ func (h *Handler) CreateSellTransaction(c *gin.Context) {
 		return
 	}
 
-	// Get all buy transactions for this stock ordered by date (FIFO)
-	var buyTransactions []models.Transaction
-	if err := h.DB.Where("stock_id = ? AND type = ? AND remaining_quantity > 0", stock.ID, models.TransactionTypeBuy).
-		Order("transaction_date ASC").
-		Find(&buyTransactions).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	ledger, _, err := applyManualStockTransaction(
+		h.DB, userID, stock.ID, models.TransactionTypeSell,
+		req.Quantity, req.Price, req.TransactionDate, source,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Calculate total available quantity
-	totalAvailable := 0.0
-	for _, t := range buyTransactions {
-		totalAvailable += t.RemainingQuantity
-	}
-
-	if totalAvailable < req.Quantity {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Insufficient quantity. Available: %.2f, Requested: %.2f", totalAvailable, req.Quantity)})
-		return
-	}
-
-	// Create sell transaction
-	sellTransaction := models.Transaction{
-		StockID:           stock.ID,
-		Type:              models.TransactionTypeSell,
-		Quantity:          req.Quantity,
-		Price:             req.Price,
-		RemainingQuantity: 0, // Sell transactions don't have remaining quantity
-		TransactionDate:   req.TransactionDate,
-	}
-
-	if err := h.DB.Create(&sellTransaction).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Reduce remaining quantity from buy transactions (FIFO)
-	remainingToSell := req.Quantity
-	for i := range buyTransactions {
-		if remainingToSell <= 0 {
-			break
-		}
-
-		if buyTransactions[i].RemainingQuantity >= remainingToSell {
-			// This transaction can cover the entire remaining sell
-			buyTransactions[i].RemainingQuantity -= remainingToSell
-			remainingToSell = 0
-		} else {
-			// Use up this entire transaction and move to next
-			remainingToSell -= buyTransactions[i].RemainingQuantity
-			buyTransactions[i].RemainingQuantity = 0
-		}
-
-		if err := h.DB.Save(&buyTransactions[i]).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
-
-	c.JSON(http.StatusCreated, sellTransaction)
+	c.JSON(http.StatusCreated, ledger)
 }
 
 func (h *Handler) GetTransactions(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
 	symbol := c.Query("symbol")
-	var transactions []models.Transaction
+	var transactions []models.UserStockTransaction
 
-	query := h.DB.Preload("Stock")
+	query := h.DB.Preload("Stock").Where("user_id = ?", userID)
 	if symbol != "" {
 		var stock models.Stock
 		if err := h.DB.Where("symbol = ?", symbol).First(&stock).Error; err != nil {
@@ -595,11 +772,15 @@ func (h *Handler) GetTransactions(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if transactions == nil {
+		transactions = []models.UserStockTransaction{}
+	}
 
 	c.JSON(http.StatusOK, transactions)
 }
 
 func (h *Handler) GetStockTransactions(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
 	symbol := c.Param("symbol")
 
 	var stock models.Stock
@@ -608,12 +789,15 @@ func (h *Handler) GetStockTransactions(c *gin.Context) {
 		return
 	}
 
-	var transactions []models.Transaction
-	if err := h.DB.Where("stock_id = ?", stock.ID).
+	var transactions []models.UserStockTransaction
+	if err := h.DB.Where("user_id = ? AND stock_id = ?", userID, stock.ID).
 		Order("transaction_date DESC").
 		Find(&transactions).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if transactions == nil {
+		transactions = []models.UserStockTransaction{}
 	}
 
 	c.JSON(http.StatusOK, transactions)
@@ -1111,6 +1295,111 @@ func fetchMovingAverages(symbol string) (currentPrice, ma7, ma20, delta float64,
 	return 0, 0, 0, 0, fmt.Errorf("data not found for %s", symbol)
 }
 
+func classifyTrend(currentPrice, ma7, ma20, adjustedDelta float64) string {
+	trend := "neutral"
+	if ma7 > 0 && ma20 > 0 {
+		if currentPrice > ma7 && ma7 > ma20 {
+			if adjustedDelta > 0 {
+				trend = "bullish"
+			} else {
+				trend = "moderately bullish"
+			}
+		} else if currentPrice < ma7 && ma7 < ma20 {
+			if adjustedDelta < -10 {
+				trend = "bearish"
+			} else {
+				trend = "moderately bearish"
+			}
+		} else if ma7 > ma20 {
+			if adjustedDelta > 0 {
+				trend = "moderately bullish"
+			} else {
+				trend = "neutral"
+			}
+		} else {
+			if adjustedDelta < -10 {
+				trend = "moderately bearish"
+			} else {
+				trend = "neutral"
+			}
+		}
+	}
+	return trend
+}
+
+func needsTrendData(stock *models.Stock, today time.Time) bool {
+	if stock == nil {
+		return true
+	}
+	if !isSameCalendarDay(stock.LastTrendFetchedDate, today) {
+		return true
+	}
+	if stock.MA7 == 0 || stock.MA20 == 0 {
+		return true
+	}
+	trend := strings.TrimSpace(stock.Trend)
+	return trend == "" || trend == "unknown"
+}
+
+func applyTrendToStock(stock *models.Stock, currentPrice, ma7, ma20, sensexMA7, sensexMA20, stockDelta, marketDelta float64, now time.Time) {
+	adjustedDelta := stockDelta - marketDelta
+	stock.MA7 = ma7
+	stock.MA20 = ma20
+	stock.SensexMA7 = sensexMA7
+	stock.SensexMA20 = sensexMA20
+	stock.StockDelta = stockDelta
+	stock.MarketDelta = marketDelta
+	stock.AdjustedDelta = adjustedDelta
+	stock.Trend = classifyTrend(currentPrice, ma7, ma20, adjustedDelta)
+	stock.LastTrendFetchedDate = &now
+	if currentPrice > 0 {
+		stock.CurrentPrice = currentPrice
+	}
+}
+
+func (h *Handler) persistTrendFields(stock *models.Stock) {
+	updates := map[string]interface{}{
+		"ma7":                     stock.MA7,
+		"ma20":                    stock.MA20,
+		"sensex_ma7":              stock.SensexMA7,
+		"sensex_ma20":             stock.SensexMA20,
+		"stock_delta":             stock.StockDelta,
+		"market_delta":            stock.MarketDelta,
+		"adjusted_delta":          stock.AdjustedDelta,
+		"trend":                   stock.Trend,
+		"last_trend_fetched_date": stock.LastTrendFetchedDate,
+	}
+	if stock.CurrentPrice > 0 {
+		updates["current_price"] = stock.CurrentPrice
+	}
+	_ = h.DB.Model(stock).Updates(updates).Error
+}
+
+func stockTrendFromStock(stock models.Stock) StockTrend {
+	price := stock.CurrentPrice
+	return StockTrend{
+		StockID:       stock.ID,
+		Symbol:        stock.Symbol,
+		CurrentPrice:  price,
+		MA7:           stock.MA7,
+		MA20:          stock.MA20,
+		StockDelta:    stock.StockDelta,
+		MarketDelta:   stock.MarketDelta,
+		AdjustedDelta: stock.AdjustedDelta,
+		Trend:         stock.Trend,
+	}
+}
+
+func (h *Handler) fetchAndPersistStockTrend(stock *models.Stock, sensexMA7, sensexMA20, marketDelta float64, now time.Time) error {
+	currentPrice, ma7, ma20, stockDelta, err := fetchMovingAverages(stock.Symbol)
+	if err != nil {
+		return err
+	}
+	applyTrendToStock(stock, currentPrice, ma7, ma20, sensexMA7, sensexMA20, stockDelta, marketDelta, now)
+	h.persistTrendFields(stock)
+	return nil
+}
+
 type HistoricalDataPoint struct {
 	Date  string  `json:"date"`
 	Price float64 `json:"price"`
@@ -1125,7 +1414,7 @@ func (h *Handler) GetStockHistory(c *gin.Context) {
 
 	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 10 * time.Second}
-	var history []HistoricalDataPoint
+	history := make([]HistoricalDataPoint, 0)
 
 	for _, suffix := range suffixes {
 		reqURL := yahooChartURL(symbol, suffix, "interval=1d&range=3mo")
@@ -1199,20 +1488,38 @@ func (h *Handler) GetStockHistory(c *gin.Context) {
 }
 
 func (h *Handler) GetStockTrends(c *gin.Context) {
-	var stocks []models.Stock
-	if err := h.DB.Find(&stocks).Error; err != nil {
+	userID := middleware.CurrentUserID(c)
+	stocks, err := h.stocksForUser(userID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	var trends []StockTrend
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	trends := make([]StockTrend, 0, len(stocks))
 
-	// Fetch Sensex market delta first
-	_, _, _, marketDelta, _ := fetchMovingAverages("^BSESN")
+	needsFetch := false
+	for i := range stocks {
+		if needsTrendData(&stocks[i], today) {
+			needsFetch = true
+			break
+		}
+	}
 
-	for _, stock := range stocks {
-		currentPrice, ma7, ma20, stockDelta, err := fetchMovingAverages(stock.Symbol)
-		if err != nil {
+	var sensexMA7, sensexMA20, marketDelta float64
+	if needsFetch {
+		_, sensexMA7, sensexMA20, marketDelta, _ = fetchMovingAverages("^BSESN")
+	}
+
+	for i := range stocks {
+		stock := &stocks[i]
+		if !needsTrendData(stock, today) {
+			trends = append(trends, stockTrendFromStock(*stock))
+			continue
+		}
+
+		if err := h.fetchAndPersistStockTrend(stock, sensexMA7, sensexMA20, marketDelta, now); err != nil {
 			trends = append(trends, StockTrend{
 				StockID:      stock.ID,
 				Symbol:       stock.Symbol,
@@ -1221,49 +1528,7 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 			})
 			continue
 		}
-
-		adjustedDelta := stockDelta - marketDelta
-
-		trend := "neutral"
-		if ma7 > 0 && ma20 > 0 {
-			if currentPrice > ma7 && ma7 > ma20 {
-				if adjustedDelta > 0 {
-					trend = "bullish"
-				} else {
-					trend = "moderately bullish"
-				}
-			} else if currentPrice < ma7 && ma7 < ma20 {
-				if adjustedDelta < -10 {
-					trend = "bearish"
-				} else {
-					trend = "moderately bearish"
-				}
-			} else if ma7 > ma20 {
-				if adjustedDelta > 0 {
-					trend = "moderately bullish"
-				} else {
-					trend = "neutral"
-				}
-			} else {
-				if adjustedDelta < -10 {
-					trend = "moderately bearish"
-				} else {
-					trend = "neutral"
-				}
-			}
-		}
-
-		trends = append(trends, StockTrend{
-			StockID:       stock.ID,
-			Symbol:        stock.Symbol,
-			CurrentPrice:  currentPrice,
-			MA7:           ma7,
-			MA20:          ma20,
-			StockDelta:    stockDelta,
-			MarketDelta:   marketDelta,
-			AdjustedDelta: adjustedDelta,
-			Trend:         trend,
-		})
+		trends = append(trends, stockTrendFromStock(*stock))
 	}
 
 	c.JSON(http.StatusOK, trends)
@@ -1279,6 +1544,19 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	log.Printf("RefreshStockPrices: starting for %d stocks", len(stocks))
+
+	needsAnyTrend := false
+	for i := range stocks {
+		if needsTrendData(&stocks[i], today) {
+			needsAnyTrend = true
+			break
+		}
+	}
+	var sensexMA7, sensexMA20, marketDelta float64
+	if needsAnyTrend {
+		_, sensexMA7, sensexMA20, marketDelta, _ = fetchMovingAverages("^BSESN")
+		log.Printf("RefreshStockPrices: Sensex MA7=%.2f MA20=%.2f marketDelta=%.2f", sensexMA7, sensexMA20, marketDelta)
+	}
 
 	for i := range stocks {
 		s := &stocks[i]
@@ -1314,15 +1592,6 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 			log.Printf("RefreshStockPrices [%s]: after ISIN auto-map yahoo=%s price=%.2f", s.Symbol, yahoo, s.CurrentPrice)
 		} else if s.CurrentPrice == 0 && strings.TrimSpace(s.ISIN) == "" {
 			log.Printf("RefreshStockPrices [%s]: price=0 and no ISIN — cannot auto-map", s.Symbol)
-		}
-
-		// Fill blank market cap even when historical data was already fetched today
-		if s.MarketCap == "" {
-			if marketCap, err := fetchYahooFinanceMarketCap(s.Symbol); err == nil {
-				label := classifyMarketCap(marketCap)
-				s.MarketCap = label
-				h.DB.Model(s).Update("market_cap", label)
-			}
 		}
 
 		needsHistorical := s.LastFetchedDate == nil ||
@@ -1375,6 +1644,17 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 			log.Printf("RefreshStockPrices [%s]: historical skipped (fresh)", s.Symbol)
 		}
 
+		if needsTrendData(s, today) {
+			if err := h.fetchAndPersistStockTrend(s, sensexMA7, sensexMA20, marketDelta, now); err != nil {
+				log.Printf("RefreshStockPrices [%s]: trend FAIL: %v", s.Symbol, err)
+			} else {
+				log.Printf("RefreshStockPrices [%s]: trend OK %s ma7=%.2f ma20=%.2f adj=%.2f",
+					s.Symbol, s.Trend, s.MA7, s.MA20, s.AdjustedDelta)
+			}
+		} else {
+			log.Printf("RefreshStockPrices [%s]: trend skipped (already fetched today)", s.Symbol)
+		}
+
 		status := "OK"
 		if needsYahooAnyData(s) {
 			status = "INCOMPLETE"
@@ -1384,15 +1664,25 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 			s.Sector, s.MarketCap, priceErr)
 	}
 	log.Printf("RefreshStockPrices: finished %d stocks", len(stocks))
-	c.JSON(http.StatusOK, h.stocksWithHoldings(stocks))
+	userID := middleware.CurrentUserID(c)
+	userStocks, err := h.stocksForUser(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, h.stocksWithHoldings(userStocks, userID))
 }
 
 // Mutual Fund handlers
 func (h *Handler) GetMutualFunds(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
 	var mfs []models.MutualFund
-	if err := h.DB.Find(&mfs).Error; err != nil {
+	if err := h.DB.Where("user_id = ?", userID).Find(&mfs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if mfs == nil {
+		mfs = []models.MutualFund{}
 	}
 	c.JSON(http.StatusOK, mfs)
 }
@@ -1403,6 +1693,7 @@ func (h *Handler) CreateMutualFund(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	mf.UserID = middleware.CurrentUserID(c)
 	if err := h.DB.Create(&mf).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1411,9 +1702,10 @@ func (h *Handler) CreateMutualFund(c *gin.Context) {
 }
 
 func (h *Handler) GetMutualFund(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	var mf models.MutualFund
-	if err := h.DB.First(&mf, uint(id)).Error; err != nil {
+	if err := h.DB.Where("id = ? AND user_id = ?", uint(id), userID).First(&mf).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Mutual Fund not found"})
 		return
 	}
@@ -1421,9 +1713,10 @@ func (h *Handler) GetMutualFund(c *gin.Context) {
 }
 
 func (h *Handler) UpdateMutualFund(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	var mf models.MutualFund
-	if err := h.DB.First(&mf, uint(id)).Error; err != nil {
+	if err := h.DB.Where("id = ? AND user_id = ?", uint(id), userID).First(&mf).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Mutual Fund not found"})
 		return
 	}
@@ -1431,6 +1724,8 @@ func (h *Handler) UpdateMutualFund(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	mf.ID = uint(id)
+	mf.UserID = userID
 	if err := h.DB.Save(&mf).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -1439,9 +1734,15 @@ func (h *Handler) UpdateMutualFund(c *gin.Context) {
 }
 
 func (h *Handler) DeleteMutualFund(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err := h.DB.Delete(&models.MutualFund{}, uint(id)).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	res := h.DB.Where("id = ? AND user_id = ?", uint(id), userID).Delete(&models.MutualFund{})
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": res.Error.Error()})
+		return
+	}
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Mutual Fund not found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Mutual Fund deleted"})
@@ -1449,27 +1750,34 @@ func (h *Handler) DeleteMutualFund(c *gin.Context) {
 
 // Portfolio handlers
 func (h *Handler) GetPortfolio(c *gin.Context) {
-	var stocks []models.Stock
+	userID := middleware.CurrentUserID(c)
+	stocks, err := h.stocksForUser(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	var mfs []models.MutualFund
-
-	h.DB.Find(&stocks)
-	h.DB.Find(&mfs)
+	h.DB.Where("user_id = ?", userID).Find(&mfs)
 
 	c.JSON(http.StatusOK, gin.H{
-		"stocks":       stocks,
+		"stocks":       h.stocksWithHoldings(stocks, userID),
 		"mutual_funds": mfs,
 	})
 }
 
 func (h *Handler) GetPortfolioSummary(c *gin.Context) {
-	var stocks []models.Stock
+	userID := middleware.CurrentUserID(c)
+	stocks, err := h.stocksForUser(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	var mfs []models.MutualFund
-
-	h.DB.Find(&stocks)
-	h.DB.Find(&mfs)
+	h.DB.Where("user_id = ?", userID).Find(&mfs)
 
 	totalInvested := 0.0
 	currentValue := 0.0
+	stockCount := 0
 
 	type sourceTotals struct {
 		invested float64
@@ -1478,29 +1786,27 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 	bySourceMap := map[string]sourceTotals{}
 
 	for _, stock := range stocks {
-		// Calculate from transactions
-		var transactions []models.Transaction
-		h.DB.Where("stock_id = ?", stock.ID).Find(&transactions)
+		var positions []models.UserStock
+		h.DB.Where("stock_id = ? AND user_id = ? AND quantity > 0", stock.ID, userID).Find(&positions)
+		if len(positions) > 0 {
+			stockCount++
+		}
 
 		stockQuantity := 0.0
 		stockInvested := 0.0
 
-		for _, tx := range transactions {
-			if tx.Type == models.TransactionTypeBuy {
-				stockQuantity += tx.RemainingQuantity
-				stockInvested += tx.Price * tx.RemainingQuantity
+		for _, pos := range positions {
+			stockQuantity += pos.Quantity
+			stockInvested += pos.AvgBuyPrice * pos.Quantity
 
-				if tx.RemainingQuantity > 0 {
-					src := tx.Source
-					if src == "" {
-						src = models.SourceManualAdd
-					}
-					t := bySourceMap[src]
-					t.invested += tx.Price * tx.RemainingQuantity
-					t.current += stock.CurrentPrice * tx.RemainingQuantity
-					bySourceMap[src] = t
-				}
+			src := pos.Source
+			if src == "" {
+				src = models.SourceManualAdd
 			}
+			t := bySourceMap[src]
+			t.invested += pos.AvgBuyPrice * pos.Quantity
+			t.current += stock.CurrentPrice * pos.Quantity
+			bySourceMap[src] = t
 		}
 
 		totalInvested += stockInvested
@@ -1547,6 +1853,7 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		"current_value":          currentValue,
 		"profit_loss":            profitLoss,
 		"profit_loss_percentage": profitLossPct,
+		"stock_count":            stockCount,
 		"by_source":              bySource,
 	})
 }

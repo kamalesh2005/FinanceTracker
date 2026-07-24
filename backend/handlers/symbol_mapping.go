@@ -136,6 +136,9 @@ func (h *Handler) GetSymbolMappings(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if mappings == nil {
+		mappings = []models.SymbolMapping{}
+	}
 	c.JSON(http.StatusOK, mappings)
 }
 
@@ -233,6 +236,7 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 	}
 
 	var result []UnmappedStockView
+	result = make([]UnmappedStockView, 0)
 	for _, stock := range stocks {
 		key := strings.ToUpper(stock.Symbol)
 		mapping, hasMapping := bySource[key]
