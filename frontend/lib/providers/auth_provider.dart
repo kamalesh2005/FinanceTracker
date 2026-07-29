@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../services/recommendation_engine.dart';
 
 class AuthProvider extends ChangeNotifier {
   static const _tokenKey = 'auth_token';
@@ -15,6 +16,11 @@ class AuthProvider extends ChangeNotifier {
   double _effectiveRecommendationFluctuationPct = 5.0;
   double _defaultRecommendationFluctuationPct = 5.0;
   double? _recommendationFluctuationPct;
+  RecommendationRuleset _effectiveRecommendationRules =
+      RecommendationRuleset.defaults();
+  RecommendationRuleset _defaultRecommendationRules =
+      RecommendationRuleset.defaults();
+  bool _recommendationRulesIsUserOverride = false;
 
   AppUser? get user => _user;
   bool get isLoading => _loading;
@@ -28,6 +34,12 @@ class AuthProvider extends ChangeNotifier {
   double get defaultRecommendationFluctuationPct =>
       _defaultRecommendationFluctuationPct;
   double? get recommendationFluctuationPct => _recommendationFluctuationPct;
+  RecommendationRuleset get effectiveRecommendationRules =>
+      _effectiveRecommendationRules;
+  RecommendationRuleset get defaultRecommendationRules =>
+      _defaultRecommendationRules;
+  bool get recommendationRulesIsUserOverride =>
+      _recommendationRulesIsUserOverride;
 
   Future<void> bootstrap() async {
     _loading = true;
@@ -106,11 +118,15 @@ class AuthProvider extends ChangeNotifier {
     bool? useAsStockWatchList,
     double? recommendationFluctuationPct,
     bool clearRecommendationFluctuation = false,
+    RecommendationRuleset? recommendationRules,
+    bool clearRecommendationRules = false,
   }) async {
     final data = await ApiService.savePreferences(
       useAsStockWatchList: useAsStockWatchList,
       recommendationFluctuationPct: recommendationFluctuationPct,
       clearRecommendationFluctuation: clearRecommendationFluctuation,
+      recommendationRules: recommendationRules?.toJson(),
+      clearRecommendationRules: clearRecommendationRules,
     );
     _applyPreferences(data);
     notifyListeners();
@@ -131,6 +147,25 @@ class AuthProvider extends ChangeNotifier {
     } else {
       _recommendationFluctuationPct = (raw as num).toDouble();
     }
+    final effectiveRules = data['effective_recommendation_rules'];
+    if (effectiveRules is Map<String, dynamic>) {
+      _effectiveRecommendationRules =
+          RecommendationRuleset.fromJson(effectiveRules);
+    } else {
+      _effectiveRecommendationRules = RecommendationRuleset.defaults(
+        fluctuationPct: _effectiveRecommendationFluctuationPct,
+      );
+    }
+    final defaultRules = data['default_recommendation_rules'];
+    if (defaultRules is Map<String, dynamic>) {
+      _defaultRecommendationRules = RecommendationRuleset.fromJson(defaultRules);
+    } else {
+      _defaultRecommendationRules = RecommendationRuleset.defaults(
+        fluctuationPct: _defaultRecommendationFluctuationPct,
+      );
+    }
+    _recommendationRulesIsUserOverride =
+        data['recommendation_rules_is_user_override'] == true;
   }
 
   void _resetPreferences() {
@@ -138,6 +173,9 @@ class AuthProvider extends ChangeNotifier {
     _effectiveRecommendationFluctuationPct = 5.0;
     _defaultRecommendationFluctuationPct = 5.0;
     _recommendationFluctuationPct = null;
+    _effectiveRecommendationRules = RecommendationRuleset.defaults();
+    _defaultRecommendationRules = RecommendationRuleset.defaults();
+    _recommendationRulesIsUserOverride = false;
   }
 
   Future<void> _persistSession(String token, AppUser user) async {

@@ -292,6 +292,80 @@ class _AddStockScreenState extends State<AddStockScreen> {
     }
   }
 
+  Future<void> _pickAndImportZerodhaFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls'],
+        allowMultiple: false,
+        withData: true,
+      );
+
+      if (result != null && result.files.isNotEmpty) {
+        setState(() {
+          _isImporting = true;
+        });
+
+        final bytes = await _readPickedFileBytes(result.files.single);
+        if (bytes == null) {
+          throw Exception('Could not read file contents');
+        }
+
+        final stocks = _parseZerodhaExcel(bytes);
+
+        setState(() {
+          _importedStocks = stocks;
+          _importSource = 'Zerodha';
+          _isImporting = false;
+        });
+
+        if (stocks.isNotEmpty) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Successfully imported ${stocks.length} stocks from Zerodha'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+        } else if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'No stocks found. Ensure this is a Zerodha holdings Excel export.',
+              ),
+              backgroundColor: Colors.orange,
+              duration: const Duration(days: 1),
+              action: SnackBarAction(
+                label: 'Close',
+                textColor: Colors.white,
+                onPressed: () {},
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      setState(() {
+        _isImporting = false;
+      });
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error importing Zerodha file: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(days: 1),
+            action: SnackBarAction(
+              label: 'Close',
+              textColor: Colors.white,
+              onPressed: () {},
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   List<Stock> _parseCSV(Uint8List bytes) {
     final input = utf8.decode(bytes);
     final fields = const CsvToListConverter().convert(input);
@@ -752,6 +826,134 @@ class _AddStockScreenState extends State<AddStockScreen> {
     return stocks;
   }
 
+  List<Stock> _parseZerodhaExcel(Uint8List bytes) {
+    final rows = _rowsFromExcelBytes(bytes);
+    return _stocksFromZerodhaRows(rows);
+  }
+
+  List<Stock> _stocksFromZerodhaRows(List<List<String>> rows) {
+    if (rows.isEmpty) return [];
+
+    final now = DateTime.now();
+    final stocks = <Stock>[];
+
+    int? headerRowIndex;
+    int symbolCol = -1;
+    int isinCol = -1;
+    int sectorCol = -1;
+    int qtyCol = -1;
+    int buyPriceCol = -1;
+    int currentPriceCol = -1;
+
+    for (var i = 0; i < rows.length; i++) {
+      final headers = <String, int>{};
+      for (var j = 0; j < rows[i].length; j++) {
+        final header = _normalizeImportHeader(rows[i][j]);
+        if (header.isNotEmpty) {
+          headers[header] = j;
+        }
+      }
+
+      final hasSymbol =
+          headers.keys.any((h) => h == 'symbol' || h.contains('symbol'));
+      final hasQtyAvailable = headers.keys.any((h) => h == 'quantity available');
+      final hasAvgPrice = headers.keys.any(
+        (h) => h == 'average price' || h.contains('average price'),
+      );
+
+      if (hasSymbol && hasQtyAvailable && hasAvgPrice) {
+        headerRowIndex = i;
+        symbolCol = headers['symbol'] ??
+            headers.entries
+                .firstWhere((e) => e.key.contains('symbol'))
+                .value;
+        qtyCol = headers['quantity available']!;
+        buyPriceCol = headers['average price'] ??
+            headers.entries
+                .firstWhere(
+                  (e) =>
+                      e.key == 'average price' ||
+                      e.key.contains('average price'),
+                )
+                .value;
+        isinCol = -1;
+        for (final entry in headers.entries) {
+          if (entry.key == 'isin' || entry.key.contains('isin')) {
+            isinCol = entry.value;
+            break;
+          }
+        }
+        sectorCol = -1;
+        for (final entry in headers.entries) {
+          if (entry.key == 'sector' || entry.key.contains('sector')) {
+            sectorCol = entry.value;
+            break;
+          }
+        }
+        currentPriceCol = -1;
+        for (final entry in headers.entries) {
+          if (entry.key.contains('previous closing price')) {
+            currentPriceCol = entry.value;
+            break;
+          }
+        }
+        break;
+      }
+    }
+
+    if (headerRowIndex == null || symbolCol < 0 || qtyCol < 0 || buyPriceCol < 0) {
+      return [];
+    }
+
+    for (var i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+      if (row.isEmpty) continue;
+
+      try {
+        final symbol = symbolCol < row.length ? row[symbolCol].trim() : '';
+        if (symbol.isEmpty ||
+            symbol.toLowerCase().contains('total') ||
+            symbol.toLowerCase() == 'symbol') {
+          continue;
+        }
+
+        final quantity = qtyCol < row.length ? _parseNumber(row[qtyCol]) : 0.0;
+        final buyPrice =
+            buyPriceCol < row.length ? _parseNumber(row[buyPriceCol]) : 0.0;
+        final currentPrice =
+            currentPriceCol >= 0 && currentPriceCol < row.length
+                ? _parseNumber(row[currentPriceCol])
+                : 0.0;
+        final isinRaw =
+            isinCol >= 0 && isinCol < row.length ? row[isinCol].trim() : '';
+        final isin = isinRaw.isEmpty ? null : isinRaw.toUpperCase();
+        final sector =
+            sectorCol >= 0 && sectorCol < row.length ? row[sectorCol].trim() : '';
+
+        if (quantity == 0) continue;
+
+        stocks.add(
+          Stock(
+            id: 0,
+            symbol: symbol.toUpperCase(),
+            name: '',
+            sector: sector,
+            quantity: quantity,
+            buyPrice: buyPrice,
+            currentPrice: currentPrice,
+            createdAt: now,
+            updatedAt: now,
+            isin: isin,
+          ),
+        );
+      } catch (_) {
+        continue;
+      }
+    }
+
+    return stocks;
+  }
+
   Future<void> _saveImportedStocks() async {
     if (_importedStocks.isEmpty || _importSource == null) return;
 
@@ -843,44 +1045,6 @@ class _AddStockScreenState extends State<AddStockScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.upload_file, color: Colors.blue),
-                            const SizedBox(width: 8),
-                            const Text(
-                              'Import from CSV/Excel',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blue,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Upload a CSV or Excel file with columns: symbol, name, quantity, buyPrice, currentPrice',
-                          style: TextStyle(fontSize: 12, color: Colors.grey),
-                        ),
-                        const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: _isImporting ? null : _pickAndImportFile,
-                          icon: _isImporting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.file_upload),
-                          label: Text(_isImporting ? 'Importing...' : 'Select File'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        const Divider(),
-                        const SizedBox(height: 12),
                         const Row(
                           children: [
                             Icon(Icons.account_balance, color: Colors.orange),
@@ -954,6 +1118,82 @@ class _AddStockScreenState extends State<AddStockScreen> {
                             foregroundColor: Colors.white,
                           ),
                         ),
+                        const SizedBox(height: 16),
+                        const Divider(),
+                        const SizedBox(height: 12),
+                        const Row(
+                          children: [
+                            Icon(Icons.account_balance, color: Colors.indigo),
+                            SizedBox(width: 8),
+                            Text(
+                              'Import Zerodha Holdings Excel',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.indigo,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Upload Zerodha holdings Excel (Symbol, ISIN, Sector, Quantity Available, Average Price). Source: Zerodha. Transaction date is set to today.',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        const SizedBox(height: 12),
+                        ElevatedButton.icon(
+                          onPressed: _isImporting ? null : _pickAndImportZerodhaFile,
+                          icon: _isImporting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.upload_file),
+                          label: Text(_isImporting ? 'Importing...' : 'Select Zerodha File'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.indigo,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Divider(),
+                        const SizedBox(height: 12),
+                        const Row(
+                          children: [
+                            Icon(Icons.upload_file, color: Colors.blue),
+                            SizedBox(width: 8),
+                            Text(
+                              'Bulk Upload',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blue,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Upload a CSV or Excel file with columns: symbol, name, quantity, buyPrice, currentPrice',
+                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        const SizedBox(height: 12),
+                        ElevatedButton.icon(
+                          onPressed: _isImporting ? null : _pickAndImportFile,
+                          icon: _isImporting
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.file_upload),
+                          label: Text(_isImporting ? 'Importing...' : 'Select File'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
                         if (_importedStocks.isNotEmpty) ...[
                           const SizedBox(height: 16),
                           const Divider(),
@@ -1018,206 +1258,249 @@ class _AddStockScreenState extends State<AddStockScreen> {
                               ),
                             ],
                           ),
-                          const SizedBox(height: 16),
-                          const Divider(),
-                          const SizedBox(height: 16),
                         ],
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(height: 16),
-              ],
-              TextFormField(
-                controller: _symbolController,
-                decoration: const InputDecoration(
-                  labelText: 'Symbol *',
-                  hintText: 'e.g., RELIANCE, TCS',
-                  border: OutlineInputBorder(),
-                ),
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter a symbol';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Company Name',
-                  hintText: 'e.g., Reliance Industries',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Builder(
-                builder: (context) {
-                  final watchList =
-                      context.watch<AuthProvider>().useAsStockWatchList;
-                  if (watchList && _quantityController.text != '1') {
-                    _quantityController.text = '1';
-                  }
-                  return TextFormField(
-                    controller: _quantityController,
-                    enabled: !watchList,
-                    decoration: InputDecoration(
-                      labelText: 'Quantity *',
-                      hintText: watchList ? 'Fixed to 1 (watch list)' : 'e.g., 10',
-                      border: const OutlineInputBorder(),
-                      helperText: watchList
-                          ? 'Watch list mode always saves quantity as 1'
-                          : null,
-                    ),
-                    keyboardType: TextInputType.number,
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please enter quantity';
-                      }
-                      if (double.tryParse(value) == null) {
-                        return 'Please enter a valid number';
-                      }
-                      return null;
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _buyPriceController,
-                decoration: const InputDecoration(
-                  labelText: 'Buy Price (₹) *',
-                  hintText: 'e.g., 2500.50',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Please enter buy price';
-                  }
-                  if (double.tryParse(value) == null) {
-                    return 'Please enter a valid number';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _currentPriceController,
-                decoration: const InputDecoration(
-                  labelText: 'Current Price (₹)',
-                  hintText: 'e.g., 2600.75',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 16),
-              ListTile(
-                title: const Text('Transaction Date'),
-                subtitle: Text('${_transactionDate.toLocal()}'.split(' ')[0]),
-                trailing: const Icon(Icons.calendar_today),
-                onTap: () async {
-                  final DateTime? picked = await showDatePicker(
-                    context: context,
-                    initialDate: _transactionDate,
-                    firstDate: DateTime(2000),
-                    lastDate: DateTime.now(),
-                  );
-                  if (picked != null && picked != _transactionDate) {
-                    setState(() {
-                      _transactionDate = picked;
-                    });
-                  }
-                },
-              ),
-              if (widget.stock != null) ...[
-                const SizedBox(height: 16),
                 Card(
-                  color: Colors.blue.shade50,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Stock Information',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 8),
-                        if (widget.stock!.sector.isNotEmpty)
-                          _buildInfoRow('Sector', widget.stock!.sector),
-                        if (widget.stock!.sixthHighestPrice > 0)
-                          _buildInfoRow('6th Highest Price', formatInr(widget.stock!.sixthHighestPrice)),
-                        if (widget.stock!.sixthLowestPrice > 0)
-                          _buildInfoRow('6th Lowest Price', formatInr(widget.stock!.sixthLowestPrice)),
-                      ],
+                  color: Colors.indigo.shade50,
+                  child: ExpansionTile(
+                    initiallyExpanded: false,
+                    leading: Icon(Icons.edit_note, color: Colors.indigo.shade700),
+                    title: Text(
+                      'Manual Add - Single Stock',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.indigo.shade700,
+                      ),
                     ),
+                    subtitle: const Text(
+                      'Enter symbol, quantity, and prices for one stock',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: _buildManualStockFormFields(),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
+              ] else ...[
+                ..._buildManualStockFormFields(),
               ],
-              const SizedBox(height: 24),
-              Consumer<FinanceProvider>(
-                builder: (context, provider, child) {
-                  return ElevatedButton(
-                    onPressed: provider.isLoading
-                        ? null
-                        : () async {
-                            if (_formKey.currentState!.validate()) {
-                              final watchList = context
-                                  .read<AuthProvider>()
-                                  .useAsStockWatchList;
-                              final qty = watchList
-                                  ? 1.0
-                                  : double.parse(_quantityController.text);
-                              final stock = Stock(
-                                id: widget.stock?.id ?? 0,
-                                symbol: _symbolController.text.toUpperCase(),
-                                name: _nameController.text,
-                                quantity: qty,
-                                buyPrice: double.parse(_buyPriceController.text),
-                                currentPrice: _currentPriceController.text.isEmpty
-                                    ? 0.0
-                                    : double.parse(_currentPriceController.text),
-                                createdAt: widget.stock?.createdAt ?? DateTime.now(),
-                                updatedAt: DateTime.now(),
-                              );
-
-                              if (widget.stock == null) {
-                                await provider.addStock(
-                                  stock,
-                                  transactionDate: _transactionDate,
-                                );
-                              } else {
-                                await provider.updateStock(widget.stock!.id, stock);
-                              }
-
-                              if (provider.error != null) {
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text('Error: ${provider.error}'), backgroundColor: Colors.red),
-                                  );
-                                }
-                                return;
-                              }
-
-                              if (context.mounted) Navigator.pop(context);
-                            }
-                          },
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                    child: provider.isLoading
-                        ? const CircularProgressIndicator()
-                        : Text(widget.stock == null ? 'Add Stock' : 'Update Stock'),
-                  );
-                },
-              ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  List<Widget> _buildManualStockFormFields() {
+    return [
+      TextFormField(
+        controller: _symbolController,
+        decoration: const InputDecoration(
+          labelText: 'Symbol *',
+          hintText: 'e.g., RELIANCE, TCS',
+          border: OutlineInputBorder(),
+        ),
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please enter a symbol';
+          }
+          return null;
+        },
+      ),
+      const SizedBox(height: 16),
+      TextFormField(
+        controller: _nameController,
+        decoration: const InputDecoration(
+          labelText: 'Company Name',
+          hintText: 'e.g., Reliance Industries',
+          border: OutlineInputBorder(),
+        ),
+      ),
+      const SizedBox(height: 16),
+      Builder(
+        builder: (context) {
+          final watchList =
+              context.watch<AuthProvider>().useAsStockWatchList;
+          if (watchList && _quantityController.text != '1') {
+            _quantityController.text = '1';
+          }
+          return TextFormField(
+            controller: _quantityController,
+            enabled: !watchList,
+            decoration: InputDecoration(
+              labelText: 'Quantity *',
+              hintText: watchList ? 'Fixed to 1 (watch list)' : 'e.g., 10',
+              border: const OutlineInputBorder(),
+              helperText: watchList
+                  ? 'Watch list mode always saves quantity as 1'
+                  : null,
+            ),
+            keyboardType: TextInputType.number,
+            validator: (value) {
+              if (value == null || value.isEmpty) {
+                return 'Please enter quantity';
+              }
+              if (double.tryParse(value) == null) {
+                return 'Please enter a valid number';
+              }
+              return null;
+            },
+          );
+        },
+      ),
+      const SizedBox(height: 16),
+      TextFormField(
+        controller: _buyPriceController,
+        decoration: const InputDecoration(
+          labelText: 'Buy Price (₹) *',
+          hintText: 'e.g., 2500.50',
+          border: OutlineInputBorder(),
+        ),
+        keyboardType: TextInputType.number,
+        validator: (value) {
+          if (value == null || value.isEmpty) {
+            return 'Please enter buy price';
+          }
+          if (double.tryParse(value) == null) {
+            return 'Please enter a valid number';
+          }
+          return null;
+        },
+      ),
+      const SizedBox(height: 16),
+      TextFormField(
+        controller: _currentPriceController,
+        decoration: const InputDecoration(
+          labelText: 'Current Price (₹)',
+          hintText: 'e.g., 2600.75',
+          border: OutlineInputBorder(),
+        ),
+        keyboardType: TextInputType.number,
+      ),
+      const SizedBox(height: 16),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Transaction Date'),
+        subtitle: Text('${_transactionDate.toLocal()}'.split(' ')[0]),
+        trailing: const Icon(Icons.calendar_today),
+        onTap: () async {
+          final DateTime? picked = await showDatePicker(
+            context: context,
+            initialDate: _transactionDate,
+            firstDate: DateTime(2000),
+            lastDate: DateTime.now(),
+          );
+          if (picked != null && picked != _transactionDate) {
+            setState(() {
+              _transactionDate = picked;
+            });
+          }
+        },
+      ),
+      if (widget.stock != null) ...[
+        const SizedBox(height: 16),
+        Card(
+          color: Colors.blue.shade50,
+          child: Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Stock Information',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                if (widget.stock!.sector.isNotEmpty)
+                  _buildInfoRow('Sector', widget.stock!.sector),
+                if (widget.stock!.sixthHighestPrice > 0)
+                  _buildInfoRow(
+                    '6th Highest Price',
+                    formatInr(widget.stock!.sixthHighestPrice),
+                  ),
+                if (widget.stock!.sixthLowestPrice > 0)
+                  _buildInfoRow(
+                    '6th Lowest Price',
+                    formatInr(widget.stock!.sixthLowestPrice),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+      const SizedBox(height: 24),
+      Consumer<FinanceProvider>(
+        builder: (context, provider, child) {
+          return ElevatedButton(
+            onPressed: provider.isLoading
+                ? null
+                : () async {
+                    if (_formKey.currentState!.validate()) {
+                      final watchList = context
+                          .read<AuthProvider>()
+                          .useAsStockWatchList;
+                      final qty = watchList
+                          ? 1.0
+                          : double.parse(_quantityController.text);
+                      final stock = Stock(
+                        id: widget.stock?.id ?? 0,
+                        symbol: _symbolController.text.toUpperCase(),
+                        name: _nameController.text,
+                        quantity: qty,
+                        buyPrice: double.parse(_buyPriceController.text),
+                        currentPrice: _currentPriceController.text.isEmpty
+                            ? 0.0
+                            : double.parse(_currentPriceController.text),
+                        createdAt:
+                            widget.stock?.createdAt ?? DateTime.now(),
+                        updatedAt: DateTime.now(),
+                      );
+
+                      if (widget.stock == null) {
+                        await provider.addStock(
+                          stock,
+                          transactionDate: _transactionDate,
+                        );
+                      } else {
+                        await provider.updateStock(widget.stock!.id, stock);
+                      }
+
+                      if (provider.error != null) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Error: ${provider.error}'),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                        return;
+                      }
+
+                      if (context.mounted) Navigator.pop(context);
+                    }
+                  },
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+            child: provider.isLoading
+                ? const CircularProgressIndicator()
+                : Text(widget.stock == null ? 'Add Stock' : 'Update Stock'),
+          );
+        },
+      ),
+    ];
   }
 
   Widget _buildInfoRow(String label, String value) {

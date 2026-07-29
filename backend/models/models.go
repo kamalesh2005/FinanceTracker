@@ -17,18 +17,31 @@ type Stock struct {
 	SixthLowestPrice     float64     `json:"sixth_lowest_price"`
 	MA7                  float64     `json:"ma7"`
 	MA20                 float64     `json:"ma20"`
+	MA50                 float64     `json:"ma50"`
 	SensexMA7            float64     `json:"sensex_ma7"`
 	SensexMA20           float64     `json:"sensex_ma20"`
-	StockDelta           float64     `json:"stock_delta"`
-	MarketDelta          float64     `json:"market_delta"`
-	AdjustedDelta        float64     `json:"adjusted_delta"`
+	SensexMA50           float64     `json:"sensex_ma50"`
+	StockSTDelta         float64     `json:"stock_st_delta"`
+	MarketSTDelta        float64     `json:"market_st_delta"`
+	AdjustedSTDelta      float64     `json:"adjusted_st_delta"`
+	StockMTDelta         float64     `json:"stock_mt_delta"`
+	MarketMTDelta        float64     `json:"market_mt_delta"`
+	AdjustedMTDelta      float64     `json:"adjusted_mt_delta"`
 	Trend                string      `json:"trend"`
 	LastFetchedDate      *time.Time  `json:"last_fetched_date"`
 	LastPriceFetchedDate *time.Time  `json:"last_price_fetched_date"`
 	LastTrendFetchedDate *time.Time  `json:"last_trend_fetched_date"`
-	CreatedAt            time.Time   `json:"created_at"`
-	UpdatedAt            time.Time   `json:"updated_at"`
-	UserStocks           []UserStock `json:"user_stocks,omitempty" gorm:"foreignKey:StockID"`
+	// Trendlyne consensus target (scraped from research-reports page).
+	TrendlyneURL              string     `json:"trendlyne_url" gorm:"size:512"`
+	ConsensusDate             *time.Time `json:"consensus_date"`
+	ConsensusLTP              float64    `json:"consensus_ltp"`
+	ConsensusTarget           float64    `json:"consensus_target"`
+	ConsensusUpside           float64    `json:"consensus_upside"`
+	ConsensusType             string     `json:"consensus_type" gorm:"size:32"`
+	LastConsensusFetchedDate  *time.Time `json:"last_consensus_fetched_date"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
+	UserStocks                []UserStock `json:"user_stocks,omitempty" gorm:"foreignKey:StockID"`
 	// Legacy fields for migration - will be removed after migration
 	LegacyQuantity     float64   `json:"-" gorm:"column:quantity"`
 	LegacyBuyPrice     float64   `json:"-" gorm:"column:buy_price"`
@@ -47,6 +60,7 @@ const (
 	SourceManualBulkUpload = "Manual Bulk Upload"
 	SourceICICIDirect      = "ICICIDirect"
 	SourceHDFCSec          = "HDFCSec"
+	SourceZerodha          = "Zerodha"
 )
 
 // IsReplaceableImportSource reports whether a bulk save should upsert buy lots for this source
@@ -59,19 +73,24 @@ func IsReplaceableImportSource(source string) bool {
 
 // UserStock is the final holding for a user+source+stock.
 type UserStock struct {
-	ID            uint       `json:"id" gorm:"primaryKey"`
-	UserID        uint       `json:"user_id" gorm:"not null;uniqueIndex:idx_user_stock_source;index;default:0"`
-	StockID       uint       `json:"stock_id" gorm:"not null;uniqueIndex:idx_user_stock_source;index"`
-	Source        string     `json:"source" gorm:"not null;uniqueIndex:idx_user_stock_source;index;size:64"`
-	Quantity      float64    `json:"quantity" gorm:"not null;default:0"`
-	AvgBuyPrice   float64    `json:"avg_buy_price" gorm:"not null;default:0"`
-	LastBuyPrice  float64    `json:"last_buy_price" gorm:"not null;default:0"`
-	LastBuyDate   *time.Time `json:"last_buy_date"`
-	LastSalePrice float64    `json:"last_sale_price" gorm:"not null;default:0"`
-	LastSaleDate  *time.Time `json:"last_sale_date"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	Stock         Stock      `json:"stock" gorm:"foreignKey:StockID"`
+	ID                    uint       `json:"id" gorm:"primaryKey"`
+	UserID                uint       `json:"user_id" gorm:"not null;uniqueIndex:idx_user_stock_source;index;default:0"`
+	StockID               uint       `json:"stock_id" gorm:"not null;uniqueIndex:idx_user_stock_source;index"`
+	Source                string     `json:"source" gorm:"not null;uniqueIndex:idx_user_stock_source;index;size:64"`
+	Quantity              float64    `json:"quantity" gorm:"not null;default:0"`
+	AvgBuyPrice           float64    `json:"avg_buy_price" gorm:"not null;default:0"`
+	LastBuyPrice          float64    `json:"last_buy_price" gorm:"not null;default:0"`
+	LastBuyDate           *time.Time `json:"last_buy_date"`
+	LastSalePrice         float64    `json:"last_sale_price" gorm:"not null;default:0"`
+	LastSaleDate          *time.Time `json:"last_sale_date"`
+	LastHoldPrice         float64    `json:"last_hold_price" gorm:"not null;default:0"`
+	LastHoldDate          *time.Time `json:"last_hold_date"`
+	SetBuyPrice           float64    `json:"set_buy_price" gorm:"not null;default:0"`
+	SetProfitBookingPrice float64    `json:"set_profit_booking_price" gorm:"not null;default:0"`
+	SetStopLossPrice      float64    `json:"set_stop_loss_price" gorm:"not null;default:0"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	Stock                 Stock      `json:"stock" gorm:"foreignKey:StockID"`
 }
 
 // UserStockTransaction is a buy/sell ledger entry.
@@ -111,16 +130,19 @@ type UserConfig struct {
 	UserID              uint   `json:"user_id" gorm:"uniqueIndex;not null"`
 	HiddenStockColumns  string `json:"hidden_stock_columns" gorm:"type:text"`
 	UseAsStockWatchList bool   `json:"use_as_stock_watch_list" gorm:"not null;default:false"`
-	// nil = inherit AppConfig default; set = user override (percent points, e.g. 5 = 5%).
-	RecommendationFluctuationPct *float64  `json:"recommendation_fluctuation_pct"`
-	CreatedAt                    time.Time `json:"created_at"`
-	UpdatedAt                    time.Time `json:"updated_at"`
+	// Deprecated: migrated into RecommendationRulesJSON named_values.fluctuation_pct.
+	RecommendationFluctuationPct *float64 `json:"recommendation_fluctuation_pct"`
+	// nil = inherit AppConfig default ruleset.
+	RecommendationRulesJSON *string   `json:"recommendation_rules_json" gorm:"type:text"`
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 // AppConfig is a singleton (id=1) for admin-managed app defaults.
 type AppConfig struct {
 	ID                                  uint      `json:"id" gorm:"primaryKey"`
 	DefaultRecommendationFluctuationPct float64   `json:"default_recommendation_fluctuation_pct" gorm:"not null;default:5"`
+	RecommendationRulesJSON             string    `json:"recommendation_rules_json" gorm:"type:text"`
 	CreatedAt                           time.Time `json:"created_at"`
 	UpdatedAt                           time.Time `json:"updated_at"`
 }

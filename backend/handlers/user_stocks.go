@@ -132,6 +132,12 @@ func applyFIFOSell(db *gorm.DB, userID, stockID uint, source string, sellQty flo
 	return nil
 }
 
+func clearPriceThresholds(pos *models.UserStock) {
+	pos.SetBuyPrice = 0
+	pos.SetProfitBookingPrice = 0
+	pos.SetStopLossPrice = 0
+}
+
 // ApplyManualStockTransaction inserts a ledger row then recomputes the position for the source.
 func ApplyManualStockTransaction(
 	db *gorm.DB,
@@ -201,7 +207,11 @@ func applyManualStockTransaction(
 
 		var recomputeErr error
 		pos, recomputeErr = recomputeUserStock(tx, userID, stockID, source)
-		return recomputeErr
+		if recomputeErr != nil {
+			return recomputeErr
+		}
+		clearPriceThresholds(&pos)
+		return tx.Save(&pos).Error
 	})
 	if err != nil {
 		return models.UserStockTransaction{}, models.UserStock{}, err

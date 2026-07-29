@@ -46,5 +46,22 @@ Get-CimInstance Win32_Process | Where-Object {
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
 }
 
+# Chrome instances launched by `flutter run -d chrome` hold a lock on the throwaway
+# debug profile. A surviving instance or leftover lock makes the next run fail with
+# "Failed to establish connection with the application instance in Chrome".
+$ChromeProfile = Join-Path $ProjectDir "frontend\.dart_tool\chrome-device"
+Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object {
+    $_.CommandLine -and $_.CommandLine -match 'chrome-device'
+} | ForEach-Object {
+    Write-Host "  Stopping flutter Chrome PID $($_.ProcessId)"
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+}
+
 Start-Sleep -Seconds 1
+
+if (Test-Path $ChromeProfile) {
+    Write-Host "  Clearing Chrome debug profile $ChromeProfile"
+    Remove-Item -Recurse -Force $ChromeProfile -ErrorAction SilentlyContinue
+}
+
 Write-Host "All processes stopped."

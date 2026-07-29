@@ -5,9 +5,11 @@ import '../providers/auth_provider.dart';
 import '../models/stock.dart';
 import '../models/stock_trend.dart';
 import '../services/api_service.dart';
+import '../services/recommendation_engine.dart';
 import '../utils/currency_format.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import 'add_stock_screen.dart';
+import 'configure_screen.dart';
 import 'edit_stock_screen.dart';
 import 'stock_chart_screen.dart';
 
@@ -20,6 +22,7 @@ class StocksScreen extends StatefulWidget {
 
 class _StocksScreenState extends State<StocksScreen> {
   bool _isTableView = true;
+
   /// null = default multi-key sort (Sector → Market Cap → Symbol → Source)
   String? _sortColumn;
   bool _sortAscending = true;
@@ -36,20 +39,38 @@ class _StocksScreenState extends State<StocksScreen> {
     'Book Profit',
     'BUY',
     'SELL',
-    'WATCH',
     'AT BUY PRICE',
     'AT SELL PRICE',
+    'AT HOLD PRICE',
     'NO ACTION REQD',
+  ];
+  static const List<String> _actionableRecommendations = [
+    'Book Profit',
+    'BUY',
+    'SELL',
+  ];
+  static const List<String> _nonActionRecommendations = [
+    'NO ACTION REQD',
+    'AT BUY PRICE',
+    'AT SELL PRICE',
+    'AT HOLD PRICE',
   ];
 
   final Set<String> _selectedSectors = {};
   final Set<String> _selectedMarketCaps = {};
   final Set<String> _selectedSources = {};
   final Set<String> _selectedRecommendations = {};
+  bool _onlyStocksToAction = true;
 
   static const double _headerHeight = 48;
-  static const double _rowHeight = 78;
+  static const double _rowHeight = 90;
   static const double _symbolColumnWidth = 120;
+  /// Below this width, prefer card view (table is too dense for phones).
+  static const double _cardViewBreakpoint = 700;
+  /// Below this width, slim the AppBar (icon Add, hide display name).
+  static const double _narrowAppBarBreakpoint = 600;
+  /// Below this width, stack card metric rows into 2 columns.
+  static const double _narrowCardBreakpoint = 400;
 
   late final ScrollController _horizontalHeaderController;
   late final ScrollController _horizontalBodyController;
@@ -69,14 +90,14 @@ class _StocksScreenState extends State<StocksScreen> {
     'P/L',
     'P/L %',
     'Sector',
-    'Last Buy',
-    'Last Sale',
+    'Last Actioned',
     'Price Range',
     '6th High',
     '6th Low',
     'Trend',
     'Recommendation',
     'Actions',
+    'News',
   ];
 
   static const Set<String> _defaultSelectedColumns = {
@@ -95,6 +116,7 @@ class _StocksScreenState extends State<StocksScreen> {
     'Trend',
     'Recommendation',
     'Actions',
+    'News',
   };
 
   @override
@@ -186,8 +208,7 @@ class _StocksScreenState extends State<StocksScreen> {
       case 'P/L':
       case '6th High':
       case '6th Low':
-      case 'Last Buy':
-      case 'Last Sale':
+      case 'Last Actioned':
         return 120;
       case 'P/L %':
         return 80;
@@ -198,145 +219,198 @@ class _StocksScreenState extends State<StocksScreen> {
       case 'Price Range':
         return 160;
       case 'Trend':
-        return 130;
+        return 170;
       case 'Actions':
+        return 250;
+      case 'News':
         return 180;
       default:
         return 100;
     }
   }
 
+  Future<void> _openAddStock() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const AddStockScreen()),
+    );
+    if (!mounted) return;
+    await context.read<FinanceProvider>().loadStocks();
+  }
+
+  Future<void> _openConfigure() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ConfigureScreen()),
+    );
+    if (!mounted) return;
+    await context.read<AuthProvider>().loadPreferences();
+    if (!mounted) return;
+    await context.read<FinanceProvider>().loadStocks();
+  }
+
   @override
   Widget build(BuildContext context) {
+    final auth = context.watch<AuthProvider>();
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final narrowAppBar = screenWidth < _narrowAppBarBreakpoint;
+    // Force card view on phones; respect toggle on tablet/desktop.
+    final showTableView =
+        screenWidth >= _cardViewBreakpoint && _isTableView;
+    final canToggleView = screenWidth >= _cardViewBreakpoint;
+
     return Consumer<FinanceProvider>(
       builder: (context, provider, _) {
         return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          children: [
-            const Text('Stocks'),
-            const SizedBox(width: 12),
-            OutlinedButton.icon(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const AddStockScreen()),
-                ).then((_) => context.read<FinanceProvider>().loadStocks());
-              },
-              icon: const Icon(Icons.add, size: 18),
-              label: const Text('Add Stock'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Theme.of(context).colorScheme.primary,
-                side: BorderSide(
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                visualDensity: VisualDensity.compact,
-              ),
-            ),
-          ],
-        ),
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: authAppBarActions(
-          context,
-          extra: [
-            if (provider.isRefreshingPrices)
-              const Padding(
-                padding: EdgeInsets.only(right: 8),
-                child: Center(
-                  child: SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              )
-            else
-              IconButton(
-                icon: const Icon(Icons.refresh),
-                tooltip: 'Refresh prices',
-                onPressed: () => provider.refreshStockPrices(),
-              ),
-            if (_isTableView)
-              IconButton(
-                icon: const Icon(Icons.view_column),
-                onPressed: _showColumnSelectionDialog,
-                tooltip: 'Select columns',
-              ),
-            IconButton(
-              icon: Icon(_isTableView ? Icons.view_module : Icons.table_rows),
-              onPressed: () {
-                setState(() {
-                  _isTableView = !_isTableView;
-                });
-              },
-              tooltip: _isTableView ? 'Card view' : 'Table view',
-            ),
-          ],
-        ),
-      ),
-      body: Builder(
-        builder: (context) {
-          if (provider.isLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          if (provider.error != null) {
-            return Center(child: Text('Error: ${provider.error}'));
-          }
-
-          if (provider.stocks.isEmpty) {
-            return const Center(child: Text('No stocks added yet'));
-          }
-
-          final stocks = _filteredAndSortedStocks(provider);
-          final hasFilters = _hasActiveFilters;
-
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildFilterBar(provider),
-              Expanded(
-                child: stocks.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('No stocks match filters'),
-                            if (hasFilters) ...[
-                              const SizedBox(height: 12),
-                              TextButton(
-                                onPressed: _clearFilters,
-                                child: const Text('Clear filters'),
-                              ),
-                            ],
-                          ],
+          appBar: AppBar(
+            title: const Text('Stocks'),
+            backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+            actions: authAppBarActions(
+              context,
+              extra: [
+                if (narrowAppBar)
+                  IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'Add Stock',
+                    onPressed: _openAddStock,
+                  )
+                else
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: _openAddStock,
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('Add Stock'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor:
+                            Theme.of(context).colorScheme.primary,
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.primary,
                         ),
-                      )
-                    : _isTableView
-                        ? _buildStockTable(provider, stocks)
-                        : RefreshIndicator(
-                            onRefresh: () => provider.refreshStockPrices(),
-                            child: ListView.builder(
-                              itemCount: stocks.length,
-                              itemBuilder: (context, index) {
-                                final stock = stocks[index];
-                                return KeyedSubtree(
-                                  key: ValueKey(_stockRowKey(stock)),
-                                  child: _buildStockCard(
-                                    context,
-                                    stock,
-                                    provider,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ),
+                if (provider.isRefreshingPrices)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: Center(
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  )
+                else
+                  IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Refresh prices',
+                    onPressed: () => provider.refreshStockPrices(),
+                  ),
+                if (showTableView)
+                  IconButton(
+                    icon: const Icon(Icons.view_column),
+                    onPressed: _showColumnSelectionDialog,
+                    tooltip: 'Select columns',
+                  ),
+                if (canToggleView)
+                  IconButton(
+                    icon: Icon(
+                        showTableView ? Icons.view_module : Icons.table_rows),
+                    onPressed: () {
+                      setState(() {
+                        _isTableView = !_isTableView;
+                      });
+                    },
+                    tooltip: showTableView ? 'Card view' : 'Table view',
+                  ),
+                if (!narrowAppBar)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Center(
+                      child: Text(
+                        auth.user?.displayName ?? '',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ),
+                  ),
+                IconButton(
+                  tooltip: () {
+                    if (!narrowAppBar) return 'Configure';
+                    final name = auth.user?.displayName ?? '';
+                    return name.isNotEmpty ? 'Configure ($name)' : 'Configure';
+                  }(),
+                  icon: const Icon(Icons.settings_outlined),
+                  onPressed: _openConfigure,
+                ),
+              ],
+            ),
+          ),
+          body: Builder(
+            builder: (context) {
+              if (provider.isLoading) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              if (provider.error != null) {
+                return Center(child: Text('Error: ${provider.error}'));
+              }
+
+              if (provider.stocks.isEmpty) {
+                return const Center(child: Text('No stocks added yet'));
+              }
+
+              final stocks = _filteredAndSortedStocks(provider);
+              final hasFilters = _hasActiveFilters;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildFilterBar(provider),
+                  Expanded(
+                    child: stocks.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('No stocks match filters'),
+                                if (hasFilters) ...[
+                                  const SizedBox(height: 12),
+                                  TextButton(
+                                    onPressed: _clearFilters,
+                                    child: const Text('Clear filters'),
                                   ),
-                                );
-                              },
+                                ],
+                              ],
                             ),
-                          ),
-              ),
-            ],
-          );
-        },
-      ),
+                          )
+                        : showTableView
+                            ? _buildStockTable(provider, stocks)
+                            : RefreshIndicator(
+                                onRefresh: () => provider.refreshStockPrices(),
+                                child: ListView.builder(
+                                  itemCount: stocks.length,
+                                  itemBuilder: (context, index) {
+                                    final stock = stocks[index];
+                                    return KeyedSubtree(
+                                      key: ValueKey(_stockRowKey(stock)),
+                                      child: _buildStockCard(
+                                        context,
+                                        stock,
+                                        provider,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                  ),
+                ],
+              );
+            },
+          ),
         );
       },
     );
@@ -346,7 +420,8 @@ class _StocksScreenState extends State<StocksScreen> {
       _selectedSectors.isNotEmpty ||
       _selectedMarketCaps.isNotEmpty ||
       _selectedSources.isNotEmpty ||
-      _selectedRecommendations.isNotEmpty;
+      _selectedRecommendations.isNotEmpty ||
+      !_onlyStocksToAction;
 
   void _clearFilters() {
     setState(() {
@@ -354,6 +429,7 @@ class _StocksScreenState extends State<StocksScreen> {
       _selectedMarketCaps.clear();
       _selectedSources.clear();
       _selectedRecommendations.clear();
+      _onlyStocksToAction = true;
     });
   }
 
@@ -445,6 +521,13 @@ class _StocksScreenState extends State<StocksScreen> {
                 _selectedRecommendations
                   ..clear()
                   ..addAll(next);
+              }),
+            ),
+            FilterChip(
+              label: const Text('Only Stocks to Action'),
+              selected: _onlyStocksToAction,
+              onSelected: (value) => setState(() {
+                _onlyStocksToAction = value;
               }),
             ),
             if (_hasActiveFilters)
@@ -548,18 +631,27 @@ class _StocksScreenState extends State<StocksScreen> {
           !_selectedSources.contains(_sourceKey(stock))) {
         return false;
       }
+      final recommendation =
+          _getRecommendation(stock, _trendFor(stock, provider));
       if (_selectedRecommendations.isNotEmpty) {
-        final recommendation =
-            _getRecommendation(stock, _trendFor(stock, provider));
         final matches = _selectedRecommendations.any((label) {
           if (label == 'NO ACTION REQD' ||
               label == 'AT BUY PRICE' ||
-              label == 'AT SELL PRICE') {
+              label == 'AT SELL PRICE' ||
+              label == 'AT HOLD PRICE') {
             return recommendation == label;
           }
           return recommendation.contains(label);
         });
         if (!matches) return false;
+      }
+      if (_onlyStocksToAction) {
+        if (_nonActionRecommendations.contains(recommendation)) {
+          return false;
+        }
+        final actionable = _actionableRecommendations
+            .any((label) => recommendation.contains(label));
+        if (!actionable) return false;
       }
       return true;
     }).toList();
@@ -567,51 +659,18 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   String _getRecommendation(Stock stock, StockTrend? trend) {
-    final lastTxn = stock.lastTradePrice;
-    if (lastTxn != null && lastTxn > 0 && stock.currentPrice > 0) {
-      final pctDiff = (stock.currentPrice - lastTxn).abs() / lastTxn;
-      final fluctuationPct =
-          context.read<AuthProvider>().effectiveRecommendationFluctuationPct;
-      final threshold = (fluctuationPct > 0 ? fluctuationPct : 5.0) / 100.0;
-      if (pctDiff < threshold) {
-        return stock.lastTradeIsSale ? 'AT SELL PRICE' : 'AT BUY PRICE';
-      }
-    }
-
-    final parts = <String>[];
-    if (stock.sixthHighestPrice > 0 &&
-        stock.currentPrice >= stock.sixthHighestPrice * 0.95) {
-      parts.add('Book Profit');
-    }
-    if (trend != null &&
-        trend.trend == 'bullish' &&
-        stock.currentPrice > stock.buyPrice * 1.1) {
-      parts.add('BUY');
-    }
-    if (trend != null &&
-        (trend.trend == 'bearish' || trend.trend == 'moderately bearish') &&
-        stock.currentPrice < stock.buyPrice * 0.9) {
-      parts.add('SELL');
-    }
-    if (trend != null &&
-        trend.trend == 'moderately bullish' &&
-        stock.currentPrice < stock.buyPrice * 0.9) {
-      parts.add('WATCH');
-    }
-    if (parts.isEmpty) return 'NO ACTION REQD';
-    return parts.join(' & ');
+    final rules = context.read<AuthProvider>().effectiveRecommendationRules;
+    return RecommendationEngine.evaluate(stock, trend, rules);
   }
 
   Color _recommendationColor(String recommendation) {
-    if (recommendation.contains('SELL') &&
-        recommendation != 'AT SELL PRICE') {
+    if (recommendation.contains('SELL') && recommendation != 'AT SELL PRICE') {
       return Colors.red;
     }
     if (recommendation.contains('Book Profit')) return Colors.orange;
     if (recommendation.contains('BUY') && recommendation != 'AT BUY PRICE') {
       return Colors.green;
     }
-    if (recommendation.contains('WATCH')) return Colors.blue;
     return Colors.grey;
   }
 
@@ -619,7 +678,8 @@ class _StocksScreenState extends State<StocksScreen> {
     final color = _recommendationColor(recommendation);
     final isDefault = recommendation == 'NO ACTION REQD' ||
         recommendation == 'AT BUY PRICE' ||
-        recommendation == 'AT SELL PRICE';
+        recommendation == 'AT SELL PRICE' ||
+        recommendation == 'AT HOLD PRICE';
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -633,6 +693,8 @@ class _StocksScreenState extends State<StocksScreen> {
           ),
           child: Text(
             recommendation,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: color,
               fontSize: isDefault ? 10 : 12,
@@ -643,7 +705,7 @@ class _StocksScreenState extends State<StocksScreen> {
         if (!isDefault && trend != null) ...[
           const SizedBox(height: 4),
           Text(
-            'M7: ${formatInr(trend.ma7)}  M20: ${formatInr(trend.ma20)}',
+            'M7: ${formatInr(trend.ma7)}  M20: ${formatInr(trend.ma20)}  M50: ${formatInr(trend.ma50)}',
             style: TextStyle(
               fontSize: 10,
               color: Colors.grey.shade700,
@@ -651,10 +713,10 @@ class _StocksScreenState extends State<StocksScreen> {
             ),
           ),
           Text(
-            'Adj Δ: ${trend.adjustedDelta.toStringAsFixed(2)}%',
+            'Adj ST Δ: ${trend.adjustedSTDelta.toStringAsFixed(2)}%  Adj MT Δ: ${trend.adjustedMTDelta.toStringAsFixed(2)}%',
             style: TextStyle(
               fontSize: 10,
-              color: trend.adjustedDelta >= 0 ? Colors.green : Colors.red,
+              color: trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
               height: 1.2,
               fontWeight: FontWeight.w500,
             ),
@@ -664,11 +726,15 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  Widget _buildStockCard(BuildContext context, Stock stock, FinanceProvider provider) {
+  Widget _buildStockCard(
+      BuildContext context, Stock stock, FinanceProvider provider) {
     final invested = stock.buyPrice * stock.quantity;
     final current = stock.currentPrice * stock.quantity;
     final profitLoss = current - invested;
-    final profitLossPercentage = invested > 0 ? (profitLoss / invested) * 100 : 0.0;
+    final profitLossPercentage =
+        invested > 0 ? (profitLoss / invested) * 100 : 0.0;
+    final narrowCard =
+        MediaQuery.sizeOf(context).width < _narrowCardBreakpoint;
 
     StockTrend? trend;
     try {
@@ -687,7 +753,7 @@ class _StocksScreenState extends State<StocksScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: GestureDetector(
@@ -717,31 +783,50 @@ class _StocksScreenState extends State<StocksScreen> {
                         if (stock.name.isNotEmpty)
                           Text(
                             stock.name,
-                            style: const TextStyle(fontSize: 13, color: Colors.grey),
+                            style: const TextStyle(
+                                fontSize: 13, color: Colors.grey),
                           ),
                       ],
                     ),
                   ),
                 ),
-                Row(
-                  children: [
-                    _buildRecommendationBadge(recommendation, trend: trend),
-                    if (trend != null) _buildTrendBadge(trend.trend),
-                    _buildBuySellActionButtons(stock, provider),
-                    if (_isManualAddSource(stock))
-                      IconButton(
-                        icon: const Icon(Icons.edit, size: 20),
-                        onPressed: () => _openEditStock(stock),
-                      ),
-                    IconButton(
-                      icon: const Icon(Icons.delete, size: 20, color: Colors.red),
-                      onPressed: () {
-                        _showDeleteDialog(context, stock.id, provider);
-                      },
-                    ),
-                  ],
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Wrap(
+                    spacing: 4,
+                    runSpacing: 4,
+                    alignment: WrapAlignment.end,
+                    children: [
+                      _buildRecommendationBadge(recommendation, trend: trend),
+                      if (trend != null) _buildTrendBadge(trend.trend),
+                    ],
+                  ),
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                spacing: 0,
+                runSpacing: 0,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _buildBuySellActionButtons(stock, provider),
+                  if (_isManualAddSource(stock))
+                    IconButton(
+                      icon: const Icon(Icons.edit, size: 20),
+                      onPressed: () => _openEditStock(stock),
+                    ),
+                  IconButton(
+                    icon:
+                        const Icon(Icons.delete, size: 20, color: Colors.red),
+                    onPressed: () {
+                      _showDeleteDialog(context, stock.id, provider);
+                    },
+                  ),
+                ],
+              ),
             ),
             if (stock.source.isNotEmpty) ...[
               const SizedBox(height: 4),
@@ -751,17 +836,18 @@ class _StocksScreenState extends State<StocksScreen> {
               ),
             ],
             const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            _buildMetricRow(
+              narrow: narrowCard,
               children: [
-                _buildInfoColumn('Quantity', stock.quantity.toStringAsFixed(2)),
+                _buildInfoColumn(
+                    'Quantity', stock.quantity.toStringAsFixed(2)),
                 _buildInfoColumn('Buy Price', formatInr(stock.buyPrice)),
                 _buildInfoColumn('Current', formatInr(stock.currentPrice)),
               ],
             ),
             const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            _buildMetricRow(
+              narrow: narrowCard,
               children: [
                 _buildInfoColumn('Invested', formatInr(invested)),
                 _buildInfoColumn(
@@ -787,55 +873,110 @@ class _StocksScreenState extends State<StocksScreen> {
                 _buildSectorWithMarketCap(stock),
               ),
             ],
-            if (trend != null && (trend.ma7 > 0 || trend.ma20 > 0)) ...[
+            if (trend != null &&
+                (trend.ma7 > 0 || trend.ma20 > 0 || trend.ma50 > 0)) ...[
               const Divider(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              _buildMetricRow(
+                narrow: narrowCard,
                 children: [
                   if (trend.ma7 > 0)
                     _buildInfoColumn('7-DMA', formatInr(trend.ma7)),
                   if (trend.ma20 > 0)
                     _buildInfoColumn('20-DMA', formatInr(trend.ma20)),
+                  if (trend.ma50 > 0)
+                    _buildInfoColumn('50-DMA', formatInr(trend.ma50)),
                   if (trend.ma7 > 0 && trend.ma20 > 0)
                     _buildInfoColumn(
-                      '7 vs 20',
+                      'ST: 7 vs 20',
                       trend.ma7 > trend.ma20 ? '▲ Above' : '▼ Below',
                       trend.ma7 > trend.ma20 ? Colors.green : Colors.red,
                     ),
                 ],
               ),
               const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              _buildMetricRow(
+                narrow: narrowCard,
                 children: [
                   _buildInfoColumn(
-                    'Stock Δ',
-                    '${trend.stockDelta.toStringAsFixed(2)}%',
-                    trend.stockDelta >= 0 ? Colors.green : Colors.red,
+                    'Stock ST Δ',
+                    '${trend.stockSTDelta.toStringAsFixed(2)}%',
+                    trend.stockSTDelta >= 0 ? Colors.green : Colors.red,
                   ),
                   _buildInfoColumn(
-                    'Sensex Δ',
-                    '${trend.marketDelta.toStringAsFixed(2)}%',
-                    trend.marketDelta >= 0 ? Colors.green : Colors.red,
+                    'Sensex ST Δ',
+                    '${trend.marketSTDelta.toStringAsFixed(2)}%',
+                    trend.marketSTDelta >= 0 ? Colors.green : Colors.red,
                   ),
                   _buildInfoColumn(
-                    'Adj. Δ',
-                    '${trend.adjustedDelta.toStringAsFixed(2)}%',
-                    trend.adjustedDelta >= 0 ? Colors.green : Colors.red,
+                    'Adj ST Δ',
+                    '${trend.adjustedSTDelta.toStringAsFixed(2)}%',
+                    trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
                   ),
                 ],
               ),
+              if (trend.ma20 > 0 && trend.ma50 > 0) ...[
+                const SizedBox(height: 8),
+                _buildMetricRow(
+                  narrow: narrowCard,
+                  children: [
+                    _buildInfoColumn(
+                      'Stock MT Δ',
+                      '${trend.stockMTDelta.toStringAsFixed(2)}%',
+                      trend.stockMTDelta >= 0 ? Colors.green : Colors.red,
+                    ),
+                    _buildInfoColumn(
+                      'Sensex MT Δ',
+                      '${trend.marketMTDelta.toStringAsFixed(2)}%',
+                      trend.marketMTDelta >= 0 ? Colors.green : Colors.red,
+                    ),
+                    _buildInfoColumn(
+                      'Adj MT Δ',
+                      '${trend.adjustedMTDelta.toStringAsFixed(2)}%',
+                      trend.adjustedMTDelta >= 0 ? Colors.green : Colors.red,
+                    ),
+                  ],
+                ),
+              ],
             ],
+            const Divider(height: 20),
+            _buildInfoColumnWidget('News', _buildNewsTeaser(stock)),
           ],
         ),
       ),
     );
   }
 
+  /// Wide: single spaceBetween row. Narrow: wrap into ~2 columns.
+  Widget _buildMetricRow({
+    required bool narrow,
+    required List<Widget> children,
+  }) {
+    if (children.isEmpty) return const SizedBox.shrink();
+    if (!narrow) {
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: children,
+      );
+    }
+    return Wrap(
+      spacing: 16,
+      runSpacing: 12,
+      children: children
+          .map(
+            (child) => SizedBox(
+              width: 140,
+              child: child,
+            ),
+          )
+          .toList(),
+    );
+  }
+
   Widget _buildStockTable(FinanceProvider provider, List<Stock> stocks) {
     final freezeSymbol = _selectedColumns.contains('Symbol');
     final scrollableColumns = _allColumns
-        .where((column) => _selectedColumns.contains(column) && column != 'Symbol')
+        .where(
+            (column) => _selectedColumns.contains(column) && column != 'Symbol')
         .toList();
     final scrollableWidth = scrollableColumns.fold<double>(
       0,
@@ -972,8 +1113,7 @@ class _StocksScreenState extends State<StocksScreen> {
                                                 horizontal: 8,
                                               ),
                                               child: Align(
-                                                alignment:
-                                                    Alignment.centerLeft,
+                                                alignment: Alignment.centerLeft,
                                                 child: _buildCellWidget(
                                                   column,
                                                   stock,
@@ -1046,9 +1186,8 @@ class _StocksScreenState extends State<StocksScreen> {
                   column,
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
-                    color: isSorted
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
+                    color:
+                        isSorted ? Theme.of(context).colorScheme.primary : null,
                   ),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1149,48 +1288,43 @@ class _StocksScreenState extends State<StocksScreen> {
         return Text(formatInr(stock.quantity * stock.currentPrice));
       case 'Buy Price':
         return Text(formatInr(stock.buyPrice));
-      case 'Last Buy':
-        if (!stock.hasLastBuy) return const Text('-');
-        final highlight = !stock.lastTradeIsSale;
+      case 'Last Actioned':
+        final label = stock.lastActionLabel;
+        final price = stock.lastActionPrice;
+        final date = stock.lastActionDate;
+        if (label == null || price == null || date == null) {
+          return const Text('-');
+        }
+        final color = switch (stock.lastActionType) {
+          'buy' => Colors.green.shade700,
+          'sell' => Colors.deepOrange,
+          'hold' => Colors.indigo.shade700,
+          _ => Colors.grey.shade700,
+        };
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              formatInr(stock.lastBuyPrice),
+              label,
               style: TextStyle(
-                fontWeight: highlight ? FontWeight.bold : FontWeight.normal,
-                color: highlight ? Colors.green.shade700 : null,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                color: color,
               ),
             ),
             Text(
-              _formatTradeDate(stock.lastBuyDate),
+              formatInr(price),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            Text(
+              _formatTradeDate(date),
               style: TextStyle(
                 fontSize: 11,
-                color: highlight ? Colors.green.shade700 : Colors.grey.shade700,
-              ),
-            ),
-          ],
-        );
-      case 'Last Sale':
-        if (!stock.hasLastSale) return const Text('-');
-        final highlight = stock.lastTradeIsSale;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              formatInr(stock.lastSalePrice),
-              style: TextStyle(
-                fontWeight: highlight ? FontWeight.bold : FontWeight.normal,
-                color: highlight ? Colors.deepOrange : null,
-              ),
-            ),
-            Text(
-              _formatTradeDate(stock.lastSaleDate),
-              style: TextStyle(
-                fontSize: 11,
-                color: highlight ? Colors.deepOrange : Colors.grey.shade700,
+                color: color,
               ),
             ),
           ],
@@ -1211,8 +1345,20 @@ class _StocksScreenState extends State<StocksScreen> {
         );
       case 'Sector':
         return _buildSectorWithMarketCap(stock);
+      case 'Trend':
+        return trend != null
+            ? FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: _buildTrendBadge(trend.trend),
+              )
+            : const Text('-');
       case 'Recommendation':
-        return _buildRecommendationBadge(recommendation, trend: trend);
+        return FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: _buildRecommendationBadge(recommendation, trend: trend),
+        );
       case 'Price Range':
         return stock.sixthHighestPrice > 0 && stock.sixthLowestPrice > 0
             ? SizedBox(
@@ -1230,13 +1376,9 @@ class _StocksScreenState extends State<StocksScreen> {
         );
       case '6th Low':
         return Text(
-          stock.sixthLowestPrice > 0
-              ? formatInr(stock.sixthLowestPrice)
-              : '-',
+          stock.sixthLowestPrice > 0 ? formatInr(stock.sixthLowestPrice) : '-',
           style: const TextStyle(color: Colors.purple),
         );
-      case 'Trend':
-        return trend != null ? _buildTrendBadge(trend.trend) : const Text('-');
       case 'Actions':
         return Row(
           mainAxisSize: MainAxisSize.min,
@@ -1257,9 +1399,213 @@ class _StocksScreenState extends State<StocksScreen> {
             ),
           ],
         );
+      case 'News':
+        return _buildNewsTeaser(stock);
       default:
         return const SizedBox.shrink();
     }
+  }
+
+  Widget _buildNewsTeaser(Stock stock) {
+    if (!stock.hasConsensus) {
+      return InkWell(
+        onTap: () => _showNewsDialog(stock),
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+          child: Text(
+            'No consensus data',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+          ),
+        ),
+      );
+    }
+
+    final type = stock.consensusType.trim().isEmpty
+        ? '—'
+        : stock.consensusType.trim().toUpperCase();
+    final targetLine = stock.consensusTarget > 0
+        ? '$type @ ${formatInr(stock.consensusTarget)}'
+        : type;
+    final upsideSign = stock.consensusUpside >= 0 ? '+' : '';
+    final detailLine = [
+      if (stock.consensusUpside != 0 || stock.consensusTarget > 0)
+        '$upsideSign${stock.consensusUpside.toStringAsFixed(2)}%',
+      if (stock.consensusDate != null) _formatTradeDate(stock.consensusDate),
+    ].join(' · ');
+
+    final typeColor = switch (stock.consensusType.trim().toLowerCase()) {
+      'buy' || 'accumulate' => Colors.green.shade700,
+      'sell' => Colors.red.shade700,
+      'hold' => Colors.orange.shade800,
+      _ => Colors.teal.shade800,
+    };
+
+    return InkWell(
+      onTap: () => _showNewsDialog(stock),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              targetLine,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: typeColor,
+              ),
+            ),
+            if (detailLine.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                detailLine,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.grey.shade700,
+                  height: 1.2,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showNewsDialog(Stock stock) {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text('${stock.symbol} — News'),
+          content: SizedBox(
+            width: 480,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Trendlyne Consensus Share Price Target',
+                    style: Theme.of(ctx).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (!stock.hasConsensus)
+                    Text(
+                      'No consensus data available.',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    )
+                  else ...[
+                    _consensusDetailRow(
+                      'Date',
+                      stock.consensusDate != null
+                          ? _formatTradeDate(stock.consensusDate)
+                          : '—',
+                    ),
+                    _consensusDetailRow(
+                      'LTP',
+                      stock.consensusLtp > 0
+                          ? formatInr(stock.consensusLtp)
+                          : '—',
+                    ),
+                    _consensusDetailRow(
+                      'Target',
+                      stock.consensusTarget > 0
+                          ? formatInr(stock.consensusTarget)
+                          : '—',
+                    ),
+                    _consensusDetailRow(
+                      'Upside',
+                      '${stock.consensusUpside >= 0 ? '+' : ''}${stock.consensusUpside.toStringAsFixed(2)}%',
+                    ),
+                    _consensusDetailRow(
+                      'Type',
+                      stock.consensusType.trim().isEmpty
+                          ? '—'
+                          : stock.consensusType.trim().toUpperCase(),
+                    ),
+                  ],
+                  if (stock.lastConsensusFetchedDate != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Fetched ${_formatTradeDate(stock.lastConsensusFetchedDate)}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.grey.shade600,
+                      ),
+                    ),
+                  ],
+                  if (stock.trendlyneUrl.trim().isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      'Source',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    SelectableText(
+                      stock.trendlyneUrl.trim(),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.blue.shade700,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _consensusDetailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 72,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                color: Colors.grey.shade700,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   String _formatTradeDate(DateTime? date) {
@@ -1287,15 +1633,25 @@ class _StocksScreenState extends State<StocksScreen> {
         icon = Icons.trending_up;
         label = 'Mod. Bullish';
         break;
-      case 'bearish':
+      case 'bearish_st':
         color = Colors.red;
         icon = Icons.trending_down;
-        label = 'Bearish';
+        label = 'Bearish ST';
         break;
-      case 'moderately bearish':
+      case 'moderately bearish_st':
         color = Colors.orange;
         icon = Icons.trending_down;
-        label = 'Mod. Bearish';
+        label = 'Mod. Bearish ST';
+        break;
+      case 'bearish_lt':
+        color = Colors.red;
+        icon = Icons.trending_down;
+        label = 'Bearish LT';
+        break;
+      case 'moderately bearish_lt':
+        color = Colors.deepOrange;
+        icon = Icons.trending_down;
+        label = 'Mod. Bearish LT';
         break;
       default:
         color = Colors.grey;
@@ -1317,7 +1673,11 @@ class _StocksScreenState extends State<StocksScreen> {
           const SizedBox(width: 4),
           Text(
             label,
-            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold),
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.fade,
+            style: TextStyle(
+                color: color, fontSize: 12, fontWeight: FontWeight.bold),
           ),
         ],
       ),
@@ -1418,12 +1778,13 @@ class _StocksScreenState extends State<StocksScreen> {
     final sixthLow = stock.sixthLowestPrice;
     final sixthHigh = stock.sixthHighestPrice;
     final currentPrice = stock.currentPrice;
-    
+
     final range = sixthHigh - sixthLow;
-    var currentPricePosition = range > 0 ? (currentPrice - sixthLow) / range : 0.5;
+    var currentPricePosition =
+        range > 0 ? (currentPrice - sixthLow) / range : 0.5;
     // Clamp position to stay within the bar
     currentPricePosition = currentPricePosition.clamp(0.0, 1.0);
-    
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1450,7 +1811,10 @@ class _StocksScreenState extends State<StocksScreen> {
                     height: 8,
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
-                        colors: [Colors.purple.shade400, Colors.orange.shade400],
+                        colors: [
+                          Colors.purple.shade400,
+                          Colors.orange.shade400
+                        ],
                       ),
                       borderRadius: BorderRadius.circular(4),
                     ),
@@ -1465,7 +1829,8 @@ class _StocksScreenState extends State<StocksScreen> {
                         painter: _TrianglePainter(Colors.blue),
                       ),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.blue,
                           borderRadius: BorderRadius.circular(4),
@@ -1508,12 +1873,10 @@ class _StocksScreenState extends State<StocksScreen> {
 
     final range = sixthHigh - sixthLow;
     // Current & buy: below 6th low → leftmost; above 6th high → rightmost.
-    final currentPricePosition = range > 0
-        ? ((currentPrice - sixthLow) / range).clamp(0.0, 1.0)
-        : 0.5;
-    final buyPricePosition = range > 0
-        ? ((buyPrice - sixthLow) / range).clamp(0.0, 1.0)
-        : 0.5;
+    final currentPricePosition =
+        range > 0 ? ((currentPrice - sixthLow) / range).clamp(0.0, 1.0) : 0.5;
+    final buyPricePosition =
+        range > 0 ? ((buyPrice - sixthLow) / range).clamp(0.0, 1.0) : 0.5;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1682,7 +2045,231 @@ class _StocksScreenState extends State<StocksScreen> {
           ),
           child: const Text('S', style: TextStyle(fontWeight: FontWeight.bold)),
         ),
+        TextButton(
+          onPressed: stock.currentPrice > 0
+              ? () => _showHoldDialog(stock, provider)
+              : null,
+          style: TextButton.styleFrom(
+            foregroundColor: Colors.indigo.shade700,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+          child: const Text('H', style: TextStyle(fontWeight: FontWeight.bold)),
+        ),
+        TextButton(
+          onPressed: () => _showThresholdsDialog(stock, provider),
+          style: TextButton.styleFrom(
+            foregroundColor: Colors.teal.shade800,
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            minimumSize: Size.zero,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+          child: const Text('T', style: TextStyle(fontWeight: FontWeight.bold)),
+        ),
       ],
+    );
+  }
+
+  Future<void> _showThresholdsDialog(
+    Stock stock,
+    FinanceProvider provider,
+  ) async {
+    final sourceLabel =
+        stock.source.trim().isEmpty ? _manualAddSource : stock.source.trim();
+    final buyController = TextEditingController(
+      text: stock.setBuyPrice > 0 ? stock.setBuyPrice.toStringAsFixed(2) : '',
+    );
+    final profitController = TextEditingController(
+      text: stock.setProfitBookingPrice > 0
+          ? stock.setProfitBookingPrice.toStringAsFixed(2)
+          : '',
+    );
+    final stopController = TextEditingController(
+      text: stock.setStopLossPrice > 0
+          ? stock.setStopLossPrice.toStringAsFixed(2)
+          : '',
+    );
+
+    double? parseOptional(String raw) {
+      final t = raw.trim();
+      if (t.isEmpty) return 0;
+      return double.tryParse(t);
+    }
+
+    final result = await showDialog<Map<String, double>>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text('Set thresholds — ${stock.symbol}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Source: $sourceLabel',
+                    style: TextStyle(color: Colors.grey.shade700)),
+                const SizedBox(height: 8),
+                Text(
+                  'Current price: ${formatInr(stock.currentPrice)}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'These values will be cleared on Buy/Sell/Hold action on this stock',
+                  style: TextStyle(
+                    color: Colors.orange.shade900,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: buyController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Buy (Reduce Avg By Price, Below)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: profitController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Book Profit (Sell Above)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: stopController,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Sell (Stop Loss Below)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final buy = parseOptional(buyController.text);
+                final profit = parseOptional(profitController.text);
+                final stop = parseOptional(stopController.text);
+                if (buy == null || profit == null || stop == null) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(
+                        content: Text('Enter valid numbers or leave blank')),
+                  );
+                  return;
+                }
+                if (buy < 0 || profit < 0 || stop < 0) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('Prices cannot be negative')),
+                  );
+                  return;
+                }
+                Navigator.pop(ctx, {
+                  'buy': buy,
+                  'profit': profit,
+                  'stop': stop,
+                });
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        );
+      },
+    );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      buyController.dispose();
+      profitController.dispose();
+      stopController.dispose();
+    });
+
+    if (result == null || !mounted) return;
+
+    final ok = await provider.setStockThresholds(
+      stockId: stock.id,
+      source: sourceLabel,
+      setBuyPrice: result['buy']!,
+      setProfitBookingPrice: result['profit']!,
+      setStopLossPrice: result['stop']!,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          ok
+              ? 'Thresholds saved'
+              : (provider.error ?? 'Failed to save thresholds'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showHoldDialog(Stock stock, FinanceProvider provider) async {
+    final price = stock.currentPrice;
+    final sourceLabel =
+        stock.source.trim().isEmpty ? _manualAddSource : stock.source.trim();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Hold ${stock.symbol}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Source: $sourceLabel',
+                style: TextStyle(color: Colors.grey.shade700)),
+            const SizedBox(height: 12),
+            const Text(
+              'Mark this stock as Hold and use the current price as the baseline for % fluctuation in recommendation logic?',
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Current price: ${formatInr(price)}',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final ok = await provider.holdStock(
+      stockId: stock.id,
+      price: price,
+      source: sourceLabel,
+      heldAt: DateTime.now(),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? 'Hold recorded' : (provider.error ?? 'Hold failed')),
+      ),
     );
   }
 
@@ -1709,7 +2296,8 @@ class _StocksScreenState extends State<StocksScreen> {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             return AlertDialog(
-              title: Text(isBuy ? 'Buy ${stock.symbol}' : 'Sell ${stock.symbol}'),
+              title:
+                  Text(isBuy ? 'Buy ${stock.symbol}' : 'Sell ${stock.symbol}'),
               content: Form(
                 key: formKey,
                 child: SingleChildScrollView(
@@ -1729,7 +2317,8 @@ class _StocksScreenState extends State<StocksScreen> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: qtyController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
                         decoration: const InputDecoration(
                           labelText: 'Quantity',
                           border: OutlineInputBorder(),
@@ -1748,7 +2337,8 @@ class _StocksScreenState extends State<StocksScreen> {
                       const SizedBox(height: 12),
                       TextFormField(
                         controller: priceController,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true),
                         decoration: const InputDecoration(
                           labelText: 'Price',
                           border: OutlineInputBorder(),
@@ -1776,7 +2366,8 @@ class _StocksScreenState extends State<StocksScreen> {
                             context: ctx,
                             initialDate: txDate,
                             firstDate: DateTime(1990),
-                            lastDate: DateTime.now().add(const Duration(days: 1)),
+                            lastDate:
+                                DateTime.now().add(const Duration(days: 1)),
                           );
                           if (picked != null) {
                             setDialogState(() => txDate = picked);
@@ -1857,7 +2448,8 @@ class _StocksScreenState extends State<StocksScreen> {
     }
   }
 
-  void _showDeleteDialog(BuildContext context, int id, FinanceProvider provider) {
+  void _showDeleteDialog(
+      BuildContext context, int id, FinanceProvider provider) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1882,7 +2474,8 @@ class _StocksScreenState extends State<StocksScreen> {
 
   Future<void> _loadColumnPreferences() async {
     try {
-      final hidden = _normalizeHiddenColumns(await ApiService.getHiddenStockColumns());
+      final hidden =
+          _normalizeHiddenColumns(await ApiService.getHiddenStockColumns());
       if (!mounted) return;
       setState(() {
         _selectedColumns
@@ -1899,15 +2492,19 @@ class _StocksScreenState extends State<StocksScreen> {
 
   List<String> _normalizeHiddenColumns(List<String> hidden) {
     final out = <String>{};
+    var hideLastBuy = false;
+    var hideLastSale = false;
     for (final name in hidden) {
       switch (name) {
         case 'Last Buy Price':
         case 'Last Buy Date':
-          out.add('Last Buy');
+        case 'Last Buy':
+          hideLastBuy = true;
           break;
         case 'Last Sale Price':
         case 'Last Sale Date':
-          out.add('Last Sale');
+        case 'Last Sale':
+          hideLastSale = true;
           break;
         default:
           // Drop removed columns (e.g. Market Cap) from persisted prefs.
@@ -1916,11 +2513,16 @@ class _StocksScreenState extends State<StocksScreen> {
           }
       }
     }
+    // Hide Last Actioned only when both former last-trade columns were hidden.
+    if (hideLastBuy && hideLastSale) {
+      out.add('Last Actioned');
+    }
     return out.toList();
   }
 
   Future<void> _saveColumnPreferences() async {
-    final hidden = _allColumns.where((c) => !_selectedColumns.contains(c)).toList();
+    final hidden =
+        _allColumns.where((c) => !_selectedColumns.contains(c)).toList();
     try {
       await ApiService.saveHiddenStockColumns(hidden);
     } catch (e) {
@@ -2047,10 +2649,8 @@ class _StocksScreenState extends State<StocksScreen> {
             .compareTo(b.quantity * b.currentPrice);
       case 'Buy Price':
         return a.buyPrice.compareTo(b.buyPrice);
-      case 'Last Buy':
-        return a.lastBuyPrice.compareTo(b.lastBuyPrice);
-      case 'Last Sale':
-        return a.lastSalePrice.compareTo(b.lastSalePrice);
+      case 'Last Actioned':
+        return (a.lastActionPrice ?? 0).compareTo(b.lastActionPrice ?? 0);
       case 'Current':
         return a.currentPrice.compareTo(b.currentPrice);
       case 'P/L':
@@ -2072,6 +2672,8 @@ class _StocksScreenState extends State<StocksScreen> {
         final trendA = _trendFor(a, provider)?.trend ?? '';
         final trendB = _trendFor(b, provider)?.trend ?? '';
         return _compareEmptyLast(trendA, trendB);
+      case 'News':
+        return a.consensusTarget.compareTo(b.consensusTarget);
       default:
         return 0;
     }
@@ -2114,13 +2716,13 @@ class _TrianglePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()..color = color;
     final path = Path();
-    
+
     // Draw an upward-pointing triangle
     path.moveTo(size.width / 2, 0);
     path.lineTo(size.width, size.height);
     path.lineTo(0, size.height);
     path.close();
-    
+
     canvas.drawPath(path, paint);
   }
 

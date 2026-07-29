@@ -368,8 +368,56 @@ func backfillOriginalQuantityAndFIFO(db *gorm.DB) error {
 	return nil
 }
 
+func databaseDSN() string {
+	if dsn := strings.TrimSpace(os.Getenv("DATABASE_URL")); dsn != "" {
+		return dsn
+	}
+	return "host=localhost user=finance password=finance dbname=financetracker port=5432 sslmode=disable"
+}
+
+func listenPort() string {
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		return port
+	}
+	return "8080"
+}
+
+// loadDotEnv loads KEY=VALUE pairs from path into the process env when the key
+// is not already set. Missing file is ignored.
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:eq])
+		val := strings.TrimSpace(line[eq+1:])
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, val)
+	}
+}
+
 func main() {
-	dsn := "host=localhost user=finance password=finance dbname=financetracker port=5432 sslmode=disable"
+	loadDotEnv(".env")
+	dsn := databaseDSN()
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
@@ -409,6 +457,10 @@ func main() {
 
 	if err := handlers.EnsureAppConfig(db); err != nil {
 		log.Fatal("Failed to seed app config:", err)
+	}
+
+	if err := handlers.MigrateRecommendationRulesHoldThresholds(db); err != nil {
+		log.Fatal("Failed to migrate Hold/threshold recommendation rules:", err)
 	}
 
 	admin, err := handlers.SeedAdminUser(db)
@@ -483,6 +535,8 @@ func main() {
 			authed.GET("/stocks/:id", h.GetStock)
 			authed.PUT("/stocks/:id", h.UpdateStock)
 			authed.PUT("/stocks/:id/holdings", h.UpdateStockHoldings)
+			authed.POST("/stocks/:id/hold", h.MarkStockHold)
+			authed.PUT("/stocks/:id/thresholds", h.SetStockThresholds)
 
 			authed.POST("/transactions/buy", h.CreateBuyTransaction)
 			authed.POST("/transactions/buy/replace-by-source", h.ReplaceSourceBuyTransactions)
@@ -520,6 +574,9 @@ func main() {
 		}
 	}
 
-	log.Println("Server starting on :8080")
-	r.Run(":8080")
+	port := listenPort()
+	log.Printf("Server starting on :%s", port)
+	if err := r.Run(":" + port); err != nil {
+		log.Fatal("Failed to start server:", err)
+	}
 }

@@ -7,7 +7,10 @@ import '../models/symbol_mapping.dart';
 import '../models/user.dart';
 
 class ApiService {
-  static const String baseUrl = 'http://localhost:8080/api/v1';
+  static const String baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://localhost:8080/api/v1',
+  );
   static String? _token;
   static void Function()? onUnauthorized;
 
@@ -401,6 +404,7 @@ class ApiService {
                   'transaction_date': transactionDate.toUtc().toIso8601String(),
                   if (stock.name.isNotEmpty) 'name': stock.name,
                   if (stock.isin != null && stock.isin!.isNotEmpty) 'isin': stock.isin,
+                  if (stock.sector.isNotEmpty) 'sector': stock.sector,
                 })
             .toList(),
       }),
@@ -436,6 +440,52 @@ class ApiService {
       return json.decode(response.body);
     }
     throw Exception(_errorMessage(response, 'Failed to create sell transaction'));
+  }
+
+  static Future<Map<String, dynamic>> markStockHold({
+    required int stockId,
+    required double price,
+    required String source,
+    DateTime? heldAt,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/stocks/$stockId/hold'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'price': price,
+        'source': source,
+        'held_at': (heldAt ?? DateTime.now()).toUtc().toIso8601String(),
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to mark stock as hold'));
+  }
+
+  static Future<Map<String, dynamic>> setStockThresholds({
+    required int stockId,
+    required String source,
+    required double setBuyPrice,
+    required double setProfitBookingPrice,
+    required double setStopLossPrice,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/stocks/$stockId/thresholds'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'source': source,
+        'set_buy_price': setBuyPrice,
+        'set_profit_booking_price': setProfitBookingPrice,
+        'set_stop_loss_price': setStopLossPrice,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to save price thresholds'));
   }
 
   static Future<List<Map<String, dynamic>>> getStockHistory(String symbol) async {
@@ -604,13 +654,18 @@ class ApiService {
     bool? useAsStockWatchList,
     double? recommendationFluctuationPct,
     bool clearRecommendationFluctuation = false,
+    Map<String, dynamic>? recommendationRules,
+    bool clearRecommendationRules = false,
   }) async {
     final body = <String, dynamic>{};
     if (useAsStockWatchList != null) {
       body['use_as_stock_watch_list'] = useAsStockWatchList;
     }
-    if (clearRecommendationFluctuation) {
+    if (clearRecommendationRules || clearRecommendationFluctuation) {
+      body['clear_recommendation_rules'] = true;
       body['clear_recommendation_fluctuation'] = true;
+    } else if (recommendationRules != null) {
+      body['recommendation_rules'] = recommendationRules;
     } else if (recommendationFluctuationPct != null) {
       body['recommendation_fluctuation_pct'] = recommendationFluctuationPct;
     }
@@ -639,15 +694,21 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> saveAdminConfig({
-    required double defaultRecommendationFluctuationPct,
+    double? defaultRecommendationFluctuationPct,
+    Map<String, dynamic>? recommendationRules,
   }) async {
+    final body = <String, dynamic>{};
+    if (recommendationRules != null) {
+      body['recommendation_rules'] = recommendationRules;
+    }
+    if (defaultRecommendationFluctuationPct != null) {
+      body['default_recommendation_fluctuation_pct'] =
+          defaultRecommendationFluctuationPct;
+    }
     final response = await http.put(
       Uri.parse('$baseUrl/admin/config'),
       headers: _headers(jsonBody: true),
-      body: json.encode({
-        'default_recommendation_fluctuation_pct':
-            defaultRecommendationFluctuationPct,
-      }),
+      body: json.encode(body),
     );
     _checkUnauthorized(response);
     if (response.statusCode == 200) {

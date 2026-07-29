@@ -58,25 +58,26 @@ class _MyAppState extends State<MyApp> {
         ChangeNotifierProvider.value(value: _authProvider),
         ChangeNotifierProvider.value(value: _financeProvider),
       ],
-      child: MaterialApp(
-        title: 'Finance Tracker',
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-          useMaterial3: true,
-        ),
-        home: Consumer<AuthProvider>(
-          builder: (context, auth, _) {
-            if (auth.isLoading) {
-              return const Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              );
-            }
-            if (!auth.isAuthenticated) {
-              return const LoginScreen();
-            }
-            return const HomeScreen();
-          },
-        ),
+      // Rebuild MaterialApp (and its Navigator) when auth changes so any
+      // pushed routes are discarded and Login/Home replace the stack.
+      child: Consumer<AuthProvider>(
+        builder: (context, auth, _) {
+          return MaterialApp(
+            key: ValueKey<bool>(auth.isAuthenticated),
+            title: 'Finance Tracker',
+            theme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+              useMaterial3: true,
+            ),
+            home: auth.isLoading
+                ? const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  )
+                : auth.isAuthenticated
+                    ? const HomeScreen()
+                    : const LoginScreen(),
+          );
+        },
       ),
     );
   }

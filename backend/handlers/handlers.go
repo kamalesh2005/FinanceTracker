@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"financetracker/middleware"
 	"financetracker/models"
+	"financetracker/trendlyne"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,16 +18,27 @@ import (
 	"gorm.io/gorm"
 )
 
+const consensusRefreshIntervalDays = 3
+
+// consensusDevFetchLimit > 0: development mode — always refetch the first N user
+// holdings on every refresh (ignore 3-day cache). Set to 0 for production.
+const consensusDevFetchLimit = 5
+
 // StockWithDetails embeds Stock with one User_Stocks position (per source).
 type StockWithDetails struct {
 	models.Stock
-	Source          string     `json:"source"`
-	Quantity        float64    `json:"quantity"`
-	AverageBuyPrice float64    `json:"average_buy_price"`
-	LastBuyPrice    float64    `json:"last_buy_price"`
-	LastBuyDate     *time.Time `json:"last_buy_date"`
-	LastSalePrice   float64    `json:"last_sale_price"`
-	LastSaleDate    *time.Time `json:"last_sale_date"`
+	Source                string     `json:"source"`
+	Quantity              float64    `json:"quantity"`
+	AverageBuyPrice       float64    `json:"average_buy_price"`
+	LastBuyPrice          float64    `json:"last_buy_price"`
+	LastBuyDate           *time.Time `json:"last_buy_date"`
+	LastSalePrice         float64    `json:"last_sale_price"`
+	LastSaleDate          *time.Time `json:"last_sale_date"`
+	LastHoldPrice         float64    `json:"last_hold_price"`
+	LastHoldDate          *time.Time `json:"last_hold_date"`
+	SetBuyPrice           float64    `json:"set_buy_price"`
+	SetProfitBookingPrice float64    `json:"set_profit_booking_price"`
+	SetStopLossPrice      float64    `json:"set_stop_loss_price"`
 }
 
 func yahooChartURL(symbol, suffix, query string) string {
@@ -60,6 +72,16 @@ func isSameCalendarDay(t *time.Time, today time.Time) bool {
 	return d.Equal(today)
 }
 
+func needsConsensusRefresh(last *time.Time, today time.Time) bool {
+	if last == nil {
+		return true
+	}
+	loc := today.Location()
+	local := last.In(loc)
+	fetchedDay := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	return today.Sub(fetchedDay) >= time.Duration(consensusRefreshIntervalDays)*24*time.Hour
+}
+
 func (h *Handler) stocksWithHoldings(stocks []models.Stock, userID uint) []StockWithDetails {
 	stocksWithDetails := make([]StockWithDetails, 0, len(stocks))
 	for _, stock := range stocks {
@@ -74,14 +96,19 @@ func (h *Handler) stocksWithHoldings(stocks []models.Stock, userID uint) []Stock
 				source = models.SourceManualAdd
 			}
 			stocksWithDetails = append(stocksWithDetails, StockWithDetails{
-				Stock:           stock,
-				Source:          source,
-				Quantity:        pos.Quantity,
-				AverageBuyPrice: pos.AvgBuyPrice,
-				LastBuyPrice:    pos.LastBuyPrice,
-				LastBuyDate:     pos.LastBuyDate,
-				LastSalePrice:   pos.LastSalePrice,
-				LastSaleDate:    pos.LastSaleDate,
+				Stock:                 stock,
+				Source:                source,
+				Quantity:              pos.Quantity,
+				AverageBuyPrice:       pos.AvgBuyPrice,
+				LastBuyPrice:          pos.LastBuyPrice,
+				LastBuyDate:           pos.LastBuyDate,
+				LastSalePrice:         pos.LastSalePrice,
+				LastSaleDate:          pos.LastSaleDate,
+				LastHoldPrice:         pos.LastHoldPrice,
+				LastHoldDate:          pos.LastHoldDate,
+				SetBuyPrice:           pos.SetBuyPrice,
+				SetProfitBookingPrice: pos.SetProfitBookingPrice,
+				SetStopLossPrice:      pos.SetStopLossPrice,
 			})
 		}
 	}
@@ -589,6 +616,7 @@ func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
 			TransactionDate time.Time `json:"transaction_date" binding:"required"`
 			Name            string    `json:"name"`
 			ISIN            string    `json:"isin"`
+			Sector          string    `json:"sector"`
 		} `json:"items" binding:"required"`
 	}
 
@@ -642,6 +670,15 @@ func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
 		if createdMapping {
 			applyYahooDataToStock(item.Symbol, &stock)
 			h.persistYahooStockFields(&stock)
+		}
+
+		if sector := strings.TrimSpace(item.Sector); sector != "" && strings.TrimSpace(stock.Sector) == "" {
+			stock.Sector = sector
+			if err := tx.Model(&stock).Update("sector", sector).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
 		}
 
 		qty := item.Quantity
@@ -751,6 +788,136 @@ func (h *Handler) CreateSellTransaction(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, ledger)
+}
+
+// MarkStockHold sets last hold price/date on User_Stocks for recommendation baseline.
+func (h *Handler) MarkStockHold(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid stock id"})
+		return
+	}
+
+	var req struct {
+		Source string     `json:"source"`
+		Price  float64    `json:"price" binding:"required"`
+		HeldAt *time.Time `json:"held_at"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Price <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price must be greater than 0"})
+		return
+	}
+
+	userID := middleware.CurrentUserID(c)
+	source := normalizeSource(req.Source)
+	heldAt := time.Now()
+	if req.HeldAt != nil {
+		heldAt = *req.HeldAt
+	}
+
+	var stock models.Stock
+	if err := h.DB.First(&stock, uint(id)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var pos models.UserStock
+	if err := h.DB.Where("user_id = ? AND stock_id = ? AND source = ?", userID, stock.ID, source).
+		First(&pos).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "holding not found for this source"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	pos.LastHoldPrice = req.Price
+	pos.LastHoldDate = &heldAt
+	clearPriceThresholds(&pos)
+	if err := h.DB.Save(&pos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stock_id":        pos.StockID,
+		"source":          pos.Source,
+		"last_hold_price": pos.LastHoldPrice,
+		"last_hold_date":  pos.LastHoldDate,
+	})
+}
+
+// SetStockThresholds updates buy / book-profit / stop-loss price thresholds on User_Stocks.
+func (h *Handler) SetStockThresholds(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid stock id"})
+		return
+	}
+
+	var req struct {
+		Source                string  `json:"source"`
+		SetBuyPrice           float64 `json:"set_buy_price"`
+		SetProfitBookingPrice float64 `json:"set_profit_booking_price"`
+		SetStopLossPrice      float64 `json:"set_stop_loss_price"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.SetBuyPrice < 0 || req.SetProfitBookingPrice < 0 || req.SetStopLossPrice < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "threshold prices cannot be negative"})
+		return
+	}
+
+	userID := middleware.CurrentUserID(c)
+	source := normalizeSource(req.Source)
+
+	var stock models.Stock
+	if err := h.DB.First(&stock, uint(id)).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var pos models.UserStock
+	if err := h.DB.Where("user_id = ? AND stock_id = ? AND source = ?", userID, stock.ID, source).
+		First(&pos).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "holding not found for this source"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	pos.SetBuyPrice = req.SetBuyPrice
+	pos.SetProfitBookingPrice = req.SetProfitBookingPrice
+	pos.SetStopLossPrice = req.SetStopLossPrice
+	if err := h.DB.Save(&pos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"stock_id":                 pos.StockID,
+		"source":                   pos.Source,
+		"set_buy_price":            pos.SetBuyPrice,
+		"set_profit_booking_price": pos.SetProfitBookingPrice,
+		"set_stop_loss_price":      pos.SetStopLossPrice,
+	})
 }
 
 func (h *Handler) GetTransactions(c *gin.Context) {
@@ -1196,18 +1363,40 @@ func fetchSixthLowestPrice(symbol string) (float64, error) {
 }
 
 type StockTrend struct {
-	StockID       uint    `json:"stock_id"`
-	Symbol        string  `json:"symbol"`
-	CurrentPrice  float64 `json:"current_price"`
-	MA7           float64 `json:"ma7"`
-	MA20          float64 `json:"ma20"`
-	StockDelta    float64 `json:"stock_delta"`
-	MarketDelta   float64 `json:"market_delta"`
-	AdjustedDelta float64 `json:"adjusted_delta"`
-	Trend         string  `json:"trend"`
+	StockID         uint    `json:"stock_id"`
+	Symbol          string  `json:"symbol"`
+	CurrentPrice    float64 `json:"current_price"`
+	MA7             float64 `json:"ma7"`
+	MA20            float64 `json:"ma20"`
+	MA50            float64 `json:"ma50"`
+	StockSTDelta    float64 `json:"stock_st_delta"`
+	MarketSTDelta   float64 `json:"market_st_delta"`
+	AdjustedSTDelta float64 `json:"adjusted_st_delta"`
+	StockMTDelta    float64 `json:"stock_mt_delta"`
+	MarketMTDelta   float64 `json:"market_mt_delta"`
+	AdjustedMTDelta float64 `json:"adjusted_mt_delta"`
+	Trend           string  `json:"trend"`
 }
 
-func fetchMovingAverages(symbol string) (currentPrice, ma7, ma20, delta float64, err error) {
+func calcSimpleMovingAverage(closes []float64, period int) float64 {
+	if len(closes) < period || period <= 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, c := range closes[len(closes)-period:] {
+		sum += c
+	}
+	return sum / float64(period)
+}
+
+func calcDelta(shorter, longer float64) float64 {
+	if longer <= 0 {
+		return 0
+	}
+	return ((shorter - longer) / longer) * 100
+}
+
+func fetchMovingAverages(symbol string) (currentPrice, ma7, ma20, ma50, stDelta, mtDelta float64, err error) {
 	suffixes := []string{".NS", ".BO", ""}
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -1267,60 +1456,71 @@ func fetchMovingAverages(symbol string) (currentPrice, ma7, ma20, delta float64,
 			}
 		}
 
-		n := len(closes)
-		if n < 7 {
-			return 0, 0, 0, 0, fmt.Errorf("insufficient data for %s", symbol)
+		if len(closes) < 7 {
+			return 0, 0, 0, 0, 0, 0, fmt.Errorf("insufficient data for %s", symbol)
 		}
 
-		sum7 := 0.0
-		for _, c := range closes[n-7:] {
-			sum7 += c
-		}
-		ma7 = sum7 / 7
-
-		if n >= 20 {
-			sum20 := 0.0
-			for _, c := range closes[n-20:] {
-				sum20 += c
-			}
-			ma20 = sum20 / 20
-		}
-
+		ma7 = calcSimpleMovingAverage(closes, 7)
+		ma20 = calcSimpleMovingAverage(closes, 20)
+		ma50 = calcSimpleMovingAverage(closes, 50)
 		if ma20 > 0 {
-			delta = ((ma7 - ma20) / ma20) * 100
+			stDelta = calcDelta(ma7, ma20)
+		}
+		if ma50 > 0 {
+			mtDelta = calcDelta(ma20, ma50)
 		}
 
-		return currentPrice, ma7, ma20, delta, nil
+		return currentPrice, ma7, ma20, ma50, stDelta, mtDelta, nil
 	}
-	return 0, 0, 0, 0, fmt.Errorf("data not found for %s", symbol)
+	return 0, 0, 0, 0, 0, 0, fmt.Errorf("data not found for %s", symbol)
 }
 
-func classifyTrend(currentPrice, ma7, ma20, adjustedDelta float64) string {
+func classifyBearishStrength(currentPrice, fastMA, slowMA, adjustedDelta float64) int {
+	if fastMA <= 0 || slowMA <= 0 {
+		return 0
+	}
+	if currentPrice < fastMA && fastMA < slowMA {
+		if adjustedDelta < -10 {
+			return 2
+		}
+		return 1
+	}
+	if adjustedDelta < -10 && fastMA <= slowMA {
+		return 1
+	}
+	return 0
+}
+
+func classifyTrend(currentPrice, ma7, ma20, ma50, adjustedSTDelta, adjustedMTDelta float64) string {
 	trend := "neutral"
 	if ma7 > 0 && ma20 > 0 {
 		if currentPrice > ma7 && ma7 > ma20 {
-			if adjustedDelta > 0 {
+			if adjustedSTDelta > 0 {
 				trend = "bullish"
 			} else {
 				trend = "moderately bullish"
 			}
-		} else if currentPrice < ma7 && ma7 < ma20 {
-			if adjustedDelta < -10 {
-				trend = "bearish"
-			} else {
-				trend = "moderately bearish"
-			}
 		} else if ma7 > ma20 {
-			if adjustedDelta > 0 {
+			if adjustedSTDelta > 0 {
 				trend = "moderately bullish"
 			} else {
 				trend = "neutral"
 			}
 		} else {
-			if adjustedDelta < -10 {
-				trend = "moderately bearish"
-			} else {
-				trend = "neutral"
+			stBearish := classifyBearishStrength(currentPrice, ma7, ma20, adjustedSTDelta)
+			ltBearish := classifyBearishStrength(currentPrice, ma20, ma50, adjustedMTDelta)
+			if stBearish > 0 {
+				if ltBearish > 0 {
+					if stBearish == 2 && ltBearish == 2 {
+						trend = "bearish_lt"
+					} else {
+						trend = "moderately bearish_lt"
+					}
+				} else if stBearish == 2 {
+					trend = "bearish_st"
+				} else {
+					trend = "moderately bearish_st"
+				}
 			}
 		}
 	}
@@ -1334,23 +1534,33 @@ func needsTrendData(stock *models.Stock, today time.Time) bool {
 	if !isSameCalendarDay(stock.LastTrendFetchedDate, today) {
 		return true
 	}
-	if stock.MA7 == 0 || stock.MA20 == 0 {
+	if stock.MA7 == 0 || stock.MA20 == 0 || stock.MA50 == 0 {
 		return true
 	}
 	trend := strings.TrimSpace(stock.Trend)
 	return trend == "" || trend == "unknown"
 }
 
-func applyTrendToStock(stock *models.Stock, currentPrice, ma7, ma20, sensexMA7, sensexMA20, stockDelta, marketDelta float64, now time.Time) {
-	adjustedDelta := stockDelta - marketDelta
+func applyTrendToStock(
+	stock *models.Stock,
+	currentPrice, ma7, ma20, ma50, sensexMA7, sensexMA20, sensexMA50, stockSTDelta, marketSTDelta, stockMTDelta, marketMTDelta float64,
+	now time.Time,
+) {
+	adjustedSTDelta := stockSTDelta - marketSTDelta
+	adjustedMTDelta := stockMTDelta - marketMTDelta
 	stock.MA7 = ma7
 	stock.MA20 = ma20
+	stock.MA50 = ma50
 	stock.SensexMA7 = sensexMA7
 	stock.SensexMA20 = sensexMA20
-	stock.StockDelta = stockDelta
-	stock.MarketDelta = marketDelta
-	stock.AdjustedDelta = adjustedDelta
-	stock.Trend = classifyTrend(currentPrice, ma7, ma20, adjustedDelta)
+	stock.SensexMA50 = sensexMA50
+	stock.StockSTDelta = stockSTDelta
+	stock.MarketSTDelta = marketSTDelta
+	stock.AdjustedSTDelta = adjustedSTDelta
+	stock.StockMTDelta = stockMTDelta
+	stock.MarketMTDelta = marketMTDelta
+	stock.AdjustedMTDelta = adjustedMTDelta
+	stock.Trend = classifyTrend(currentPrice, ma7, ma20, ma50, adjustedSTDelta, adjustedMTDelta)
 	stock.LastTrendFetchedDate = &now
 	if currentPrice > 0 {
 		stock.CurrentPrice = currentPrice
@@ -1361,11 +1571,16 @@ func (h *Handler) persistTrendFields(stock *models.Stock) {
 	updates := map[string]interface{}{
 		"ma7":                     stock.MA7,
 		"ma20":                    stock.MA20,
+		"ma50":                    stock.MA50,
 		"sensex_ma7":              stock.SensexMA7,
 		"sensex_ma20":             stock.SensexMA20,
-		"stock_delta":             stock.StockDelta,
-		"market_delta":            stock.MarketDelta,
-		"adjusted_delta":          stock.AdjustedDelta,
+		"sensex_ma50":             stock.SensexMA50,
+		"stock_st_delta":          stock.StockSTDelta,
+		"market_st_delta":         stock.MarketSTDelta,
+		"adjusted_st_delta":       stock.AdjustedSTDelta,
+		"stock_mt_delta":          stock.StockMTDelta,
+		"market_mt_delta":         stock.MarketMTDelta,
+		"adjusted_mt_delta":       stock.AdjustedMTDelta,
 		"trend":                   stock.Trend,
 		"last_trend_fetched_date": stock.LastTrendFetchedDate,
 	}
@@ -1378,24 +1593,28 @@ func (h *Handler) persistTrendFields(stock *models.Stock) {
 func stockTrendFromStock(stock models.Stock) StockTrend {
 	price := stock.CurrentPrice
 	return StockTrend{
-		StockID:       stock.ID,
-		Symbol:        stock.Symbol,
-		CurrentPrice:  price,
-		MA7:           stock.MA7,
-		MA20:          stock.MA20,
-		StockDelta:    stock.StockDelta,
-		MarketDelta:   stock.MarketDelta,
-		AdjustedDelta: stock.AdjustedDelta,
-		Trend:         stock.Trend,
+		StockID:         stock.ID,
+		Symbol:          stock.Symbol,
+		CurrentPrice:    price,
+		MA7:             stock.MA7,
+		MA20:            stock.MA20,
+		MA50:            stock.MA50,
+		StockSTDelta:    stock.StockSTDelta,
+		MarketSTDelta:   stock.MarketSTDelta,
+		AdjustedSTDelta: stock.AdjustedSTDelta,
+		StockMTDelta:    stock.StockMTDelta,
+		MarketMTDelta:   stock.MarketMTDelta,
+		AdjustedMTDelta: stock.AdjustedMTDelta,
+		Trend:           stock.Trend,
 	}
 }
 
-func (h *Handler) fetchAndPersistStockTrend(stock *models.Stock, sensexMA7, sensexMA20, marketDelta float64, now time.Time) error {
-	currentPrice, ma7, ma20, stockDelta, err := fetchMovingAverages(stock.Symbol)
+func (h *Handler) fetchAndPersistStockTrend(stock *models.Stock, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta float64, now time.Time) error {
+	currentPrice, ma7, ma20, ma50, stockSTDelta, stockMTDelta, err := fetchMovingAverages(stock.Symbol)
 	if err != nil {
 		return err
 	}
-	applyTrendToStock(stock, currentPrice, ma7, ma20, sensexMA7, sensexMA20, stockDelta, marketDelta, now)
+	applyTrendToStock(stock, currentPrice, ma7, ma20, ma50, sensexMA7, sensexMA20, sensexMA50, stockSTDelta, marketSTDelta, stockMTDelta, marketMTDelta, now)
 	h.persistTrendFields(stock)
 	return nil
 }
@@ -1507,9 +1726,9 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 		}
 	}
 
-	var sensexMA7, sensexMA20, marketDelta float64
+	var sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta float64
 	if needsFetch {
-		_, sensexMA7, sensexMA20, marketDelta, _ = fetchMovingAverages("^BSESN")
+		_, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, _ = fetchMovingAverages("^BSESN")
 	}
 
 	for i := range stocks {
@@ -1519,7 +1738,7 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 			continue
 		}
 
-		if err := h.fetchAndPersistStockTrend(stock, sensexMA7, sensexMA20, marketDelta, now); err != nil {
+		if err := h.fetchAndPersistStockTrend(stock, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, now); err != nil {
 			trends = append(trends, StockTrend{
 				StockID:      stock.ID,
 				Symbol:       stock.Symbol,
@@ -1552,10 +1771,10 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 			break
 		}
 	}
-	var sensexMA7, sensexMA20, marketDelta float64
+	var sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta float64
 	if needsAnyTrend {
-		_, sensexMA7, sensexMA20, marketDelta, _ = fetchMovingAverages("^BSESN")
-		log.Printf("RefreshStockPrices: Sensex MA7=%.2f MA20=%.2f marketDelta=%.2f", sensexMA7, sensexMA20, marketDelta)
+		_, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, _ = fetchMovingAverages("^BSESN")
+		log.Printf("RefreshStockPrices: Sensex MA7=%.2f MA20=%.2f MA50=%.2f marketSTDelta=%.2f marketMTDelta=%.2f", sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta)
 	}
 
 	for i := range stocks {
@@ -1645,11 +1864,11 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 		}
 
 		if needsTrendData(s, today) {
-			if err := h.fetchAndPersistStockTrend(s, sensexMA7, sensexMA20, marketDelta, now); err != nil {
+			if err := h.fetchAndPersistStockTrend(s, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, now); err != nil {
 				log.Printf("RefreshStockPrices [%s]: trend FAIL: %v", s.Symbol, err)
 			} else {
-				log.Printf("RefreshStockPrices [%s]: trend OK %s ma7=%.2f ma20=%.2f adj=%.2f",
-					s.Symbol, s.Trend, s.MA7, s.MA20, s.AdjustedDelta)
+				log.Printf("RefreshStockPrices [%s]: trend OK %s ma7=%.2f ma20=%.2f ma50=%.2f adjST=%.2f adjMT=%.2f",
+					s.Symbol, s.Trend, s.MA7, s.MA20, s.MA50, s.AdjustedSTDelta, s.AdjustedMTDelta)
 			}
 		} else {
 			log.Printf("RefreshStockPrices [%s]: trend skipped (already fetched today)", s.Symbol)
@@ -1665,12 +1884,182 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 	}
 	log.Printf("RefreshStockPrices: finished %d stocks", len(stocks))
 	userID := middleware.CurrentUserID(c)
+	h.refreshConsensusForUserHoldings(userID, today, now)
 	userStocks, err := h.stocksForUser(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, h.stocksWithHoldings(userStocks, userID))
+}
+
+// refreshConsensusForUserHoldings scrapes Trendlyne consensus targets for the
+// current user's held symbols. In dev (consensusDevFetchLimit > 0) only the
+// first N holdings are refreshed on every call; otherwise uses the 3-day cache.
+func (h *Handler) refreshConsensusForUserHoldings(userID uint, today, now time.Time) {
+	userStocks, err := h.stocksForUser(userID)
+	if err != nil {
+		log.Printf("RefreshStockConsensus: load user stocks FAIL: %v", err)
+		return
+	}
+	sort.Slice(userStocks, func(i, j int) bool {
+		return strings.ToUpper(userStocks[i].Symbol) < strings.ToUpper(userStocks[j].Symbol)
+	})
+
+	toFetch := make([]*models.Stock, 0)
+	for i := range userStocks {
+		if needsConsensusRefresh(userStocks[i].LastConsensusFetchedDate, today) {
+			toFetch = append(toFetch, &userStocks[i])
+		}
+	}
+	stale := len(toFetch)
+	if stale == 0 {
+		log.Printf("RefreshStockConsensus: all %d user holdings fresh", len(userStocks))
+		return
+	}
+	// In dev each refresh scrapes only a slice of the stale holdings, so the
+	// portfolio fills in progressively instead of re-fetching the same symbols.
+	if consensusDevFetchLimit > 0 && stale > consensusDevFetchLimit {
+		toFetch = toFetch[:consensusDevFetchLimit]
+	}
+	if consensusDevFetchLimit > 0 {
+		log.Printf("RefreshStockConsensus: DEV mode — fetching %d of %d stale (%d holdings)",
+			len(toFetch), stale, len(userStocks))
+	} else {
+		log.Printf("RefreshStockConsensus: refreshing %d of %d user holdings", len(toFetch), len(userStocks))
+	}
+
+	for _, s := range toFetch {
+		result, usedSymbol, err := h.fetchConsensusWithMappedFallback(s)
+		if err != nil {
+			logConsensusFetchError(s.Symbol, usedSymbol, err)
+			// Stamp the attempt so a permanently failing symbol doesn't block
+			// the rest of the portfolio from being refreshed.
+			s.LastConsensusFetchedDate = &now
+			h.DB.Model(s).Update("last_consensus_fetched_date", now)
+			continue
+		}
+
+		updates := map[string]interface{}{
+			"trendlyne_url":               result.URL,
+			"consensus_ltp":               result.LTP,
+			"consensus_target":            result.Target,
+			"consensus_upside":            result.Upside,
+			"consensus_type":              result.Type,
+			"last_consensus_fetched_date": now,
+		}
+		s.TrendlyneURL = result.URL
+		s.ConsensusLTP = result.LTP
+		s.ConsensusTarget = result.Target
+		s.ConsensusUpside = result.Upside
+		s.ConsensusType = result.Type
+		s.LastConsensusFetchedDate = &now
+		if result.HasDate {
+			d := result.Date
+			updates["consensus_date"] = d
+			s.ConsensusDate = &d
+		}
+
+		if err := h.DB.Model(s).Updates(updates).Error; err != nil {
+			log.Printf("RefreshStockConsensus [%s]: DB FAIL: %v", s.Symbol, err)
+			continue
+		}
+		if !strings.EqualFold(usedSymbol, s.Symbol) {
+			log.Printf("RefreshStockConsensus [%s]: OK via mapped=%s target=%.2f upside=%.2f type=%s url=%s",
+				s.Symbol, usedSymbol, result.Target, result.Upside, result.Type, result.URL)
+		} else {
+			log.Printf("RefreshStockConsensus [%s]: OK target=%.2f upside=%.2f type=%s url=%s",
+				s.Symbol, result.Target, result.Upside, result.Type, result.URL)
+		}
+	}
+}
+
+// consensusLookupCandidates returns symbols to try for Trendlyne, preferring the
+// stock's source symbol then Global_SymbolMappings.yahoo_symbol when distinct.
+// If the cached URL already belongs to the mapped symbol, start with the mapped
+// symbol so we skip a known-failing source lookup.
+func consensusLookupCandidates(sourceSymbol, mappedSymbol, cachedURL string) []string {
+	source := strings.ToUpper(strings.TrimSpace(sourceSymbol))
+	mapped := strings.ToUpper(strings.TrimSpace(mappedSymbol))
+	cachedURL = strings.TrimSpace(cachedURL)
+
+	hasDistinctMapped := mapped != "" && !strings.EqualFold(mapped, source)
+	if hasDistinctMapped && cachedURL != "" && trendlyne.ValidateReportURL(mapped, cachedURL) {
+		return []string{mapped}
+	}
+
+	out := make([]string, 0, 2)
+	if source != "" {
+		out = append(out, source)
+	}
+	if hasDistinctMapped {
+		out = append(out, mapped)
+	}
+	return out
+}
+
+func shouldRetryConsensusWithMappedSymbol(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "URL_NOT_FOUND") || strings.Contains(msg, "PARSE_FAIL")
+}
+
+func pageURLForConsensusLookup(symbol, cachedURL string) string {
+	cachedURL = strings.TrimSpace(cachedURL)
+	if cachedURL == "" {
+		return ""
+	}
+	if trendlyne.ValidateReportURL(symbol, cachedURL) {
+		return cachedURL
+	}
+	return ""
+}
+
+func (h *Handler) fetchConsensusWithMappedFallback(s *models.Stock) (*trendlyne.ConsensusResult, string, error) {
+	mapped := resolveYahooSymbol(s.Symbol)
+	candidates := consensusLookupCandidates(s.Symbol, mapped, s.TrendlyneURL)
+	var lastErr error
+	lastSymbol := s.Symbol
+	for i, sym := range candidates {
+		pageURL := pageURLForConsensusLookup(sym, s.TrendlyneURL)
+		if i > 0 {
+			log.Printf("RefreshStockConsensus [%s]: retrying with mapped=%s", s.Symbol, sym)
+		}
+		result, err := trendlyne.FetchConsensus(sym, pageURL)
+		if err == nil {
+			return result, sym, nil
+		}
+		lastErr = err
+		lastSymbol = sym
+		if i+1 < len(candidates) && shouldRetryConsensusWithMappedSymbol(err) {
+			continue
+		}
+		break
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no consensus lookup candidates")
+	}
+	return nil, lastSymbol, lastErr
+}
+
+func logConsensusFetchError(sourceSymbol, usedSymbol string, err error) {
+	msg := err.Error()
+	prefix := sourceSymbol
+	if usedSymbol != "" && !strings.EqualFold(usedSymbol, sourceSymbol) {
+		prefix = fmt.Sprintf("%s via mapped=%s", sourceSymbol, usedSymbol)
+	}
+	switch {
+	case strings.Contains(msg, "URL_NOT_FOUND"):
+		log.Printf("RefreshStockConsensus [%s]: URL_NOT_FOUND: %v", prefix, err)
+	case strings.Contains(msg, "FETCH_FAIL"):
+		log.Printf("RefreshStockConsensus [%s]: FETCH_FAIL: %v", prefix, err)
+	case strings.Contains(msg, "PARSE_FAIL"):
+		log.Printf("RefreshStockConsensus [%s]: PARSE_FAIL: %v", prefix, err)
+	default:
+		log.Printf("RefreshStockConsensus [%s]: FAIL: %v", prefix, err)
+	}
 }
 
 // Mutual Fund handlers

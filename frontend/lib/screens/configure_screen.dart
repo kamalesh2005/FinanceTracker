@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/finance_provider.dart';
+import '../services/recommendation_engine.dart';
 import '../widgets/auth_app_bar_actions.dart';
+import '../widgets/recommendation_rules_editor.dart';
 
 class ConfigureScreen extends StatefulWidget {
   const ConfigureScreen({super.key});
@@ -16,20 +17,14 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _useAsStockWatchList = false;
-  late TextEditingController _fluctuationController;
+  final _rulesKey = GlobalKey<RecommendationRulesEditorState>();
+  RecommendationRuleset? _rulesInitial;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _fluctuationController = TextEditingController();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
-  }
-
-  @override
-  void dispose() {
-    _fluctuationController.dispose();
-    super.dispose();
   }
 
   Future<void> _load() async {
@@ -42,10 +37,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
     if (!mounted) return;
     setState(() {
       _useAsStockWatchList = auth.useAsStockWatchList;
-      _fluctuationController.text =
-          auth.effectiveRecommendationFluctuationPct.toStringAsFixed(
-        auth.effectiveRecommendationFluctuationPct % 1 == 0 ? 0 : 2,
-      );
+      _rulesInitial = auth.effectiveRecommendationRules;
       _loading = false;
     });
   }
@@ -82,9 +74,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
     final finance = context.read<FinanceProvider>();
     setState(() => _saving = true);
     try {
-      await auth.savePreferences(
-        useAsStockWatchList: value,
-      );
+      await auth.savePreferences(useAsStockWatchList: value);
       if (!mounted) return;
       setState(() => _useAsStockWatchList = value);
       await finance.loadPortfolioSummary();
@@ -108,23 +98,26 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
     }
   }
 
-  Future<void> _saveFluctuation() async {
-    final raw = _fluctuationController.text.trim();
-    final pct = double.tryParse(raw);
-    if (pct == null || pct <= 0) {
+  Future<void> _saveRules() async {
+    final errors = <String>[];
+    final rs = _rulesKey.currentState?.buildRuleset(errors: errors);
+    if (rs == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a fluctuation % greater than 0')),
+        SnackBar(
+          content: Text(errors.isEmpty ? 'Invalid rules' : errors.first),
+        ),
       );
       return;
     }
     setState(() => _saving = true);
     try {
       await context.read<AuthProvider>().savePreferences(
-            recommendationFluctuationPct: pct,
+            recommendationRules: rs,
           );
       if (!mounted) return;
+      setState(() => _rulesInitial = rs);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Recommendation rule saved')),
+        const SnackBar(content: Text('Recommendation rules saved')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -136,24 +129,17 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
     }
   }
 
-  Future<void> _useAdminDefault() async {
+  Future<void> _resetRules() async {
     setState(() => _saving = true);
     try {
       final auth = context.read<AuthProvider>();
-      await auth.savePreferences(clearRecommendationFluctuation: true);
+      await auth.savePreferences(clearRecommendationRules: true);
       if (!mounted) return;
       setState(() {
-        _fluctuationController.text =
-            auth.effectiveRecommendationFluctuationPct.toStringAsFixed(
-          auth.effectiveRecommendationFluctuationPct % 1 == 0 ? 0 : 2,
-        );
+        _rulesInitial = auth.effectiveRecommendationRules;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Using admin default (${auth.defaultRecommendationFluctuationPct}%)',
-          ),
-        ),
+        const SnackBar(content: Text('Reset to admin default rules')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -167,15 +153,13 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final auth = context.watch<AuthProvider>();
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Configure'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),
-      body: _loading
+      body: _loading || _rulesInitial == null
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
@@ -207,52 +191,30 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  '% change from last buy/sell price that should trigger new recommendation',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Since stock has been reviewed and buy/sell decision made, '
-                  'new recommendation will be after stock moves beyond this range',
+                  'Define when each recommendation applies. Formulas use field '
+                  'names like curr_price and avg_buy_price.',
                   style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
                 ),
                 const SizedBox(height: 12),
+                RecommendationRulesEditor(
+                  key: _rulesKey,
+                  initial: _rulesInitial!,
+                  lockRecommendationText:
+                      !context.watch<AuthProvider>().isAdmin,
+                ),
+                const SizedBox(height: 12),
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(
-                      width: 120,
-                      child: TextField(
-                        controller: _fluctuationController,
-                        enabled: !_saving,
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        inputFormatters: [
-                          FilteringTextInputFormatter.allow(
-                            RegExp(r'[0-9.]'),
-                          ),
-                        ],
-                        decoration: const InputDecoration(
-                          labelText: '%',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                      ),
+                    FilledButton(
+                      onPressed: _saving ? null : _saveRules,
+                      child: const Text('Save rules'),
                     ),
                     const SizedBox(width: 12),
-                    FilledButton(
-                      onPressed: _saving ? null : _saveFluctuation,
-                      child: const Text('Save'),
+                    TextButton(
+                      onPressed: _saving ? null : _resetRules,
+                      child: const Text('Reset to admin default'),
                     ),
                   ],
-                ),
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: _saving ? null : _useAdminDefault,
-                  child: Text(
-                    'Use admin default (${auth.defaultRecommendationFluctuationPct}%)',
-                  ),
                 ),
               ],
             ),

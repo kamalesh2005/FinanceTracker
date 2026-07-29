@@ -192,6 +192,66 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
+  Future<bool> holdStock({
+    required int stockId,
+    required double price,
+    required String source,
+    DateTime? heldAt,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final src = source.trim().isEmpty ? 'Manual Add' : source.trim();
+      await ApiService.markStockHold(
+        stockId: stockId,
+        price: price,
+        source: src,
+        heldAt: heldAt ?? DateTime.now(),
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> setStockThresholds({
+    required int stockId,
+    required String source,
+    required double setBuyPrice,
+    required double setProfitBookingPrice,
+    required double setStopLossPrice,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final src = source.trim().isEmpty ? 'Manual Add' : source.trim();
+      await ApiService.setStockThresholds(
+        stockId: stockId,
+        source: src,
+        setBuyPrice: setBuyPrice,
+        setProfitBookingPrice: setProfitBookingPrice,
+        setStopLossPrice: setStopLossPrice,
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> addStocksBulk(List<Stock> stocks, {required String source}) async {
     _isLoading = true;
     _error = null;
