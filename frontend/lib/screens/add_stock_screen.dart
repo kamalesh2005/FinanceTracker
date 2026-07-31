@@ -13,6 +13,7 @@ import '../models/stock.dart';
 import '../providers/finance_provider.dart';
 import '../providers/auth_provider.dart';
 import '../utils/currency_format.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 class AddStockScreen extends StatefulWidget {
@@ -1027,7 +1028,9 @@ class _AddStockScreenState extends State<AddStockScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.stock == null ? 'Add Stock' : 'Edit Stock'),
+        title: AppBrandTitle(
+          widget.stock == null ? 'Add Stock' : 'Edit Stock',
+        ),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),
@@ -1099,7 +1102,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Upload HDFC Securities portfolio CSV (Symbol, Qty, Avg Price). Source: HDFCSec. Transaction date is set to today.',
+                          'Upload HDFC Securities portfolio CSV (Symbol, Qty, Avg Price). Account: HDFCSec. Transaction date is set to today.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),
@@ -1137,7 +1140,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Upload Zerodha holdings Excel (Symbol, ISIN, Sector, Quantity Available, Average Price). Source: Zerodha. Transaction date is set to today.',
+                          'Upload Zerodha holdings Excel (Symbol, ISIN, Sector, Quantity Available, Average Price). Account: Zerodha. Transaction date is set to today.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),

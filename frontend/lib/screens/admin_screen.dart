@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import 'symbol_mappings_screen.dart';
 import 'unmapped_stocks_screen.dart';
@@ -13,7 +14,7 @@ class AdminScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Admin'),
+        title: const AppBrandTitle('Admin'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),

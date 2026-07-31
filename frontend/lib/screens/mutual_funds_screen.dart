@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/finance_provider.dart';
 import '../models/mutual_fund.dart';
 import '../utils/currency_format.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import 'add_mutual_fund_screen.dart';
 
@@ -28,7 +29,7 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Mutual Funds'),
+        title: const AppBrandTitle('Mutual Funds'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(
           context,
@@ -137,6 +138,11 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
             ],
             const SizedBox(height: 4),
             Text(
+              'Account: ${mf.source.trim().isEmpty ? 'Manual Add' : mf.source}',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 4),
+            Text(
               'Scheme Code: ${mf.schemeCode}',
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
@@ -180,6 +186,7 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
         child: DataTable(
           columns: const [
             DataColumn(label: Text('Scheme')),
+            DataColumn(label: Text('Account')),
             DataColumn(label: Text('Code')),
             DataColumn(label: Text('Units')),
             DataColumn(label: Text('NAV')),
@@ -193,6 +200,7 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
             final current = mf.currentNav * mf.quantity;
             final profitLoss = current - invested;
             final profitLossPercentage = invested > 0 ? (profitLoss / invested) * 100 : 0.0;
+            final account = mf.source.trim().isEmpty ? 'Manual Add' : mf.source;
 
             return DataRow(
               cells: [
@@ -202,6 +210,7 @@ class _MutualFundsScreenState extends State<MutualFundsScreen> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 )),
+                DataCell(Text(account)),
                 DataCell(Text(mf.schemeCode)),
                 DataCell(Text(mf.quantity.toStringAsFixed(2))),
                 DataCell(Text(formatInr(mf.nav))),

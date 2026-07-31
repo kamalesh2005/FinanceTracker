@@ -116,6 +116,7 @@ type MutualFund struct {
 	SchemeCode   string    `json:"scheme_code" gorm:"not null"`
 	SchemeName   string    `json:"scheme_name"`
 	FundHouse    string    `json:"fund_house"`
+	Source       string    `json:"source" gorm:"not null;index;size:64;default:Manual Add"`
 	Quantity     float64   `json:"quantity" gorm:"not null"`
 	NAV          float64   `json:"nav" gorm:"not null"`
 	CurrentNAV   float64   `json:"current_nav"`

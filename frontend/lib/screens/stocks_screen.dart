@@ -7,6 +7,7 @@ import '../models/stock_trend.dart';
 import '../services/api_service.dart';
 import '../services/recommendation_engine.dart';
 import '../utils/currency_format.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import 'add_stock_screen.dart';
 import 'configure_screen.dart';
@@ -23,7 +24,7 @@ class StocksScreen extends StatefulWidget {
 class _StocksScreenState extends State<StocksScreen> {
   bool _isTableView = true;
 
-  /// null = default multi-key sort (Sector → Market Cap → Symbol → Source)
+  /// null = default multi-key sort (Sector → Market Cap → Symbol → Account)
   String? _sortColumn;
   bool _sortAscending = true;
 
@@ -82,7 +83,7 @@ class _StocksScreenState extends State<StocksScreen> {
   final Set<String> _selectedColumns = {..._defaultSelectedColumns};
   static const List<String> _allColumns = [
     'Symbol',
-    'Source',
+    'Account',
     'Qty',
     'Current Value',
     'Buy Price',
@@ -102,7 +103,7 @@ class _StocksScreenState extends State<StocksScreen> {
 
   static const Set<String> _defaultSelectedColumns = {
     'Symbol',
-    'Source',
+    'Account',
     'Qty',
     'Current Value',
     'Buy Price',
@@ -138,7 +139,8 @@ class _StocksScreenState extends State<StocksScreen> {
       await provider.loadStocks();
       // Show persisted trends immediately; don't block on Yahoo refresh.
       await provider.loadStockTrends();
-      await provider.refreshStockPrices();
+      // Reuse post-login Yahoo warm if in flight / already done.
+      await provider.ensureYahooWarmed();
       // Pick up any trends refresh computed for incomplete symbols.
       await provider.loadStockTrends();
     });
@@ -199,7 +201,7 @@ class _StocksScreenState extends State<StocksScreen> {
         return _symbolColumnWidth;
       case 'Qty':
         return 72;
-      case 'Source':
+      case 'Account':
         return 120;
       case 'Current Value':
         return 120;
@@ -263,7 +265,7 @@ class _StocksScreenState extends State<StocksScreen> {
       builder: (context, provider, _) {
         return Scaffold(
           appBar: AppBar(
-            title: const Text('Stocks'),
+            title: const AppBrandTitle('Stocks'),
             backgroundColor: Theme.of(context).colorScheme.inversePrimary,
             actions: authAppBarActions(
               context,
@@ -504,7 +506,7 @@ class _StocksScreenState extends State<StocksScreen> {
               }),
             ),
             _buildFilterMenu(
-              label: 'Source',
+              label: 'Account',
               selected: _selectedSources,
               options: sourceOptions,
               onChanged: (next) => setState(() {
@@ -1279,7 +1281,7 @@ class _StocksScreenState extends State<StocksScreen> {
         );
       case 'Qty':
         return Text(stock.quantity.toStringAsFixed(2));
-      case 'Source':
+      case 'Account':
         return Text(
           stock.source.isNotEmpty ? stock.source : '-',
           overflow: TextOverflow.ellipsis,
@@ -2109,7 +2111,7 @@ class _StocksScreenState extends State<StocksScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Source: $sourceLabel',
+                Text('Account: $sourceLabel',
                     style: TextStyle(color: Colors.grey.shade700)),
                 const SizedBox(height: 8),
                 Text(
@@ -2232,7 +2234,7 @@ class _StocksScreenState extends State<StocksScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Source: $sourceLabel',
+            Text('Account: $sourceLabel',
                 style: TextStyle(color: Colors.grey.shade700)),
             const SizedBox(height: 12),
             const Text(
@@ -2305,7 +2307,7 @@ class _StocksScreenState extends State<StocksScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Source: $sourceLabel',
+                      Text('Account: $sourceLabel',
                           style: TextStyle(color: Colors.grey.shade700)),
                       if (!isBuy) ...[
                         const SizedBox(height: 4),
@@ -2506,6 +2508,10 @@ class _StocksScreenState extends State<StocksScreen> {
         case 'Last Sale':
           hideLastSale = true;
           break;
+        case 'Source':
+          // Renamed to Account; preserve hidden preference.
+          out.add('Account');
+          break;
         default:
           // Drop removed columns (e.g. Market Cap) from persisted prefs.
           if (_allColumns.contains(name)) {
@@ -2640,7 +2646,7 @@ class _StocksScreenState extends State<StocksScreen> {
     switch (column) {
       case 'Symbol':
         return a.symbol.toLowerCase().compareTo(b.symbol.toLowerCase());
-      case 'Source':
+      case 'Account':
         return _compareEmptyLast(a.source, b.source);
       case 'Qty':
         return a.quantity.compareTo(b.quantity);

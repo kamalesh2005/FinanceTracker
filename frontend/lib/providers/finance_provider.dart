@@ -21,8 +21,13 @@ class FinanceProvider with ChangeNotifier {
   bool get isRefreshingPrices => _isRefreshingPrices;
   String? get error => _error;
 
+  Future<void>? _yahooWarm;
+  bool _yahooWarmed = false;
+  int _yahooWarmGeneration = 0;
+
   /// Clears all cached portfolio data (call on logout / user switch).
   void clear() {
+    _yahooWarmGeneration++;
     _stocks = [];
     _mutualFunds = [];
     _stockTrends = [];
@@ -30,7 +35,37 @@ class FinanceProvider with ChangeNotifier {
     _isLoading = false;
     _isRefreshingPrices = false;
     _error = null;
+    _yahooWarm = null;
+    _yahooWarmed = false;
     notifyListeners();
+  }
+
+  /// Fire-and-forget Yahoo price/trend refresh after login. Dedupes in-flight calls.
+  Future<void> warmYahooStockData() {
+    if (_yahooWarm != null) return _yahooWarm!;
+    if (_yahooWarmed) return Future.value();
+
+    final future = () async {
+      await refreshStockPrices();
+      // refreshStockPrices sets _yahooWarmed on success.
+    }();
+    _yahooWarm = future;
+    future.whenComplete(() {
+      if (identical(_yahooWarm, future)) {
+        _yahooWarm = null;
+      }
+    });
+    return future;
+  }
+
+  /// Await in-flight warm, skip if already done this session, otherwise warm now.
+  Future<void> ensureYahooWarmed() async {
+    if (_yahooWarmed) return;
+    if (_yahooWarm != null) {
+      await _yahooWarm;
+      if (_yahooWarmed) return;
+    }
+    await warmYahooStockData();
   }
 
   Future<void> loadStocks() async {
@@ -91,17 +126,24 @@ class FinanceProvider with ChangeNotifier {
   }
 
   Future<void> refreshStockPrices() async {
+    final generation = _yahooWarmGeneration;
     _isRefreshingPrices = true;
     _error = null;
     notifyListeners();
 
     try {
-      _stocks = await ApiService.refreshStockPrices();
+      final stocks = await ApiService.refreshStockPrices();
+      if (generation != _yahooWarmGeneration) return;
+      _stocks = stocks;
+      _yahooWarmed = true;
     } catch (e) {
+      if (generation != _yahooWarmGeneration) return;
       _error = e.toString();
     } finally {
-      _isRefreshingPrices = false;
-      notifyListeners();
+      if (generation == _yahooWarmGeneration) {
+        _isRefreshingPrices = false;
+        notifyListeners();
+      }
     }
   }
 

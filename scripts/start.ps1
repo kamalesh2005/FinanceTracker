@@ -1,4 +1,7 @@
 # Start Finance Tracker Application (Windows)
+param(
+    [switch]$Release
+)
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -34,13 +37,23 @@ $frontendErr = Join-Path $LogsDir "frontend.err.log"
 Write-Host "Building Go backend..."
 Push-Location $BackendDir
 try {
-    & go build -o financetracker.exe .
+    if ($Release) {
+        & go build -ldflags="-s -w" -o financetracker.exe .
+    } else {
+        & go build -o financetracker.exe .
+    }
     if ($LASTEXITCODE -ne 0) { throw "Backend build failed" }
 } finally {
     Pop-Location
 }
 
-Write-Host "Starting Go backend on port 8080..."
+if ($Release) {
+    $env:GIN_MODE = "release"
+    Write-Host "Starting Go backend on port 8080 (GIN_MODE=release)..."
+} else {
+    Remove-Item Env:GIN_MODE -ErrorAction SilentlyContinue
+    Write-Host "Starting Go backend on port 8080..."
+}
 $backend = Start-Process -FilePath (Join-Path $BackendDir "financetracker.exe") `
     -WorkingDirectory $BackendDir `
     -RedirectStandardOutput $backendOut `
@@ -59,7 +72,8 @@ if (-not $ready) {
     Write-Error "Backend did not start on port 8080. See $backendErr"
 }
 
-Write-Host "Starting Flutter frontend on Chrome (port 3000)..."
+$modeLabel = if ($Release) { "release" } else { "debug" }
+Write-Host "Starting Flutter frontend on Chrome (port 3000, $modeLabel)..."
 # Runner keeps stdin open so .\scripts\hot-reload.ps1 can send 'r' / 'R'
 $frontendCmdFile = Join-Path $LogsDir "frontend.cmd"
 $flutterPidFile = Join-Path $LogsDir "flutter.pid"
@@ -68,17 +82,20 @@ $flutterPidFile = Join-Path $LogsDir "flutter.pid"
 "" | Set-Content -Path $frontendCmdFile -Encoding ascii
 
 $runner = Join-Path $ScriptDir "flutter-runner.ps1"
+$runnerArgs = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $runner,
+    "-FrontendDir", $FrontendDir,
+    "-OutLog", $frontendOut,
+    "-ErrLog", $frontendErr,
+    "-CmdFile", $frontendCmdFile,
+    "-FlutterPidFile", $flutterPidFile
+)
+if ($Release) { $runnerArgs += "-Release" }
+
 $frontend = Start-Process -FilePath "powershell.exe" `
-    -ArgumentList @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $runner,
-        "-FrontendDir", $FrontendDir,
-        "-OutLog", $frontendOut,
-        "-ErrLog", $frontendErr,
-        "-CmdFile", $frontendCmdFile,
-        "-FlutterPidFile", $flutterPidFile
-    ) `
+    -ArgumentList $runnerArgs `
     -PassThru `
     -WindowStyle Hidden
 
@@ -86,13 +103,16 @@ $frontend = Start-Process -FilePath "powershell.exe" `
 
 Write-Host ""
 Write-Host "=========================================="
-Write-Host "Finance Tracker Application Started"
+Write-Host "Finance Tracker Application Started ($modeLabel)"
 Write-Host "=========================================="
 Write-Host "Backend:  http://localhost:8080"
 Write-Host "Frontend: http://localhost:3000"
+Write-Host "Mode:     $modeLabel"
 Write-Host "Logs:     $LogsDir"
 Write-Host "PIDs:     backend=$($backend.Id) frontend=$($frontend.Id)"
-Write-Host "Reload:   .\scripts\hot-reload.ps1"
-Write-Host "Restart:  .\scripts\hot-reload.ps1 -Restart"
+if (-not $Release) {
+    Write-Host "Reload:   .\scripts\hot-reload.ps1"
+    Write-Host "Restart:  .\scripts\hot-reload.ps1 -Restart"
+}
 Write-Host "Stop with: .\scripts\stop.ps1"
 Write-Host "=========================================="

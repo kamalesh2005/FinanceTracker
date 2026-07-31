@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/stock.dart';
 import '../providers/auth_provider.dart';
 import '../providers/finance_provider.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 class EditStockScreen extends StatefulWidget {
@@ -87,7 +88,7 @@ class _EditStockScreenState extends State<EditStockScreen> {
     final watchList = context.watch<AuthProvider>().useAsStockWatchList;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Stock'),
+        title: const AppBrandTitle('Edit Stock'),
         actions: authAppBarActions(context),
       ),
       body: Padding(

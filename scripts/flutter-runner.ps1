@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$OutLog,
     [Parameter(Mandatory = $true)][string]$ErrLog,
     [Parameter(Mandatory = $true)][string]$CmdFile,
-    [Parameter(Mandatory = $true)][string]$FlutterPidFile
+    [Parameter(Mandatory = $true)][string]$FlutterPidFile,
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Continue"
@@ -25,9 +26,10 @@ $env:Path = "$(Join-Path $flutterRoot 'bin');" +
 Remove-Item -Path $FlutterPidFile -Force -ErrorAction SilentlyContinue
 
 # Invoke flutter_tools directly so stdin stays connected (flutter.bat drops it).
+$runModeArgs = if ($Release) { "--release" } else { "" }
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $dartExe
-$psi.Arguments = "--packages=`"$packages`" `"$snapshot`" run -d chrome --web-port=3000 --pid-file `"$FlutterPidFile`""
+$psi.Arguments = ("--packages=`"$packages`" `"$snapshot`" run -d chrome --web-port=3000 --pid-file `"$FlutterPidFile`" $runModeArgs").Trim()
 $psi.WorkingDirectory = $FrontendDir
 $psi.UseShellExecute = $false
 $psi.RedirectStandardInput = $true

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/finance_provider.dart';
 import '../models/mutual_fund.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 class AddMutualFundScreen extends StatefulWidget {
@@ -18,6 +19,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
   late TextEditingController _schemeCodeController;
   late TextEditingController _schemeNameController;
   late TextEditingController _fundHouseController;
+  late TextEditingController _sourceController;
   late TextEditingController _quantityController;
   late TextEditingController _navController;
   late TextEditingController _currentNavController;
@@ -29,6 +31,10 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
     _schemeCodeController = TextEditingController(text: widget.mutualFund?.schemeCode ?? '');
     _schemeNameController = TextEditingController(text: widget.mutualFund?.schemeName ?? '');
     _fundHouseController = TextEditingController(text: widget.mutualFund?.fundHouse ?? '');
+    final existingSource = widget.mutualFund?.source.trim() ?? '';
+    _sourceController = TextEditingController(
+      text: existingSource.isEmpty ? 'Manual Add' : existingSource,
+    );
     _quantityController = TextEditingController(text: widget.mutualFund?.quantity.toString() ?? '');
     _navController = TextEditingController(text: widget.mutualFund?.nav.toString() ?? '');
     _currentNavController = TextEditingController(text: widget.mutualFund?.currentNav.toString() ?? '');
@@ -40,6 +46,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
     _schemeCodeController.dispose();
     _schemeNameController.dispose();
     _fundHouseController.dispose();
+    _sourceController.dispose();
     _quantityController.dispose();
     _navController.dispose();
     _currentNavController.dispose();
@@ -50,7 +57,9 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.mutualFund == null ? 'Add Mutual Fund' : 'Edit Mutual Fund'),
+        title: AppBrandTitle(
+          widget.mutualFund == null ? 'Add Mutual Fund' : 'Edit Mutual Fund',
+        ),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),
@@ -97,6 +106,21 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
                   hintText: 'e.g., HDFC Mutual Fund',
                   border: OutlineInputBorder(),
                 ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _sourceController,
+                decoration: const InputDecoration(
+                  labelText: 'Account *',
+                  hintText: 'e.g., Manual Add, Zerodha, Groww',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter account';
+                  }
+                  return null;
+                },
               ),
               const SizedBox(height: 16),
               TextFormField(
@@ -178,6 +202,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
                                 schemeCode: _schemeCodeController.text,
                                 schemeName: _schemeNameController.text,
                                 fundHouse: _fundHouseController.text,
+                                source: _sourceController.text.trim(),
                                 quantity: double.parse(_quantityController.text),
                                 nav: double.parse(_navController.text),
                                 currentNav: _currentNavController.text.isEmpty

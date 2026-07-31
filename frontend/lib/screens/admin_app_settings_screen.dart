@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../services/recommendation_engine.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import '../widgets/recommendation_rules_editor.dart';
 
@@ -77,7 +78,7 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('App Settings'),
+        title: const AppBrandTitle('App Settings'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),

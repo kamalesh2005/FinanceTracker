@@ -41,6 +41,8 @@ class _MyAppState extends State<MyApp> {
       _financeProvider.clear();
     } else if (_wasAuthenticated != true && isAuthenticated) {
       _financeProvider.clear();
+      // Warm Yahoo prices/trends in the background so Stocks is fast.
+      _financeProvider.warmYahooStockData();
     }
     _wasAuthenticated = isAuthenticated;
   }
@@ -64,9 +66,11 @@ class _MyAppState extends State<MyApp> {
         builder: (context, auth, _) {
           return MaterialApp(
             key: ValueKey<bool>(auth.isAuthenticated),
-            title: 'Finance Tracker',
+            title: 'Dhan Shanti',
             theme: ThemeData(
-              colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: const Color(0xFF0F5C56),
+              ),
               useMaterial3: true,
             ),
             home: auth.isLoading

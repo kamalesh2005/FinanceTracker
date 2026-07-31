@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/stock.dart';
 import '../services/api_service.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 class AdminStockDataScreen extends StatefulWidget {
@@ -142,7 +143,7 @@ class _AdminStockDataScreenState extends State<AdminStockDataScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Update Stock Data'),
+        title: const AppBrandTitle('Update Stock Data'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),

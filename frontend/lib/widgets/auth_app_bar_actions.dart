@@ -46,7 +46,7 @@ void showAppHelpDialog(BuildContext context) {
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'Open Stocks to view holdings. Use Sector, Market Cap, Source, and Recommendation filters to narrow the list. Tap the refresh icon (or pull to refresh) to update prices from Yahoo. The backend also refreshes Global_Stocks prices every 15 minutes on weekdays 09:00–15:30 IST.',
+              'Open Stocks to view holdings. Use Sector, Market Cap, Account, and Recommendation filters to narrow the list. Tap the refresh icon (or pull to refresh) to update prices from Yahoo. The backend also refreshes Global_Stocks prices every 15 minutes on weekdays 09:00–15:30 IST.',
             ),
             SizedBox(height: 12),
             Text(

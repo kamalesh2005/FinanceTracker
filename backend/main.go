@@ -505,6 +505,7 @@ func main() {
 
 	h := handlers.NewHandler(db)
 	jobs.StartIntradayPriceCron(h)
+	jobs.StartDailyYahooRefreshCron(h)
 
 	api := r.Group("/api/v1")
 	{

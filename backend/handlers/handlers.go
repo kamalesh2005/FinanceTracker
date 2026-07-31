@@ -1754,10 +1754,30 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 }
 
 func (h *Handler) RefreshStockPrices(c *gin.Context) {
-	var stocks []models.Stock
-	if err := h.DB.Find(&stocks).Error; err != nil {
+	if err := h.RefreshAllStockPricesAndTrends(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	userID := middleware.CurrentUserID(c)
+	h.refreshConsensusForUserHoldings(userID, today, now)
+	userStocks, err := h.stocksForUser(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, h.stocksWithHoldings(userStocks, userID))
+}
+
+// RefreshAllStockPricesAndTrends fetches Yahoo prices, historical highs/lows, and
+// trend MAs for every Global_Stocks row (shared across users). Skips fields
+// already fetched today. Used by POST /stocks/refresh-prices and the daily cron.
+func (h *Handler) RefreshAllStockPricesAndTrends() error {
+	var stocks []models.Stock
+	if err := h.DB.Find(&stocks).Error; err != nil {
+		return err
 	}
 
 	now := time.Now()
@@ -1883,14 +1903,7 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 			s.Sector, s.MarketCap, priceErr)
 	}
 	log.Printf("RefreshStockPrices: finished %d stocks", len(stocks))
-	userID := middleware.CurrentUserID(c)
-	h.refreshConsensusForUserHoldings(userID, today, now)
-	userStocks, err := h.stocksForUser(userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, h.stocksWithHoldings(userStocks, userID))
+	return nil
 }
 
 // refreshConsensusForUserHoldings scrapes Trendlyne consensus targets for the
@@ -2083,6 +2096,9 @@ func (h *Handler) CreateMutualFund(c *gin.Context) {
 		return
 	}
 	mf.UserID = middleware.CurrentUserID(c)
+	if strings.TrimSpace(mf.Source) == "" {
+		mf.Source = models.SourceManualAdd
+	}
 	if err := h.DB.Create(&mf).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2115,6 +2131,9 @@ func (h *Handler) UpdateMutualFund(c *gin.Context) {
 	}
 	mf.ID = uint(id)
 	mf.UserID = userID
+	if strings.TrimSpace(mf.Source) == "" {
+		mf.Source = models.SourceManualAdd
+	}
 	if err := h.DB.Save(&mf).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -2173,6 +2192,7 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		current  float64
 	}
 	bySourceMap := map[string]sourceTotals{}
+	byMFSourceMap := map[string]sourceTotals{}
 
 	for _, stock := range stocks {
 		var positions []models.UserStock
@@ -2203,8 +2223,19 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 	}
 
 	for _, mf := range mfs {
-		totalInvested += mf.NAV * mf.Quantity
-		currentValue += mf.CurrentNAV * mf.Quantity
+		invested := mf.NAV * mf.Quantity
+		current := mf.CurrentNAV * mf.Quantity
+		totalInvested += invested
+		currentValue += current
+
+		src := mf.Source
+		if src == "" {
+			src = models.SourceManualAdd
+		}
+		t := byMFSourceMap[src]
+		t.invested += invested
+		t.current += current
+		byMFSourceMap[src] = t
 	}
 
 	profitLoss := currentValue - totalInvested
@@ -2237,6 +2268,29 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		})
 	}
 
+	mfSourceNames := make([]string, 0, len(byMFSourceMap))
+	for name := range byMFSourceMap {
+		mfSourceNames = append(mfSourceNames, name)
+	}
+	sort.Strings(mfSourceNames)
+
+	byMFSource := make([]gin.H, 0, len(mfSourceNames))
+	for _, name := range mfSourceNames {
+		t := byMFSourceMap[name]
+		pl := t.current - t.invested
+		plPct := 0.0
+		if t.invested > 0 {
+			plPct = (pl / t.invested) * 100
+		}
+		byMFSource = append(byMFSource, gin.H{
+			"source":                 name,
+			"total_invested":         t.invested,
+			"current_value":          t.current,
+			"profit_loss":            pl,
+			"profit_loss_percentage": plPct,
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"total_invested":         totalInvested,
 		"current_value":          currentValue,
@@ -2244,5 +2298,6 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		"profit_loss_percentage": profitLossPct,
 		"stock_count":            stockCount,
 		"by_source":              bySource,
+		"by_mf_source":           byMFSource,
 	})
 }

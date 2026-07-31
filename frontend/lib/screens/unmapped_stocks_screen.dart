@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/symbol_mapping.dart';
 import '../services/api_service.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import 'edit_symbol_mapping_screen.dart';
 
@@ -77,7 +78,7 @@ class _UnmappedStocksScreenState extends State<UnmappedStocksScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Unmapped Stocks'),
+        title: const AppBrandTitle('Unmapped Stocks'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(
           context,

@@ -3,6 +3,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import '../utils/currency_format.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 class StockChartScreen extends StatefulWidget {
@@ -59,7 +60,7 @@ class _StockChartScreenState extends State<StockChartScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.symbol),
+        title: AppBrandTitle(widget.symbol),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),
@@ -255,7 +256,7 @@ class _StockChartScreenState extends State<StockChartScreen> {
                 DataColumn(label: Text('Qty'), numeric: true),
                 DataColumn(label: Text('Price'), numeric: true),
                 DataColumn(label: Text('Remaining'), numeric: true),
-                DataColumn(label: Text('Source')),
+                DataColumn(label: Text('Account')),
               ],
               rows: _transactions.map((tx) {
                 final type = (tx['type'] as String? ?? '').toLowerCase();

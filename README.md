@@ -12,6 +12,7 @@ A personal finance tracking web application built with Go backend and Flutter fr
 - **Real-time P/L Calculation**: Automatic calculation of profit/loss and percentages
 - **Forgot password**: OTP via SMTP/SMS (falls back to server console when not configured)
 - **Intraday price cron**: While the backend is running, Yahoo current prices for all `Global_Stocks` are updated every 15 minutes on weekdays 09:00–15:30 IST
+- **Daily Yahoo refresh cron**: At 06:00 IST each day, prices, historical highs/lows, and trends are refreshed for all `Global_Stocks`
 - **Manual refresh**: Stocks screen AppBar refresh icon (and pull-to-refresh) calls `POST /stocks/refresh-prices`
 
 ## Default admin
@@ -56,7 +57,7 @@ FinanceTracker/
 │   ├── auth/                # JWT + password helpers
 │   ├── middleware/          # Auth / admin middleware
 │   ├── notify/              # SMTP / SMS / console OTP
-│   ├── jobs/                # Background schedulers (intraday prices)
+│   ├── jobs/                # Background schedulers (intraday + daily Yahoo)
 │   ├── models/              # Data models
 │   │   └── models.go
 │   └── handlers/            # API handlers

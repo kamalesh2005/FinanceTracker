@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/finance_provider.dart';
 import '../services/recommendation_engine.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import '../widgets/recommendation_rules_editor.dart';
 
@@ -155,7 +156,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Configure'),
+        title: const AppBrandTitle('Configure'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),

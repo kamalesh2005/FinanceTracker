@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
+import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 class AdminUsersScreen extends StatefulWidget {
@@ -156,7 +157,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Users'),
+        title: const AppBrandTitle('Users'),
         actions: authAppBarActions(
           context,
           extra: [
