@@ -36,7 +36,7 @@ class _AdminStockDataScreenState extends State<AdminStockDataScreen> {
       _error = null;
     });
     try {
-      final stocks = await ApiService.getStocks();
+      final stocks = await ApiService.getAdminStocks();
       if (!mounted) return;
       setState(() {
         _allStocks = stocks;

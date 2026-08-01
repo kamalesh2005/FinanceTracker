@@ -358,16 +358,18 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
-  Future<void> deleteStock(int id) async {
+  Future<bool> deleteStock(int id, {String source = 'Manual Add'}) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
-      await ApiService.deleteStock(id);
+      await ApiService.deleteStock(id, source: source);
       await loadStocks();
+      return true;
     } catch (e) {
       _error = e.toString();
+      return false;
     } finally {
       _isLoading = false;
       notifyListeners();

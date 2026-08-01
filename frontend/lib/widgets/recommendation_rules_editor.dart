@@ -90,7 +90,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
       final rec = _rules[i].recommendation.text.trim();
       final cond = _rules[i].condition.text.trim();
       if (rec.isEmpty) {
-        errors?.add('Rule #${i + 1}: recommendation required');
+        errors?.add('Rule #${i + 1}: signal required');
         return null;
       }
       final err = RecommendationEngine.validateCondition(cond, nvs);
@@ -247,7 +247,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
               'last_trade_is_buy / last_trade_is_sale / last_trade_is_hold — booleans\n'
               'abs_pct_from_last_trade — |curr − last| / last × 100\n'
               'set_buy_price / set_profit_booking_price / set_stop_loss_price — thresholds\n'
-              'sixth_highest_price — 6th highest historical price\n'
+              'sixth_highest_price — high historical price\n'
               'trend — e.g. "bullish", "bearish_st", "bearish_lt"\n\n'
               'Use AND / OR, parentheses, and comparisons like:\n'
               'curr_price < avg_buy_price * 0.9',
@@ -333,7 +333,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
             flex: 2,
             child: Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: Text('Recommendation', style: style),
+              child: Text('Signal', style: style),
             ),
           ),
           Expanded(

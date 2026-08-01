@@ -58,6 +58,16 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     }
   }
 
+  String _formatLastLogin(DateTime? at) {
+    if (at == null) return 'Never';
+    final y = at.year.toString().padLeft(4, '0');
+    final m = at.month.toString().padLeft(2, '0');
+    final d = at.day.toString().padLeft(2, '0');
+    final hh = at.hour.toString().padLeft(2, '0');
+    final mm = at.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
+  }
+
   Future<void> _showCreateDialog() async {
     final usernameCtrl = TextEditingController();
     final emailCtrl = TextEditingController();
@@ -185,6 +195,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                           'Role: ${user.role}',
                           if (user.email != null) 'Email: ${user.email}',
                           if (user.mobile != null) 'Mobile: ${user.mobile}',
+                          'Logins: ${user.loginCount}',
+                          'Last login: ${_formatLastLogin(user.lastLoginAt)}',
                         ].join(' · '),
                       ),
                       trailing: Switch(

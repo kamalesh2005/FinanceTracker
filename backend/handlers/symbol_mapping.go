@@ -282,6 +282,17 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// GetAllStocksAdmin returns every row in Global_Stocks (no holdings filter).
+// Used by admins to correct name/sector for any symbol in the catalog.
+func (h *Handler) GetAllStocksAdmin(c *gin.Context) {
+	var stocks []models.Stock
+	if err := h.DB.Order("symbol ASC").Find(&stocks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stocks)
+}
+
 // UpdateStockAdminFields lets admins correct Yahoo-sourced fields (sector, name).
 func (h *Handler) UpdateStockAdminFields(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)

@@ -46,7 +46,7 @@ class AdminScreen extends StatelessWidget {
             color: Colors.deepPurple,
             title: 'App Settings',
             subtitle:
-                'Default fluctuation to ignore recommendations post any buy/sell',
+                'Default fluctuation to ignore signals post any buy/sell',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const AdminAppSettingsScreen()),

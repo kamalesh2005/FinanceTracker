@@ -18,14 +18,12 @@ class EditStockScreen extends StatefulWidget {
 
 class _EditStockScreenState extends State<EditStockScreen> {
   final _formKey = GlobalKey<FormState>();
-  late TextEditingController _symbolController;
   late TextEditingController _quantityController;
   late TextEditingController _buyPriceController;
 
   @override
   void initState() {
     super.initState();
-    _symbolController = TextEditingController(text: widget.stock.symbol);
     _quantityController = TextEditingController(
       text: _formatNumber(widget.stock.quantity),
     );
@@ -50,7 +48,6 @@ class _EditStockScreenState extends State<EditStockScreen> {
 
   @override
   void dispose() {
-    _symbolController.dispose();
     _quantityController.dispose();
     _buyPriceController.dispose();
     super.dispose();
@@ -63,7 +60,7 @@ class _EditStockScreenState extends State<EditStockScreen> {
     final watchList = context.read<AuthProvider>().useAsStockWatchList;
     final ok = await provider.updateStockHoldings(
       stockId: widget.stock.id,
-      symbol: _symbolController.text.trim().toUpperCase(),
+      symbol: widget.stock.symbol,
       quantity: watchList ? 1.0 : double.parse(_quantityController.text.trim()),
       price: double.parse(_buyPriceController.text.trim()),
     );
@@ -103,21 +100,17 @@ class _EditStockScreenState extends State<EditStockScreen> {
                   widget.stock.name,
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 8),
               ],
-              TextFormField(
-                controller: _symbolController,
-                textCapitalization: TextCapitalization.characters,
+              InputDecorator(
                 decoration: const InputDecoration(
                   labelText: 'Symbol',
                   border: OutlineInputBorder(),
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter symbol';
-                  }
-                  return null;
-                },
+                child: Text(
+                  widget.stock.symbol,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
               ),
               const SizedBox(height: 16),
               TextFormField(

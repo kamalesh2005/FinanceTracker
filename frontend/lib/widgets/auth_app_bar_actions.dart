@@ -34,11 +34,24 @@ void showAppHelpDialog(BuildContext context) {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              'Portfolio',
+              'Getting started',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'Home shows total invested, current value, and P/L across stocks and mutual funds.',
+              'Register with a username plus email or mobile, then sign in with '
+              'email, mobile, or username. Use Forgot password on the login '
+              'screen if you need an OTP reset.',
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Home',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            Text(
+              'Your dashboard shows portfolio totals (invested, current value, '
+              'P/L) broken down by account for stocks and mutual funds. Tap '
+              'Manage on either card to open that section. Gear opens Configure; '
+              'logout and Help are always in the top bar.',
             ),
             SizedBox(height: 12),
             Text(
@@ -46,23 +59,49 @@ void showAppHelpDialog(BuildContext context) {
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'Open Stocks to view holdings. Use Sector, Market Cap, Account, and Recommendation filters to narrow the list. Tap the refresh icon (or pull to refresh) to update prices from Yahoo. The backend also refreshes Global_Stocks prices every 15 minutes on weekdays 09:00–15:30 IST.',
+              'Add stocks one by one, or import from ICICI Direct, HDFC Securities, '
+              'Zerodha, or a generic CSV/Excel file. Each holding has quantity, '
+              'buy price, and an Account (broker/source).\n\n'
+              'Filter by Sector, Market Cap, Account, or Signal; use '
+              '"Only Stocks to Action" to focus on BUY / Book Profit / SELL. '
+              'Refresh prices from the top bar (or pull to refresh). On wider '
+              'screens, switch card/table view and pick columns.\n\n'
+              'Tap a stock to edit it; open the chart for price history. Signals '
+              '(BUY, SELL, Book Profit, etc.) are computed from your Configure '
+              'rules and live prices.',
             ),
             SizedBox(height: 12),
             Text(
-              'Symbol mappings',
+              'Mutual funds',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'If a broker symbol does not match Yahoo, map it under Admin → Symbol Mappings (or Unmapped Stocks) so prices and trends can load.',
+              'Add funds with scheme details, Account, units, and NAV. Edit or '
+              'delete from the list; switch card/table view on larger screens. '
+              'Home shows P/L by account.',
             ),
             SizedBox(height: 12),
             Text(
-              'Logout',
+              'Configure',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'Use the logout icon on any screen to end your session.',
+              'Stock Watch List mode treats every stock as qty 1 and shows a '
+              'count-based summary instead of portfolio value.\n\n'
+              'Signal Rules define when BUY, SELL, Book Profit, and similar '
+              'labels appear (using fields like curr_price and avg_buy_price). '
+              'Save your rules, or reset to the admin defaults.',
+            ),
+            SizedBox(height: 12),
+            Text(
+              'Typical flow',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            Text(
+              '1. Sign in → Home\n'
+              '2. Add or import stocks / mutual funds\n'
+              '3. Refresh prices and review Signals\n'
+              '4. Optionally tune Signal Rules or Watch List under Configure',
             ),
           ],
         ),

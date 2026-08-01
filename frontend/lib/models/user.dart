@@ -5,6 +5,8 @@ class AppUser {
   final String? mobile;
   final String role;
   final bool enabled;
+  final DateTime? lastLoginAt;
+  final int loginCount;
 
   AppUser({
     required this.id,
@@ -13,6 +15,8 @@ class AppUser {
     this.mobile,
     required this.role,
     required this.enabled,
+    this.lastLoginAt,
+    this.loginCount = 0,
   });
 
   bool get isAdmin => role == 'admin';
@@ -25,6 +29,11 @@ class AppUser {
   }
 
   factory AppUser.fromJson(Map<String, dynamic> json) {
+    DateTime? lastLogin;
+    final raw = json['last_login_at'];
+    if (raw is String && raw.isNotEmpty) {
+      lastLogin = DateTime.tryParse(raw)?.toLocal();
+    }
     return AppUser(
       id: (json['id'] as num).toInt(),
       username: json['username'] as String?,
@@ -32,6 +41,8 @@ class AppUser {
       mobile: json['mobile'] as String?,
       role: json['role'] as String? ?? 'user',
       enabled: json['enabled'] as bool? ?? true,
+      lastLoginAt: lastLogin,
+      loginCount: (json['login_count'] as num?)?.toInt() ?? 0,
     );
   }
 }

@@ -155,15 +155,17 @@ const (
 
 // User is an application account (platform admin or end-user).
 type User struct {
-	ID           uint      `json:"id" gorm:"primaryKey"`
-	Username     *string   `json:"username,omitempty" gorm:"uniqueIndex;size:64"`
-	Email        *string   `json:"email,omitempty" gorm:"uniqueIndex;size:255"`
-	Mobile       *string   `json:"mobile,omitempty" gorm:"uniqueIndex;size:32"`
-	PasswordHash string    `json:"-" gorm:"not null"`
-	Role         string    `json:"role" gorm:"not null;size:16;default:user"`
-	Enabled      bool      `json:"enabled" gorm:"not null;default:true"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uint       `json:"id" gorm:"primaryKey"`
+	Username     *string    `json:"username,omitempty" gorm:"uniqueIndex;size:64"`
+	Email        *string    `json:"email,omitempty" gorm:"uniqueIndex;size:255"`
+	Mobile       *string    `json:"mobile,omitempty" gorm:"uniqueIndex;size:32"`
+	PasswordHash string     `json:"-" gorm:"not null"`
+	Role         string     `json:"role" gorm:"not null;size:16;default:user"`
+	Enabled      bool       `json:"enabled" gorm:"not null;default:true"`
+	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
+	LoginCount   uint       `json:"login_count" gorm:"not null;default:0"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 const (

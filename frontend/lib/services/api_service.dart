@@ -69,7 +69,20 @@ class ApiService {
     throw Exception(_errorMessage(response, 'Login failed'));
   }
 
+  static Future<bool> checkUsername(String username) async {
+    final uri = Uri.parse('$baseUrl/auth/check-username').replace(
+      queryParameters: {'username': username},
+    );
+    final response = await http.get(uri, headers: _headers());
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return data['available'] == true;
+    }
+    throw Exception(_errorMessage(response, 'Failed to check username'));
+  }
+
   static Future<Map<String, dynamic>> register({
+    required String username,
     String? email,
     String? mobile,
     required String password,
@@ -78,6 +91,7 @@ class ApiService {
       Uri.parse('$baseUrl/auth/register'),
       headers: _headers(jsonBody: true),
       body: json.encode({
+        'username': username,
         if (email != null && email.isNotEmpty) 'email': email,
         if (mobile != null && mobile.isNotEmpty) 'mobile': mobile,
         'password': password,
@@ -200,6 +214,45 @@ class ApiService {
     throw Exception('Failed to load stocks');
   }
 
+  /// All Global_Stocks rows (admin only). Not filtered by the caller's holdings.
+  static Future<List<Stock>> getAdminStocks() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/stocks'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = _decodeList(response.body);
+      return data.map((json) => Stock.fromJson(json)).toList();
+    }
+    throw Exception('Failed to load admin stocks');
+  }
+
+  /// Looks up a Global_Stocks row by symbol (no holding required).
+  /// Returns null when the symbol is not in the catalog.
+  static Future<({String symbol, String name, double currentPrice})?>
+      lookupGlobalStock(String symbol) async {
+    final trimmed = symbol.trim();
+    if (trimmed.isEmpty) return null;
+    final response = await http.get(
+      Uri.parse(
+        '$baseUrl/stocks/lookup?symbol=${Uri.encodeQueryComponent(trimmed)}',
+      ),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 404) return null;
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        symbol: data['symbol']?.toString() ?? trimmed.toUpperCase(),
+        name: data['name']?.toString() ?? '',
+        currentPrice: (data['current_price'] as num?)?.toDouble() ?? 0.0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to look up stock'));
+  }
+
   static Future<Stock> createStock(Stock stock) async {
     final response = await http.post(
       Uri.parse('$baseUrl/stocks'),
@@ -283,9 +336,12 @@ class ApiService {
     throw Exception('Failed to update stock admin fields');
   }
 
-  static Future<void> deleteStock(int id) async {
+  static Future<void> deleteStock(int id, {String source = 'Manual Add'}) async {
+    final uri = Uri.parse('$baseUrl/stocks/$id/holdings').replace(
+      queryParameters: {'source': source},
+    );
     final response = await http.delete(
-      Uri.parse('$baseUrl/stocks/$id'),
+      uri,
       headers: _headers(),
     );
     _checkUnauthorized(response);

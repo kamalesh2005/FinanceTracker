@@ -1,12 +1,45 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
 import '../services/recommendation_engine.dart';
 
 class AuthProvider extends ChangeNotifier {
   static const _tokenKey = 'auth_token';
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+
+  /// Prefer secure storage; fall back to SharedPreferences on plain HTTP web
+  /// where FlutterSecureStorageWeb requires a secure context.
+  Future<String?> _readToken() async {
+    try {
+      return await _secureStorage.read(key: _tokenKey);
+    } catch (_) {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString(_tokenKey);
+    }
+  }
+
+  Future<void> _writeToken(String token) async {
+    try {
+      await _secureStorage.write(key: _tokenKey, value: token);
+      return;
+    } catch (_) {
+      // Fall through to prefs (e.g. HTTP non-secure context on web).
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_tokenKey, token);
+  }
+
+  Future<void> _deleteToken() async {
+    try {
+      await _secureStorage.delete(key: _tokenKey);
+    } catch (_) {
+      // Ignore secure-storage failures on plain HTTP.
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_tokenKey);
+  }
 
   AppUser? _user;
   bool _loading = true;
@@ -45,7 +78,7 @@ class AuthProvider extends ChangeNotifier {
     _loading = true;
     notifyListeners();
     try {
-      final token = await _storage.read(key: _tokenKey);
+      final token = await _readToken();
       if (token == null || token.isEmpty) {
         _user = null;
         ApiService.setToken(null);
@@ -78,6 +111,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<bool> register({
+    required String username,
     String? email,
     String? mobile,
     required String password,
@@ -85,6 +119,7 @@ class AuthProvider extends ChangeNotifier {
     _error = null;
     try {
       final result = await ApiService.register(
+        username: username,
         email: email,
         mobile: mobile,
         password: password,
@@ -179,7 +214,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> _persistSession(String token, AppUser user) async {
-    await _storage.write(key: _tokenKey, value: token);
+    await _writeToken(token);
     ApiService.setToken(token);
     _user = user;
     _error = null;
@@ -187,7 +222,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> _clearSession() async {
-    await _storage.delete(key: _tokenKey);
+    await _deleteToken();
     ApiService.setToken(null);
     _user = null;
     _resetPreferences();

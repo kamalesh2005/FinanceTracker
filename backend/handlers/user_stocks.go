@@ -150,6 +150,56 @@ func ApplyManualStockTransaction(
 	return applyManualStockTransaction(db, userID, stockID, txType, quantity, price, txDate, source)
 }
 
+// replaceManualAddPosition zeros open Manual Add buy lots and creates a single lot at qty/price.
+func replaceManualAddPosition(
+	db *gorm.DB,
+	userID, stockID uint,
+	quantity, price float64,
+	txDate time.Time,
+) error {
+	if quantity <= 0 {
+		return fmt.Errorf("quantity must be greater than 0")
+	}
+	if price <= 0 {
+		return fmt.Errorf("price must be greater than 0")
+	}
+
+	var buys []models.UserStockTransaction
+	if err := db.Where(
+		"user_id = ? AND stock_id = ? AND source = ? AND type = ? AND quantity > 0",
+		userID, stockID, models.SourceManualAdd, models.TransactionTypeBuy,
+	).Find(&buys).Error; err != nil {
+		return err
+	}
+	for i := range buys {
+		buys[i].Quantity = 0
+		if err := db.Save(&buys[i]).Error; err != nil {
+			return err
+		}
+	}
+
+	ledger := models.UserStockTransaction{
+		UserID:           userID,
+		StockID:          stockID,
+		Source:           models.SourceManualAdd,
+		Type:             models.TransactionTypeBuy,
+		Quantity:         quantity,
+		OriginalQuantity: quantity,
+		Price:            price,
+		TransactionDate:  txDate,
+	}
+	if err := db.Create(&ledger).Error; err != nil {
+		return err
+	}
+
+	pos, err := recomputeUserStock(db, userID, stockID, models.SourceManualAdd)
+	if err != nil {
+		return err
+	}
+	clearPriceThresholds(&pos)
+	return db.Save(&pos).Error
+}
+
 // applyManualStockTransaction inserts a ledger row then recomputes Manual Add (or given source) position.
 func applyManualStockTransaction(
 	db *gorm.DB,

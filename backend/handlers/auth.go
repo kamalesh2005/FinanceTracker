@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,64}$`)
 
 var (
 	forgotMu    sync.Mutex
@@ -32,6 +35,18 @@ func normalizeMobile(s string) string {
 	s = strings.ReplaceAll(s, " ", "")
 	s = strings.ReplaceAll(s, "-", "")
 	return s
+}
+
+func normalizeUsername(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// validateUsernameFormat checks normalized username length and charset.
+func validateUsernameFormat(username string) error {
+	if !usernamePattern.MatchString(username) {
+		return fmt.Errorf("username must be 3–64 characters and contain only letters, numbers, and underscores")
+	}
+	return nil
 }
 
 func ptrString(s string) *string {
@@ -57,8 +72,28 @@ func generateOTPCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+func (h *Handler) CheckUsername(c *gin.Context) {
+	username := normalizeUsername(c.Query("username"))
+	if err := validateUsernameFormat(username); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var existing models.User
+	err := h.DB.Where("LOWER(username) = ?", username).First(&existing).Error
+	if err == nil {
+		c.JSON(http.StatusOK, gin.H{"available": false})
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check username"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"available": true})
+}
+
 func (h *Handler) Register(c *gin.Context) {
 	var req struct {
+		Username string `json:"username" binding:"required"`
 		Email    string `json:"email"`
 		Mobile   string `json:"mobile"`
 		Password string `json:"password" binding:"required"`
@@ -72,10 +107,21 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
+	username := normalizeUsername(req.Username)
+	if err := validateUsernameFormat(username); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	email := normalizeEmail(req.Email)
 	mobile := normalizeMobile(req.Mobile)
-	if email == "" && mobile == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "email or mobile is required"})
+
+	var existing models.User
+	if err := h.DB.Where("LOWER(username) = ?", username).First(&existing).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "username already taken"})
+		return
+	} else if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check username"})
 		return
 	}
 
@@ -86,6 +132,7 @@ func (h *Handler) Register(c *gin.Context) {
 	}
 
 	user := models.User{
+		Username:     ptrString(username),
 		Email:        ptrString(email),
 		Mobile:       ptrString(mobile),
 		PasswordHash: hash,
@@ -93,7 +140,7 @@ func (h *Handler) Register(c *gin.Context) {
 		Enabled:      true,
 	}
 	if err := h.DB.Create(&user).Error; err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "email or mobile already registered"})
+		c.JSON(http.StatusConflict, gin.H{"error": "username, email, or mobile already registered"})
 		return
 	}
 
@@ -128,6 +175,17 @@ func (h *Handler) Login(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
+
+	now := time.Now().UTC()
+	if err := h.DB.Model(&user).Updates(map[string]interface{}{
+		"last_login_at": now,
+		"login_count":   gorm.Expr("login_count + 1"),
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update login stats"})
+		return
+	}
+	user.LastLoginAt = &now
+	user.LoginCount++
 
 	token, err := auth.GenerateToken(user.ID, user.Role)
 	if err != nil {
@@ -315,12 +373,14 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 
 func publicUser(u models.User) gin.H {
 	return gin.H{
-		"id":       u.ID,
-		"username": u.Username,
-		"email":    u.Email,
-		"mobile":   u.Mobile,
-		"role":     u.Role,
-		"enabled":  u.Enabled,
+		"id":            u.ID,
+		"username":      u.Username,
+		"email":         u.Email,
+		"mobile":        u.Mobile,
+		"role":          u.Role,
+		"enabled":       u.Enabled,
+		"last_login_at": u.LastLoginAt,
+		"login_count":   u.LoginCount,
 	}
 }
 

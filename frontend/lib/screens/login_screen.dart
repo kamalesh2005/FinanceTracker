@@ -317,7 +317,7 @@ class _BrandHero extends StatelessWidget {
         ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Text(
-            'Track holdings, set your rules, and let calm recommendations guide the next move.',
+            'Put your portfolio on autopilot. Set rules and relax, let signals guide the next move when it matters.',
             textAlign: wide ? TextAlign.start : TextAlign.center,
             style: GoogleFonts.outfit(
               fontSize: 16,
@@ -558,7 +558,7 @@ class _FeaturesSection extends StatelessWidget {
     (
       Icons.trending_up,
       'Live prices & trends',
-      'Yahoo-backed quotes with moving averages and bullish or bearish cues.',
+      'Quotes with moving averages and bullish or bearish cues.',
     ),
     (
       Icons.upload_file_outlined,
@@ -567,13 +567,13 @@ class _FeaturesSection extends StatelessWidget {
     ),
     (
       Icons.rule_folder_outlined,
-      'Custom recommendation rules',
-      'BUY, SELL, and Book Profit signals driven by thresholds you define.',
+      'Custom signal rules',
+      'BUY, SELL, and Book Profit signals driven by rules and thresholds you define.',
     ),
     (
       Icons.show_chart,
       'Charts & news',
-      'Price history and symbol news so decisions stay grounded in context.',
+      'Price history and publicly available stock recommendations by analysts, so decisions stay grounded in context.',
     ),
   ];
 
@@ -584,7 +584,7 @@ class _FeaturesSection extends StatelessWidget {
       child: _SectionShell(
         title: 'Top features',
         subtitle:
-            'Everything you need to stay calm about Indian equities and funds.',
+            'Everything you need to calmly invest Indian equities and funds.',
         child: LayoutBuilder(
           builder: (context, constraints) {
             final cols = constraints.maxWidth >= 720
@@ -660,11 +660,15 @@ class _HowItWorksSection extends StatelessWidget {
   const _HowItWorksSection();
 
   static const _steps = [
-    ('1', 'Sign in', 'Create an account or sign in securely.'),
+    (
+      '1', 
+      'Sign in', 
+      'Create an account and sign in securely.',
+    ),
     (
       '2',
       'Add holdings',
-      'Import from your broker or add symbols — full portfolio or watch list.',
+      'Import from your broker or add stocks and funds — full portfolio or watch list.',
     ),
     (
       '3',
@@ -674,7 +678,7 @@ class _HowItWorksSection extends StatelessWidget {
     (
       '4',
       'Review signals',
-      'See automated recommendations and act when it feels right.',
+      'See automated signals and act when it feels right.',
     ),
   ];
 
@@ -704,6 +708,7 @@ class _HowItWorksSection extends StatelessWidget {
             );
           }
           return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               for (var i = 0; i < _steps.length; i++) ...[
                 if (i > 0) const SizedBox(height: 20),
@@ -804,8 +809,8 @@ class _PrivacySection extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'Apply recommendation rules so BUY, SELL, and Book Profit alerts '
-                  'follow thresholds you control. Signals stay in-app and under '
+                  'Apply signal rules so BUY, SELL, and Book Profit alerts '
+                  'follow rules and thresholds you control. Signals stay in-app and under '
                   'your preferences — calm automation, on your terms.',
                   style: GoogleFonts.outfit(
                     fontSize: 15,

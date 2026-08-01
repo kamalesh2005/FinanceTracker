@@ -72,6 +72,17 @@ class _MyAppState extends State<MyApp> {
                 seedColor: const Color(0xFF0F5C56),
               ),
               useMaterial3: true,
+              cardTheme: CardThemeData(
+                color: const Color(0xFFE8F2EF),
+                elevation: 0,
+                surfaceTintColor: Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: const Color(0xFF0F5C56).withValues(alpha: 0.08),
+                  ),
+                ),
+              ),
             ),
             home: auth.isLoading
                 ? const Scaffold(

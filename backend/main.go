@@ -512,6 +512,7 @@ func main() {
 		authPublic := api.Group("/auth")
 		{
 			authPublic.POST("/register", h.Register)
+			authPublic.GET("/check-username", h.CheckUsername)
 			authPublic.POST("/login", h.Login)
 			authPublic.POST("/forgot-password", h.ForgotPassword)
 			authPublic.POST("/reset-password", h.ResetPassword)
@@ -532,10 +533,12 @@ func main() {
 			authed.POST("/stocks/bulk", h.CreateStocksBulk)
 			authed.GET("/stocks/trends", h.GetStockTrends)
 			authed.GET("/stocks/history", h.GetStockHistory)
+			authed.GET("/stocks/lookup", h.LookupStockBySymbol)
 			authed.POST("/stocks/refresh-prices", h.RefreshStockPrices)
 			authed.GET("/stocks/:id", h.GetStock)
 			authed.PUT("/stocks/:id", h.UpdateStock)
 			authed.PUT("/stocks/:id/holdings", h.UpdateStockHoldings)
+			authed.DELETE("/stocks/:id/holdings", h.DeleteStockHoldings)
 			authed.POST("/stocks/:id/hold", h.MarkStockHold)
 			authed.PUT("/stocks/:id/thresholds", h.SetStockThresholds)
 
@@ -558,6 +561,7 @@ func main() {
 			{
 				admin.DELETE("/stocks/:id", h.DeleteStock)
 				admin.PUT("/stocks/:id/admin", h.UpdateStockAdminFields)
+				admin.GET("/admin/stocks", h.GetAllStocksAdmin)
 
 				admin.GET("/symbol-mappings", h.GetSymbolMappings)
 				admin.POST("/symbol-mappings", h.CreateSymbolMapping)

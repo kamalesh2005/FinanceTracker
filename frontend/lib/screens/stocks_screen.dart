@@ -93,10 +93,10 @@ class _StocksScreenState extends State<StocksScreen> {
     'Sector',
     'Last Actioned',
     'Price Range',
-    '6th High',
-    '6th Low',
+    'High',
+    'Low',
     'Trend',
-    'Recommendation',
+    'Signal',
     'Actions',
     'News',
   ];
@@ -112,10 +112,10 @@ class _StocksScreenState extends State<StocksScreen> {
     'P/L %',
     'Sector',
     'Price Range',
-    '6th High',
-    '6th Low',
+    'High',
+    'Low',
     'Trend',
-    'Recommendation',
+    'Signal',
     'Actions',
     'News',
   };
@@ -208,15 +208,15 @@ class _StocksScreenState extends State<StocksScreen> {
       case 'Buy Price':
       case 'Current':
       case 'P/L':
-      case '6th High':
-      case '6th Low':
+      case 'High':
+      case 'Low':
       case 'Last Actioned':
         return 120;
       case 'P/L %':
         return 80;
       case 'Sector':
         return 160;
-      case 'Recommendation':
+      case 'Signal':
         return 160;
       case 'Price Range':
         return 160;
@@ -476,70 +476,230 @@ class _StocksScreenState extends State<StocksScreen> {
   Widget _buildFilterBar(FinanceProvider provider) {
     final sectorOptions = _sectorOptions(provider.stocks);
     final sourceOptions = _sourceOptions(provider.stocks);
+    final narrow = MediaQuery.sizeOf(context).width < _cardViewBreakpoint;
+    final dropdownFilterCount = _selectedSectors.length +
+        _selectedMarketCaps.length +
+        _selectedSources.length +
+        _selectedRecommendations.length;
+
+    final sectorMenu = _buildFilterMenu(
+      label: 'Sector',
+      selected: _selectedSectors,
+      options: sectorOptions,
+      onChanged: (next) => setState(() {
+        _selectedSectors
+          ..clear()
+          ..addAll(next);
+      }),
+    );
+    final marketCapMenu = _buildFilterMenu(
+      label: 'Market Cap',
+      selected: _selectedMarketCaps,
+      options: _marketCapOptions,
+      onChanged: (next) => setState(() {
+        _selectedMarketCaps
+          ..clear()
+          ..addAll(next);
+      }),
+    );
+    final accountMenu = _buildFilterMenu(
+      label: 'Account',
+      selected: _selectedSources,
+      options: sourceOptions,
+      onChanged: (next) => setState(() {
+        _selectedSources
+          ..clear()
+          ..addAll(next);
+      }),
+    );
+    final recommendationMenu = _buildFilterMenu(
+      label: 'Signal',
+      selected: _selectedRecommendations,
+      options: _recommendationOptions,
+      onChanged: (next) => setState(() {
+        _selectedRecommendations
+          ..clear()
+          ..addAll(next);
+      }),
+    );
+    final actionChip = FilterChip(
+      avatar: Icon(
+        _onlyStocksToAction
+            ? Icons.check_box
+            : Icons.check_box_outline_blank,
+        size: 18,
+      ),
+      showCheckmark: false,
+      label: const Text('Only Stocks to Action'),
+      selected: _onlyStocksToAction,
+      onSelected: (value) => setState(() {
+        _onlyStocksToAction = value;
+      }),
+    );
+    final clearButton = _hasActiveFilters
+        ? TextButton(
+            onPressed: _clearFilters,
+            child: const Text('Clear'),
+          )
+        : null;
+
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLowest,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            _buildFilterMenu(
-              label: 'Sector',
-              selected: _selectedSectors,
-              options: sectorOptions,
-              onChanged: (next) => setState(() {
-                _selectedSectors
-                  ..clear()
-                  ..addAll(next);
-              }),
-            ),
-            _buildFilterMenu(
-              label: 'Market Cap',
-              selected: _selectedMarketCaps,
-              options: _marketCapOptions,
-              onChanged: (next) => setState(() {
-                _selectedMarketCaps
-                  ..clear()
-                  ..addAll(next);
-              }),
-            ),
-            _buildFilterMenu(
-              label: 'Account',
-              selected: _selectedSources,
-              options: sourceOptions,
-              onChanged: (next) => setState(() {
-                _selectedSources
-                  ..clear()
-                  ..addAll(next);
-              }),
-            ),
-            _buildFilterMenu(
-              label: 'Recommendation',
-              selected: _selectedRecommendations,
-              options: _recommendationOptions,
-              onChanged: (next) => setState(() {
-                _selectedRecommendations
-                  ..clear()
-                  ..addAll(next);
-              }),
-            ),
-            FilterChip(
-              label: const Text('Only Stocks to Action'),
-              selected: _onlyStocksToAction,
-              onSelected: (value) => setState(() {
-                _onlyStocksToAction = value;
-              }),
-            ),
-            if (_hasActiveFilters)
-              TextButton(
-                onPressed: _clearFilters,
-                child: const Text('Clear'),
+        child: narrow
+            ? Row(
+                children: [
+                  _buildCollapsedFiltersButton(
+                    activeCount: dropdownFilterCount,
+                    onPressed: () => _showCollapsedFiltersSheet(
+                      sectorOptions: sectorOptions,
+                      sourceOptions: sourceOptions,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: actionChip,
+                    ),
+                  ),
+                  if (clearButton != null) clearButton,
+                ],
+              )
+            : Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  sectorMenu,
+                  marketCapMenu,
+                  accountMenu,
+                  recommendationMenu,
+                  actionChip,
+                  if (clearButton != null) clearButton,
+                ],
               ),
-          ],
+      ),
+    );
+  }
+
+  Widget _buildCollapsedFiltersButton({
+    required int activeCount,
+    required VoidCallback onPressed,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final active = activeCount > 0;
+    return IconButton(
+      tooltip: active ? 'Filters ($activeCount)' : 'Filters',
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        foregroundColor: active ? colorScheme.primary : colorScheme.onSurface,
+        side: BorderSide(
+          color: active ? colorScheme.primary : colorScheme.outline,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
         ),
       ),
+      icon: Badge(
+        isLabelVisible: active,
+        label: Text('$activeCount'),
+        child: const Icon(Icons.filter_list),
+      ),
+    );
+  }
+
+  Future<void> _showCollapsedFiltersSheet({
+    required List<String> sectorOptions,
+    required List<String> sourceOptions,
+  }) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            void apply(VoidCallback update) {
+              setState(update);
+              setSheetState(() {});
+            }
+
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Filters',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      const SizedBox(height: 12),
+                      _buildFilterMenu(
+                        label: 'Sector',
+                        selected: _selectedSectors,
+                        options: sectorOptions,
+                        onChanged: (next) => apply(() {
+                          _selectedSectors
+                            ..clear()
+                            ..addAll(next);
+                        }),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildFilterMenu(
+                        label: 'Market Cap',
+                        selected: _selectedMarketCaps,
+                        options: _marketCapOptions,
+                        onChanged: (next) => apply(() {
+                          _selectedMarketCaps
+                            ..clear()
+                            ..addAll(next);
+                        }),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildFilterMenu(
+                        label: 'Account',
+                        selected: _selectedSources,
+                        options: sourceOptions,
+                        onChanged: (next) => apply(() {
+                          _selectedSources
+                            ..clear()
+                            ..addAll(next);
+                        }),
+                      ),
+                      const SizedBox(height: 8),
+                      _buildFilterMenu(
+                        label: 'Signal',
+                        selected: _selectedRecommendations,
+                        options: _recommendationOptions,
+                        onChanged: (next) => apply(() {
+                          _selectedRecommendations
+                            ..clear()
+                            ..addAll(next);
+                        }),
+                      ),
+                      const SizedBox(height: 16),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: FilledButton(
+                          onPressed: () => Navigator.pop(sheetContext),
+                          child: const Text('Done'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -676,54 +836,57 @@ class _StocksScreenState extends State<StocksScreen> {
     return Colors.grey;
   }
 
-  Widget _buildRecommendationBadge(String recommendation, {StockTrend? trend}) {
+  Widget _buildRecommendationBadge(String recommendation,
+      {StockTrend? trend, bool showDetails = true}) {
     final color = _recommendationColor(recommendation);
     final isDefault = recommendation == 'NO ACTION REQD' ||
         recommendation == 'AT BUY PRICE' ||
         recommendation == 'AT SELL PRICE' ||
         recommendation == 'AT HOLD PRICE';
+    final badge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.5)),
+      ),
+      child: Text(
+        recommendation,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: color,
+          fontSize: isDefault ? 10 : 12,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+    if (!showDetails || isDefault || trend == null) {
+      return badge;
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: color.withOpacity(0.5)),
-          ),
-          child: Text(
-            recommendation,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: color,
-              fontSize: isDefault ? 10 : 12,
-              fontWeight: FontWeight.bold,
-            ),
+        badge,
+        const SizedBox(height: 4),
+        Text(
+          'M7: ${formatInr(trend.ma7)}  M20: ${formatInr(trend.ma20)}  M50: ${formatInr(trend.ma50)}',
+          style: TextStyle(
+            fontSize: 10,
+            color: Colors.grey.shade700,
+            height: 1.2,
           ),
         ),
-        if (!isDefault && trend != null) ...[
-          const SizedBox(height: 4),
-          Text(
-            'M7: ${formatInr(trend.ma7)}  M20: ${formatInr(trend.ma20)}  M50: ${formatInr(trend.ma50)}',
-            style: TextStyle(
-              fontSize: 10,
-              color: Colors.grey.shade700,
-              height: 1.2,
-            ),
+        Text(
+          'Adj ST Δ: ${trend.adjustedSTDelta.toStringAsFixed(2)}%  Adj MT Δ: ${trend.adjustedMTDelta.toStringAsFixed(2)}%',
+          style: TextStyle(
+            fontSize: 10,
+            color: trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
+            height: 1.2,
+            fontWeight: FontWeight.w500,
           ),
-          Text(
-            'Adj ST Δ: ${trend.adjustedSTDelta.toStringAsFixed(2)}%  Adj MT Δ: ${trend.adjustedMTDelta.toStringAsFixed(2)}%',
-            style: TextStyle(
-              fontSize: 10,
-              color: trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
-              height: 1.2,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
+        ),
       ],
     );
   }
@@ -746,6 +909,7 @@ class _StocksScreenState extends State<StocksScreen> {
     }
 
     final recommendation = _getRecommendation(stock, trend);
+    final sectorLine = _cardSectorMarketCapLine(stock);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -775,8 +939,10 @@ class _StocksScreenState extends State<StocksScreen> {
                       children: [
                         Text(
                           stock.symbol,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
-                            fontSize: 20,
+                            fontSize: 18,
                             fontWeight: FontWeight.bold,
                             color: Colors.blue,
                             decoration: TextDecoration.underline,
@@ -785,166 +951,321 @@ class _StocksScreenState extends State<StocksScreen> {
                         if (stock.name.isNotEmpty)
                           Text(
                             stock.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 13, color: Colors.grey),
+                                fontSize: 12, color: Colors.grey),
                           ),
+                        if (sectorLine != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            sectorLine,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey.shade700,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Wrap(
-                    spacing: 4,
-                    runSpacing: 4,
-                    alignment: WrapAlignment.end,
-                    children: [
-                      _buildRecommendationBadge(recommendation, trend: trend),
-                      if (trend != null) _buildTrendBadge(trend.trend),
-                    ],
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: _buildCardActionButtons(stock, provider),
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: Wrap(
-                spacing: 0,
-                runSpacing: 0,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _buildBuySellActionButtons(stock, provider),
-                  if (_isManualAddSource(stock))
-                    IconButton(
-                      icon: const Icon(Icons.edit, size: 20),
-                      onPressed: () => _openEditStock(stock),
-                    ),
-                  IconButton(
-                    icon:
-                        const Icon(Icons.delete, size: 20, color: Colors.red),
-                    onPressed: () {
-                      _showDeleteDialog(context, stock.id, provider);
-                    },
-                  ),
-                ],
-              ),
+            _buildCardRecommendationTrendRow(
+              recommendation: recommendation,
+              trend: trend,
             ),
-            if (stock.source.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              Text(
-                stock.source,
-                style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-              ),
+            if (stock.sixthHighestPrice > 0 && stock.sixthLowestPrice > 0) ...[
+              const Divider(height: 16),
+              _buildPriceRangeBar(stock),
             ],
             const SizedBox(height: 12),
-            _buildMetricRow(
+            _buildCardMetricsBlock(
               narrow: narrowCard,
               children: [
-                _buildInfoColumn(
-                    'Quantity', stock.quantity.toStringAsFixed(2)),
-                _buildInfoColumn('Buy Price', formatInr(stock.buyPrice)),
-                _buildInfoColumn('Current', formatInr(stock.currentPrice)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _buildMetricRow(
-              narrow: narrowCard,
-              children: [
-                _buildInfoColumn('Invested', formatInr(invested)),
-                _buildInfoColumn(
+                _buildCompactInfoColumn(
+                  'Quantity',
+                  stock.quantity.toStringAsFixed(2),
+                ),
+                _buildCompactInfoColumn(
+                  'Buy Price',
+                  formatInr(stock.buyPrice),
+                ),
+                _buildCompactInfoColumn(
+                  'Current',
+                  formatInr(stock.currentPrice),
+                ),
+                _buildCompactInfoColumn(
+                  'Invested',
+                  formatInr(invested),
+                ),
+                _buildCompactInfoColumn(
                   'P/L',
                   formatInr(profitLoss),
                   profitLoss >= 0 ? Colors.green : Colors.red,
                 ),
-                _buildInfoColumn(
+                _buildCompactInfoColumn(
                   'P/L %',
                   '${profitLossPercentage.toStringAsFixed(2)}%',
                   profitLoss >= 0 ? Colors.green : Colors.red,
                 ),
               ],
             ),
-            if (stock.sixthHighestPrice > 0 && stock.sixthLowestPrice > 0) ...[
-              const Divider(height: 20),
-              _buildPriceRangeBar(stock),
-            ],
-            if (stock.sector.isNotEmpty || stock.marketCap.isNotEmpty) ...[
-              const Divider(height: 20),
-              _buildInfoColumnWidget(
-                'Sector',
-                _buildSectorWithMarketCap(stock),
-              ),
-            ],
             if (trend != null &&
                 (trend.ma7 > 0 || trend.ma20 > 0 || trend.ma50 > 0)) ...[
               const Divider(height: 20),
-              _buildMetricRow(
-                narrow: narrowCard,
+              Row(
                 children: [
                   if (trend.ma7 > 0)
-                    _buildInfoColumn('7-DMA', formatInr(trend.ma7)),
-                  if (trend.ma20 > 0)
-                    _buildInfoColumn('20-DMA', formatInr(trend.ma20)),
-                  if (trend.ma50 > 0)
-                    _buildInfoColumn('50-DMA', formatInr(trend.ma50)),
+                    Expanded(
+                      child: _buildCompactInfoColumn(
+                        '7-DMA',
+                        formatInr(trend.ma7),
+                      ),
+                    ),
                   if (trend.ma7 > 0 && trend.ma20 > 0)
-                    _buildInfoColumn(
-                      'ST: 7 vs 20',
-                      trend.ma7 > trend.ma20 ? '▲ Above' : '▼ Below',
-                      trend.ma7 > trend.ma20 ? Colors.green : Colors.red,
+                    const SizedBox(width: 8),
+                  if (trend.ma20 > 0)
+                    Expanded(
+                      child: _buildCompactInfoColumn(
+                        '20-DMA',
+                        formatInr(trend.ma20),
+                      ),
+                    ),
+                  if (trend.ma20 > 0 && trend.ma50 > 0)
+                    const SizedBox(width: 8),
+                  if (trend.ma50 > 0)
+                    Expanded(
+                      child: _buildCompactInfoColumn(
+                        '50-DMA',
+                        formatInr(trend.ma50),
+                      ),
                     ),
                 ],
               ),
               const SizedBox(height: 8),
-              _buildMetricRow(
-                narrow: narrowCard,
-                children: [
-                  _buildInfoColumn(
-                    'Stock ST Δ',
-                    '${trend.stockSTDelta.toStringAsFixed(2)}%',
-                    trend.stockSTDelta >= 0 ? Colors.green : Colors.red,
-                  ),
-                  _buildInfoColumn(
-                    'Sensex ST Δ',
-                    '${trend.marketSTDelta.toStringAsFixed(2)}%',
-                    trend.marketSTDelta >= 0 ? Colors.green : Colors.red,
-                  ),
-                  _buildInfoColumn(
-                    'Adj ST Δ',
-                    '${trend.adjustedSTDelta.toStringAsFixed(2)}%',
-                    trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
-                  ),
-                ],
-              ),
-              if (trend.ma20 > 0 && trend.ma50 > 0) ...[
-                const SizedBox(height: 8),
-                _buildMetricRow(
+              if (trend.ma20 > 0 && trend.ma50 > 0)
+                _buildCardMetricsBlock(
                   narrow: narrowCard,
                   children: [
-                    _buildInfoColumn(
+                    _buildCompactInfoColumn(
+                      'Stock ST Δ',
+                      '${trend.stockSTDelta.toStringAsFixed(2)}%',
+                      trend.stockSTDelta >= 0 ? Colors.green : Colors.red,
+                    ),
+                    _buildCompactInfoColumn(
+                      'Sensex ST Δ',
+                      '${trend.marketSTDelta.toStringAsFixed(2)}%',
+                      trend.marketSTDelta >= 0 ? Colors.green : Colors.red,
+                    ),
+                    _buildCompactInfoColumn(
+                      'Adj ST Δ',
+                      '${trend.adjustedSTDelta.toStringAsFixed(2)}%',
+                      trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
+                    ),
+                    _buildCompactInfoColumn(
                       'Stock MT Δ',
                       '${trend.stockMTDelta.toStringAsFixed(2)}%',
                       trend.stockMTDelta >= 0 ? Colors.green : Colors.red,
                     ),
-                    _buildInfoColumn(
+                    _buildCompactInfoColumn(
                       'Sensex MT Δ',
                       '${trend.marketMTDelta.toStringAsFixed(2)}%',
                       trend.marketMTDelta >= 0 ? Colors.green : Colors.red,
                     ),
-                    _buildInfoColumn(
+                    _buildCompactInfoColumn(
                       'Adj MT Δ',
                       '${trend.adjustedMTDelta.toStringAsFixed(2)}%',
                       trend.adjustedMTDelta >= 0 ? Colors.green : Colors.red,
                     ),
                   ],
+                )
+              else
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildCompactInfoColumn(
+                        'Stock ST Δ',
+                        '${trend.stockSTDelta.toStringAsFixed(2)}%',
+                        trend.stockSTDelta >= 0 ? Colors.green : Colors.red,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _buildCompactInfoColumn(
+                        'Sensex ST Δ',
+                        '${trend.marketSTDelta.toStringAsFixed(2)}%',
+                        trend.marketSTDelta >= 0 ? Colors.green : Colors.red,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _buildCompactInfoColumn(
+                        'Adj ST Δ',
+                        '${trend.adjustedSTDelta.toStringAsFixed(2)}%',
+                        trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
             ],
             const Divider(height: 20),
             _buildInfoColumnWidget('News', _buildNewsTeaser(stock)),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildCardActionButtons(Stock stock, FinanceProvider provider) {
+    ButtonStyle letterStyle(Color color) => TextButton.styleFrom(
+          foregroundColor: color,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          minimumSize: const Size(32, 32),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          visualDensity: VisualDensity.compact,
+          textStyle: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.bold,
+          ),
+        );
+
+    final iconStyle = IconButton.styleFrom(
+      padding: EdgeInsets.zero,
+      minimumSize: const Size(32, 32),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+    );
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextButton(
+          onPressed: () => _showBuySellDialog(stock, provider, isBuy: true),
+          style: letterStyle(Colors.green.shade700),
+          child: const Text('B'),
+        ),
+        TextButton(
+          onPressed: stock.quantity > 0
+              ? () => _showBuySellDialog(stock, provider, isBuy: false)
+              : null,
+          style: letterStyle(Colors.orange.shade800),
+          child: const Text('S'),
+        ),
+        TextButton(
+          onPressed: stock.currentPrice > 0
+              ? () => _showHoldDialog(stock, provider)
+              : null,
+          style: letterStyle(Colors.indigo.shade700),
+          child: const Text('H'),
+        ),
+        TextButton(
+          onPressed: () => _showThresholdsDialog(stock, provider),
+          style: letterStyle(Colors.teal.shade800),
+          child: const Text('T'),
+        ),
+        if (_isManualAddSource(stock))
+          IconButton(
+            icon: const Icon(Icons.edit, size: 18),
+            onPressed: () => _openEditStock(stock),
+            style: iconStyle,
+          ),
+        IconButton(
+          icon: const Icon(Icons.delete, size: 18, color: Colors.red),
+          onPressed: () => _showDeleteDialog(context, stock, provider),
+          style: iconStyle,
+        ),
+      ],
+    );
+  }
+
+  String? _cardSectorMarketCapLine(Stock stock) {
+    final sector = stock.sector.trim();
+    final marketCap = stock.marketCap.trim();
+    if (sector.isEmpty && marketCap.isEmpty) return null;
+    if (sector.isEmpty) return '($marketCap)';
+    if (marketCap.isEmpty) return sector;
+    return '$sector ($marketCap)';
+  }
+
+  Widget _buildCardRecommendationTrendRow({
+    required String recommendation,
+    required StockTrend? trend,
+  }) {
+    const labelStyle = TextStyle(
+      fontSize: 11,
+      color: Colors.grey,
+      fontWeight: FontWeight.w500,
+    );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        const Text('Signal', style: labelStyle),
+        const SizedBox(width: 8),
+        Flexible(
+          child: _buildRecommendationBadge(
+            recommendation,
+            trend: trend,
+            showDetails: false,
+          ),
+        ),
+        const SizedBox(width: 8),
+        if (trend != null)
+          _buildTrendBadge(trend.trend)
+        else
+          Text('-', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+      ],
+    );
+  }
+
+  /// Wide: one row of six. Narrow: two rows of three (no Wrap 2+1).
+  Widget _buildCardMetricsBlock({
+    required bool narrow,
+    required List<Widget> children,
+  }) {
+    assert(children.length == 6);
+    Widget rowOfThree(List<Widget> trio) {
+      return Row(
+        children: [
+          for (var i = 0; i < trio.length; i++) ...[
+            if (i > 0) const SizedBox(width: 8),
+            Expanded(child: trio[i]),
+          ],
+        ],
+      );
+    }
+
+    if (narrow) {
+      return Column(
+        children: [
+          rowOfThree(children.sublist(0, 3)),
+          const SizedBox(height: 10),
+          rowOfThree(children.sublist(3, 6)),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        for (var i = 0; i < children.length; i++) ...[
+          if (i > 0) const SizedBox(width: 8),
+          Expanded(child: children[i]),
+        ],
+      ],
     );
   }
 
@@ -980,55 +1301,77 @@ class _StocksScreenState extends State<StocksScreen> {
         .where(
             (column) => _selectedColumns.contains(column) && column != 'Symbol')
         .toList();
-    final scrollableWidth = scrollableColumns.fold<double>(
+    final headerColor = Theme.of(context).colorScheme.surfaceContainerHighest;
+    final borderColor = Theme.of(context).dividerColor;
+    final minScrollableWidth = scrollableColumns.fold<double>(
       0,
       (sum, column) => sum + _columnWidth(column),
     );
-    final headerColor = Theme.of(context).colorScheme.surfaceContainerHighest;
-    final borderColor = Theme.of(context).dividerColor;
 
-    return Column(
-      children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: headerColor,
-            border: Border(bottom: BorderSide(color: borderColor)),
-          ),
-          child: SizedBox(
-            height: _headerHeight,
-            child: Row(
-              children: [
-                if (freezeSymbol)
-                  _buildHeaderCell(
-                    'Symbol',
-                    width: _symbolColumnWidth,
-                    frozen: true,
-                    headerColor: headerColor,
-                    borderColor: borderColor,
-                  ),
-                Expanded(
-                  child: SingleChildScrollView(
-                    controller: _horizontalHeaderController,
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: scrollableColumns
-                          .map((column) => _buildHeaderCell(
-                                column,
-                                width: _columnWidth(column),
-                                borderColor: borderColor,
-                              ))
-                          .toList(),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final frozenWidth = freezeSymbol ? _symbolColumnWidth : 0.0;
+        final availableScrollableWidth =
+            (constraints.maxWidth - frozenWidth).clamp(0.0, double.infinity);
+        final needsHorizontalScroll =
+            minScrollableWidth > availableScrollableWidth + 0.5;
+        final contentWidth = needsHorizontalScroll
+            ? minScrollableWidth
+            : availableScrollableWidth;
+        final stretchFactor = minScrollableWidth > 0 && !needsHorizontalScroll
+            ? availableScrollableWidth / minScrollableWidth
+            : 1.0;
+
+        double widthFor(String column) => _columnWidth(column) * stretchFactor;
+
+        final horizontalPhysics = needsHorizontalScroll
+            ? const ClampingScrollPhysics()
+            : const NeverScrollableScrollPhysics();
+
+        return Column(
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: headerColor,
+                border: Border(bottom: BorderSide(color: borderColor)),
+              ),
+              child: SizedBox(
+                height: _headerHeight,
+                child: Row(
+                  children: [
+                    if (freezeSymbol)
+                      _buildHeaderCell(
+                        'Symbol',
+                        width: _symbolColumnWidth,
+                        frozen: true,
+                        headerColor: headerColor,
+                        borderColor: borderColor,
+                      ),
+                    Expanded(
+                      child: SingleChildScrollView(
+                        controller: _horizontalHeaderController,
+                        scrollDirection: Axis.horizontal,
+                        physics: horizontalPhysics,
+                        child: SizedBox(
+                          width: contentWidth,
+                          child: Row(
+                            children: scrollableColumns
+                                .map((column) => _buildHeaderCell(
+                                      column,
+                                      width: widthFor(column),
+                                      borderColor: borderColor,
+                                    ))
+                                .toList(),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
-          ),
-        ),
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return Row(
+            Expanded(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   if (freezeSymbol)
@@ -1046,7 +1389,6 @@ class _StocksScreenState extends State<StocksScreen> {
                       ),
                       child: SizedBox(
                         width: _symbolColumnWidth,
-                        height: constraints.maxHeight,
                         child: ListView.builder(
                           controller: _verticalFrozenController,
                           itemCount: stocks.length,
@@ -1064,85 +1406,97 @@ class _StocksScreenState extends State<StocksScreen> {
                       ),
                     ),
                   Expanded(
-                    child: SingleChildScrollView(
+                    child: Scrollbar(
                       controller: _horizontalBodyController,
-                      scrollDirection: Axis.horizontal,
-                      child: SizedBox(
-                        width: scrollableWidth < constraints.maxWidth
-                            ? constraints.maxWidth
-                            : scrollableWidth,
-                        height: constraints.maxHeight,
-                        child: RefreshIndicator(
-                          onRefresh: () => provider.refreshStockPrices(),
-                          child: ListView.builder(
-                            controller: _verticalBodyController,
-                            itemCount: stocks.length,
-                            itemExtent: _rowHeight,
-                            physics: const AlwaysScrollableScrollPhysics(),
-                            itemBuilder: (context, index) {
-                              final stock = stocks[index];
-                              final invested = stock.buyPrice * stock.quantity;
-                              final current =
-                                  stock.currentPrice * stock.quantity;
-                              final profitLoss = current - invested;
-                              final profitLossPercentage = invested > 0
-                                  ? (profitLoss / invested) * 100
-                                  : 0.0;
-                              final trend = _trendFor(stock, provider);
-                              final recommendation =
-                                  _getRecommendation(stock, trend);
+                      thumbVisibility: needsHorizontalScroll,
+                      trackVisibility: needsHorizontalScroll,
+                      scrollbarOrientation: ScrollbarOrientation.bottom,
+                      child: SingleChildScrollView(
+                        controller: _horizontalBodyController,
+                        scrollDirection: Axis.horizontal,
+                        physics: horizontalPhysics,
+                        child: SizedBox(
+                          width: contentWidth,
+                          child: RefreshIndicator(
+                            onRefresh: () => provider.refreshStockPrices(),
+                            child: Scrollbar(
+                              controller: _verticalBodyController,
+                              thumbVisibility: true,
+                              child: ListView.builder(
+                                controller: _verticalBodyController,
+                                itemCount: stocks.length,
+                                itemExtent: _rowHeight,
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                itemBuilder: (context, index) {
+                                  final stock = stocks[index];
+                                  final invested =
+                                      stock.buyPrice * stock.quantity;
+                                  final current =
+                                      stock.currentPrice * stock.quantity;
+                                  final profitLoss = current - invested;
+                                  final profitLossPercentage = invested > 0
+                                      ? (profitLoss / invested) * 100
+                                      : 0.0;
+                                  final trend = _trendFor(stock, provider);
+                                  final recommendation =
+                                      _getRecommendation(stock, trend);
 
-                              return DecoratedBox(
-                                decoration: BoxDecoration(
-                                  color: index.isEven
-                                      ? Theme.of(context).colorScheme.surface
-                                      : Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerLowest,
-                                  border: Border(
-                                    bottom: BorderSide(
-                                      color: borderColor.withOpacity(0.5),
+                                  return DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: index.isEven
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .surface
+                                          : Theme.of(context)
+                                              .colorScheme
+                                              .surfaceContainerLowest,
+                                      border: Border(
+                                        bottom: BorderSide(
+                                          color: borderColor.withOpacity(0.5),
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: scrollableColumns
-                                      .map((column) => SizedBox(
-                                            width: _columnWidth(column),
-                                            child: Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                horizontal: 8,
-                                              ),
-                                              child: Align(
-                                                alignment: Alignment.centerLeft,
-                                                child: _buildCellWidget(
-                                                  column,
-                                                  stock,
-                                                  profitLoss,
-                                                  profitLossPercentage,
-                                                  trend,
-                                                  recommendation,
-                                                  provider,
+                                    child: Row(
+                                      children: scrollableColumns
+                                          .map((column) => SizedBox(
+                                                width: widthFor(column),
+                                                child: Padding(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                    horizontal: 8,
+                                                  ),
+                                                  child: Align(
+                                                    alignment:
+                                                        Alignment.centerLeft,
+                                                    child: _buildCellWidget(
+                                                      column,
+                                                      stock,
+                                                      profitLoss,
+                                                      profitLossPercentage,
+                                                      trend,
+                                                      recommendation,
+                                                      provider,
+                                                    ),
+                                                  ),
                                                 ),
-                                              ),
-                                            ),
-                                          ))
-                                      .toList(),
-                                ),
-                              );
-                            },
+                                              ))
+                                          .toList(),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
                 ],
-              );
-            },
-          ),
-        ),
-      ],
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -1355,7 +1709,7 @@ class _StocksScreenState extends State<StocksScreen> {
                 child: _buildTrendBadge(trend.trend),
               )
             : const Text('-');
-      case 'Recommendation':
+      case 'Signal':
         return FittedBox(
           fit: BoxFit.scaleDown,
           alignment: Alignment.centerLeft,
@@ -1369,14 +1723,14 @@ class _StocksScreenState extends State<StocksScreen> {
                 child: _buildCompactPriceRangeBar(stock),
               )
             : const Text('-');
-      case '6th High':
+      case 'High':
         return Text(
           stock.sixthHighestPrice > 0
               ? formatInr(stock.sixthHighestPrice)
               : '-',
           style: const TextStyle(color: Colors.orange),
         );
-      case '6th Low':
+      case 'Low':
         return Text(
           stock.sixthLowestPrice > 0 ? formatInr(stock.sixthLowestPrice) : '-',
           style: const TextStyle(color: Colors.purple),
@@ -1395,7 +1749,7 @@ class _StocksScreenState extends State<StocksScreen> {
               ),
             IconButton(
               icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-              onPressed: () => _showDeleteDialog(context, stock.id, provider),
+              onPressed: () => _showDeleteDialog(context, stock, provider),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
             ),
@@ -1416,7 +1770,7 @@ class _StocksScreenState extends State<StocksScreen> {
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
           child: Text(
-            'No consensus data',
+            'No data',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
@@ -1687,17 +2041,45 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Widget _buildInfoColumn(String label, String value, [Color? valueColor]) {
+    return _infoColumn(
+      label: label,
+      value: value,
+      valueColor: valueColor,
+    );
+  }
+
+  Widget _buildCompactInfoColumn(String label, String value,
+      [Color? valueColor]) {
+    return _infoColumn(
+      label: label,
+      value: value,
+      valueColor: valueColor,
+      compact: true,
+    );
+  }
+
+  Widget _infoColumn({
+    required String label,
+    required String value,
+    Color? valueColor,
+    bool compact = false,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
-          style: const TextStyle(fontSize: 12, color: Colors.grey),
+          style: TextStyle(
+            fontSize: compact ? 10 : 12,
+            color: Colors.grey,
+          ),
         ),
         Text(
           value,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: 14,
+            fontSize: compact ? 12 : 14,
             fontWeight: FontWeight.bold,
             color: valueColor,
           ),
@@ -1777,90 +2159,23 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Widget _buildPriceRangeBar(Stock stock) {
-    final sixthLow = stock.sixthLowestPrice;
-    final sixthHigh = stock.sixthHighestPrice;
-    final currentPrice = stock.currentPrice;
-
-    final range = sixthHigh - sixthLow;
-    var currentPricePosition =
-        range > 0 ? (currentPrice - sixthLow) / range : 0.5;
-    // Clamp position to stay within the bar
-    currentPricePosition = currentPricePosition.clamp(0.0, 1.0);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Price Range (6th Low to 6th High)',
-          style: TextStyle(fontSize: 12, color: Colors.grey),
+        const Tooltip(
+          message: 'High and Low used to remove spikes',
+          waitDuration: Duration(milliseconds: 300),
+          child: Text(
+            'Price Range*',
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
         ),
         const SizedBox(height: 8),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            return Stack(
-              children: [
-                Container(
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade300,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    height: 8,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.purple.shade400,
-                          Colors.orange.shade400
-                        ],
-                      ),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: currentPricePosition * constraints.maxWidth - 6,
-                  child: Column(
-                    children: [
-                      CustomPaint(
-                        size: const Size(12, 16),
-                        painter: _TrianglePainter(Colors.blue),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.blue,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          formatInr(currentPrice),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _buildInfoColumn('6th Low', formatInr(sixthLow), Colors.purple),
-            _buildInfoColumn('6th High', formatInr(sixthHigh), Colors.orange),
-          ],
-        ),
+        _buildCompactPriceRangeBar(stock),
       ],
     );
   }
@@ -2017,6 +2332,8 @@ class _StocksScreenState extends State<StocksScreen> {
         builder: (_) => EditStockScreen(stock: stock),
       ),
     );
+    if (!mounted) return;
+    await context.read<FinanceProvider>().loadStocks();
   }
 
   Widget _buildBuySellActionButtons(Stock stock, FinanceProvider provider) {
@@ -2238,7 +2555,7 @@ class _StocksScreenState extends State<StocksScreen> {
                 style: TextStyle(color: Colors.grey.shade700)),
             const SizedBox(height: 12),
             const Text(
-              'Mark this stock as Hold and use the current price as the baseline for % fluctuation in recommendation logic?',
+              'Mark this stock as Hold and use the current price as the baseline for % fluctuation in signal logic?',
             ),
             const SizedBox(height: 12),
             Text(
@@ -2451,21 +2768,35 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   void _showDeleteDialog(
-      BuildContext context, int id, FinanceProvider provider) {
+      BuildContext context, Stock stock, FinanceProvider provider) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Delete Stock'),
-        content: const Text('Are you sure you want to delete this stock?'),
+        content: Text(
+          'Remove ${stock.symbol} from your holdings'
+          '${stock.source.isNotEmpty ? ' (${stock.source})' : ''}?',
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           TextButton(
             onPressed: () async {
-              Navigator.pop(context);
-              await provider.deleteStock(id);
+              Navigator.pop(dialogContext);
+              final source =
+                  stock.source.trim().isEmpty ? _manualAddSource : stock.source;
+              final ok = await provider.deleteStock(stock.id, source: source);
+              if (!context.mounted) return;
+              if (!ok) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(provider.error ?? 'Failed to delete stock'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
             },
             child: const Text('Delete', style: TextStyle(color: Colors.red)),
           ),
@@ -2511,6 +2842,15 @@ class _StocksScreenState extends State<StocksScreen> {
         case 'Source':
           // Renamed to Account; preserve hidden preference.
           out.add('Account');
+          break;
+        case 'Recommendation':
+          out.add('Signal');
+          break;
+        case '6th High':
+          out.add('High');
+          break;
+        case '6th Low':
+          out.add('Low');
           break;
         default:
           // Drop removed columns (e.g. Market Cap) from persisted prefs.
@@ -2665,14 +3005,14 @@ class _StocksScreenState extends State<StocksScreen> {
         return _profitLossPct(a).compareTo(_profitLossPct(b));
       case 'Sector':
         return _compareEmptyLast(a.sector, b.sector);
-      case 'Recommendation':
+      case 'Signal':
         return _getRecommendation(a, _trendFor(a, provider))
             .compareTo(_getRecommendation(b, _trendFor(b, provider)));
       case 'Price Range':
         return _priceRangeSortKey(a).compareTo(_priceRangeSortKey(b));
-      case '6th High':
+      case 'High':
         return a.sixthHighestPrice.compareTo(b.sixthHighestPrice);
-      case '6th Low':
+      case 'Low':
         return a.sixthLowestPrice.compareTo(b.sixthLowestPrice);
       case 'Trend':
         final trendA = _trendFor(a, provider)?.trend ?? '';

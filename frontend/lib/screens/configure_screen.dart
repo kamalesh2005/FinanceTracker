@@ -118,7 +118,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
       if (!mounted) return;
       setState(() => _rulesInitial = rs);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Recommendation rules saved')),
+        const SnackBar(content: Text('Signal rules saved')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -187,12 +187,12 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                 ),
                 const SizedBox(height: 28),
                 const Text(
-                  'Recommendation Rules',
+                  'Signal Rules',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Define when each recommendation applies. Formulas use field '
+                  'Define when each signal applies. Formulas use field '
                   'names like curr_price and avg_buy_price.',
                   style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
                 ),

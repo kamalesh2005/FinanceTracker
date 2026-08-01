@@ -202,6 +202,30 @@ func (h *Handler) GetStock(c *gin.Context) {
 	c.JSON(http.StatusOK, stock)
 }
 
+// LookupStockBySymbol returns a Global_Stocks row by symbol (no holdings required).
+// Used by Manual Add to prefill buy price from an existing LTP.
+func (h *Handler) LookupStockBySymbol(c *gin.Context) {
+	symbol := strings.ToUpper(strings.TrimSpace(c.Query("symbol")))
+	if symbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
+		return
+	}
+	var stock models.Stock
+	if err := h.DB.Where("UPPER(symbol) = ?", symbol).First(&stock).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "stock not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"symbol":        stock.Symbol,
+		"name":          stock.Name,
+		"current_price": stock.CurrentPrice,
+	})
+}
+
 func (h *Handler) UpdateStock(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	var stock models.Stock
@@ -220,8 +244,8 @@ func (h *Handler) UpdateStock(c *gin.Context) {
 	c.JSON(http.StatusOK, stock)
 }
 
-// UpdateStockHoldings adjusts Manual Add position via buy/sell ledger deltas.
-// Optional symbol change moves this user's Manual Add rows to findOrCreateStock(newSymbol).
+// UpdateStockHoldings replaces the user's Manual Add position with the given quantity and buy price.
+// Symbol is accepted for compatibility but cannot be changed — holdings stay on the existing stock.
 func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -230,7 +254,7 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 	}
 
 	var req struct {
-		Symbol   string  `json:"symbol" binding:"required"`
+		Symbol   string  `json:"symbol"`
 		Quantity float64 `json:"quantity" binding:"required"`
 		Price    float64 `json:"price" binding:"required"`
 	}
@@ -239,11 +263,6 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 		return
 	}
 
-	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
-	if symbol == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "symbol is required"})
-		return
-	}
 	if req.Quantity <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be greater than 0"})
 		return
@@ -267,24 +286,14 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 
 	var userPosCount int64
 	if err := h.DB.Model(&models.UserStock{}).
-		Where("user_id = ? AND stock_id = ?", userID, stock.ID).
+		Where("user_id = ? AND stock_id = ? AND source = ?", userID, stock.ID, models.SourceManualAdd).
 		Count(&userPosCount).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if userPosCount == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "no holdings for this stock"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "no Manual Add holdings for this stock"})
 		return
-	}
-
-	targetStock := stock
-	if !strings.EqualFold(strings.TrimSpace(stock.Symbol), symbol) {
-		created, err := h.findOrCreateStock(symbol, stock.Name, stock.ISIN)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		targetStock = created
 	}
 
 	tx := h.DB.Begin()
@@ -293,61 +302,10 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 		return
 	}
 
-	if targetStock.ID != stock.ID {
-		if err := tx.Model(&models.UserStock{}).
-			Where("user_id = ? AND stock_id = ?", userID, stock.ID).
-			Update("stock_id", targetStock.ID).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		if err := tx.Model(&models.UserStockTransaction{}).
-			Where("user_id = ? AND stock_id = ?", userID, stock.ID).
-			Update("stock_id", targetStock.ID).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
-
-	var pos models.UserStock
-	err = tx.Where("user_id = ? AND stock_id = ? AND source = ?", userID, targetStock.ID, models.SourceManualAdd).
-		First(&pos).Error
-	currentQty := 0.0
-	if err == nil {
-		currentQty = pos.Quantity
-	} else if err != gorm.ErrRecordNotFound {
+	if err := replaceManualAddPosition(tx, userID, stock.ID, req.Quantity, req.Price, time.Now()); err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
-	}
-
-	delta := req.Quantity - currentQty
-	txDate := time.Now()
-	if delta > 1e-9 {
-		if _, _, err := applyManualStockTransaction(tx, userID, targetStock.ID, models.TransactionTypeBuy, delta, req.Price, txDate, models.SourceManualAdd); err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	} else if delta < -1e-9 {
-		if _, _, err := applyManualStockTransaction(tx, userID, targetStock.ID, models.TransactionTypeSell, -delta, req.Price, txDate, models.SourceManualAdd); err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-
-	if watchList {
-		var updated models.UserStock
-		if err := tx.Where("user_id = ? AND stock_id = ? AND source = ?", userID, targetStock.ID, models.SourceManualAdd).
-			First(&updated).Error; err == nil {
-			if err := normalizePositionLotsToOne(tx, updated); err != nil {
-				tx.Rollback()
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-		}
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -355,7 +313,7 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 		return
 	}
 
-	details := h.stocksWithHoldings([]models.Stock{targetStock}, userID)
+	details := h.stocksWithHoldings([]models.Stock{stock}, userID)
 	if len(details) == 0 {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load updated holding"})
 		return
@@ -368,6 +326,54 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, updated)
+}
+
+// DeleteStockHoldings removes the current user's holding (and ledger) for a stock+source.
+// It does not delete the shared stock master row.
+func (h *Handler) DeleteStockHoldings(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid stock id"})
+		return
+	}
+
+	source := normalizeSource(c.Query("source"))
+	userID := middleware.CurrentUserID(c)
+
+	var pos models.UserStock
+	if err := h.DB.Where("user_id = ? AND stock_id = ? AND source = ?", userID, uint(id), source).
+		First(&pos).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "holding not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	tx := h.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": tx.Error.Error()})
+		return
+	}
+
+	if err := tx.Where("user_id = ? AND stock_id = ? AND source = ?", userID, uint(id), source).
+		Delete(&models.UserStockTransaction{}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tx.Delete(&pos).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Holding deleted"})
 }
 
 func (h *Handler) DeleteStock(c *gin.Context) {

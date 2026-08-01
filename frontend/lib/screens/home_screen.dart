@@ -166,11 +166,13 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: Icons.show_chart,
               iconColor: Colors.blue,
               title: 'Stocks',
-              onManage: () {
-                Navigator.push(
+              onManage: () async {
+                await Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const StocksScreen()),
                 );
+                if (!mounted) return;
+                await context.read<FinanceProvider>().loadPortfolioSummary();
               },
             ),
             const SizedBox(height: 12),
@@ -200,11 +202,13 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: Icons.account_balance,
               iconColor: Colors.purple,
               title: 'Mutual Funds',
-              onManage: () {
-                Navigator.push(
+              onManage: () async {
+                await Navigator.push(
                   context,
                   MaterialPageRoute(builder: (_) => const MutualFundsScreen()),
                 );
+                if (!mounted) return;
+                await context.read<FinanceProvider>().loadPortfolioSummary();
               },
             ),
             const SizedBox(height: 12),
@@ -270,7 +274,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required IconData icon,
     required Color iconColor,
     required String title,
-    required VoidCallback onManage,
+    required Future<void> Function() onManage,
   }) {
     return Row(
       children: [
@@ -283,7 +287,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         TextButton(
-          onPressed: onManage,
+          onPressed: () {
+            onManage();
+          },
           child: const Text('Manage'),
         ),
       ],

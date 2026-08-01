@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import '../models/stock.dart';
 import '../providers/finance_provider.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import '../utils/currency_format.dart';
 import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
@@ -28,45 +29,102 @@ class AddStockScreen extends StatefulWidget {
 class _AddStockScreenState extends State<AddStockScreen> {
   final _formKey = GlobalKey<FormState>();
   late TextEditingController _symbolController;
-  late TextEditingController _nameController;
   late TextEditingController _quantityController;
   late TextEditingController _buyPriceController;
-  late TextEditingController _currentPriceController;
+  final _symbolFocusNode = FocusNode();
   late DateTime _transactionDate;
   List<Stock> _importedStocks = [];
   bool _isImporting = false;
   String? _importSource;
+  /// True when Buy Price was last set from a Global_Stocks LTP lookup.
+  bool _buyPriceFromLtp = false;
+  String? _ltpLookupSymbol;
 
   @override
   void initState() {
     super.initState();
     _symbolController = TextEditingController(text: widget.stock?.symbol ?? '');
-    _nameController = TextEditingController(text: widget.stock?.name ?? '');
     _quantityController = TextEditingController(
       text: widget.stock?.quantity.toString() ?? '',
     );
     _buyPriceController =
         TextEditingController(text: widget.stock?.buyPrice.toString() ?? '');
-    _currentPriceController =
-        TextEditingController(text: widget.stock?.currentPrice.toString() ?? '');
     _transactionDate = DateTime.now();
+    _symbolFocusNode.addListener(() {
+      if (!_symbolFocusNode.hasFocus) {
+        _tryPrefillBuyPriceFromLtp();
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (context.read<AuthProvider>().useAsStockWatchList) {
         _quantityController.text = '1';
         setState(() {});
       }
+      if (widget.stock == null && _symbolController.text.trim().isNotEmpty) {
+        _tryPrefillBuyPriceFromLtp();
+      }
     });
   }
 
   @override
   void dispose() {
+    _symbolFocusNode.dispose();
     _symbolController.dispose();
-    _nameController.dispose();
     _quantityController.dispose();
     _buyPriceController.dispose();
-    _currentPriceController.dispose();
     super.dispose();
+  }
+
+  String _formatPrice(double value) {
+    if (value == value.roundToDouble()) {
+      return value.toStringAsFixed(0);
+    }
+    final fixed = value.toStringAsFixed(2);
+    if (fixed.endsWith('0')) {
+      return value.toStringAsFixed(1);
+    }
+    return fixed;
+  }
+
+  Future<void> _tryPrefillBuyPriceFromLtp() async {
+    final symbol = _symbolController.text.trim().toUpperCase();
+    if (symbol.isEmpty) return;
+    if (_ltpLookupSymbol == symbol) return;
+
+    // Prefer an already-loaded holding (same Global_Stocks LTP) for instant fill.
+    final local = context.read<FinanceProvider>().stocks.where(
+          (s) => s.symbol.toUpperCase() == symbol && s.currentPrice > 0,
+        );
+    if (local.isNotEmpty) {
+      _applyLtpToBuyPrice(symbol, local.first.currentPrice);
+      return;
+    }
+
+    try {
+      final hit = await ApiService.lookupGlobalStock(symbol);
+      if (!mounted) return;
+      if (hit == null || hit.currentPrice <= 0) {
+        _ltpLookupSymbol = symbol;
+        return;
+      }
+      _applyLtpToBuyPrice(symbol, hit.currentPrice);
+    } catch (_) {
+      // Lookup is best-effort; leave Buy Price as the user entered it.
+    }
+  }
+
+  void _applyLtpToBuyPrice(String symbol, double ltp) {
+    final buyEmpty = _buyPriceController.text.trim().isEmpty;
+    if (!buyEmpty && !_buyPriceFromLtp) {
+      _ltpLookupSymbol = symbol;
+      return;
+    }
+    setState(() {
+      _buyPriceController.text = _formatPrice(ltp);
+      _buyPriceFromLtp = true;
+      _ltpLookupSymbol = symbol;
+    });
   }
 
   Future<Uint8List?> _readPickedFileBytes(PlatformFile file) async {
@@ -377,20 +435,23 @@ class _AddStockScreenState extends State<AddStockScreen> {
     final dataRows = fields.skip(1).toList();
     List<Stock> stocks = [];
 
-    // Expected columns: symbol, name, quantity, buyPrice, currentPrice
+    // Expected columns: symbol, quantity, buyPrice
     for (var row in dataRows) {
-      if (row.length < 3) continue; // At least symbol, quantity, buyPrice required
+      if (row.length < 3) continue;
 
       try {
+        final symbol = row[0].toString().trim().toUpperCase();
+        final quantity = double.parse(row[1].toString());
+        final buyPrice = double.parse(row[2].toString());
+        if (symbol.isEmpty || quantity == 0 || buyPrice == 0) continue;
+
         final stock = Stock(
           id: 0,
-          symbol: row[0].toString().toUpperCase(),
-          name: row.length > 1 ? row[1].toString() : '',
-          quantity: double.parse(row[2].toString()),
-          buyPrice: double.parse(row[3].toString()),
-          currentPrice: row.length > 4 && row[4].toString().isNotEmpty
-              ? double.parse(row[4].toString())
-              : 0.0,
+          symbol: symbol,
+          name: '',
+          quantity: quantity,
+          buyPrice: buyPrice,
+          currentPrice: 0.0,
           createdAt: DateTime.now(),
           updatedAt: DateTime.now(),
         );
@@ -417,26 +478,22 @@ class _AddStockScreenState extends State<AddStockScreen> {
       final dataRows = sheet.rows.skip(1).toList();
 
       for (var row in dataRows) {
-        if (row.length < 3) continue; // At least symbol, quantity, buyPrice required
+        if (row.length < 3) continue;
 
         try {
-          final symbol = row[0]?.value?.toString() ?? '';
-          final name = row.length > 1 ? row[1]?.value?.toString() ?? '' : '';
-          final quantity = double.parse(row[2]?.value?.toString() ?? '0');
-          final buyPrice = double.parse(row[3]?.value?.toString() ?? '0');
-          final currentPrice = row.length > 4 && row[4]?.value != null
-              ? double.parse(row[4]!.value.toString())
-              : 0.0;
+          final symbol = row[0]?.value?.toString().trim() ?? '';
+          final quantity = double.parse(row[1]?.value?.toString() ?? '0');
+          final buyPrice = double.parse(row[2]?.value?.toString() ?? '0');
 
           if (symbol.isEmpty || quantity == 0 || buyPrice == 0) continue;
 
           final stock = Stock(
             id: 0,
             symbol: symbol.toUpperCase(),
-            name: name,
+            name: '',
             quantity: quantity,
             buyPrice: buyPrice,
-            currentPrice: currentPrice,
+            currentPrice: 0.0,
             createdAt: DateTime.now(),
             updatedAt: DateTime.now(),
           );
@@ -1178,7 +1235,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ),
                         const SizedBox(height: 12),
                         const Text(
-                          'Upload a CSV or Excel file with columns: symbol, name, quantity, buyPrice, currentPrice',
+                          'Upload a CSV or Excel file with columns: symbol, quantity, buyPrice',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),
@@ -1281,7 +1338,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                       ),
                     ),
                     subtitle: const Text(
-                      'Enter symbol, quantity, and prices for one stock',
+                      'Enter symbol, quantity, and buy price for one stock',
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     children: [
@@ -1309,26 +1366,22 @@ class _AddStockScreenState extends State<AddStockScreen> {
     return [
       TextFormField(
         controller: _symbolController,
+        focusNode: _symbolFocusNode,
+        textCapitalization: TextCapitalization.characters,
         decoration: const InputDecoration(
           labelText: 'Symbol *',
           hintText: 'e.g., RELIANCE, TCS',
           border: OutlineInputBorder(),
         ),
+        onChanged: (_) {
+          _ltpLookupSymbol = null;
+        },
         validator: (value) {
           if (value == null || value.isEmpty) {
             return 'Please enter a symbol';
           }
           return null;
         },
-      ),
-      const SizedBox(height: 16),
-      TextFormField(
-        controller: _nameController,
-        decoration: const InputDecoration(
-          labelText: 'Company Name',
-          hintText: 'e.g., Reliance Industries',
-          border: OutlineInputBorder(),
-        ),
       ),
       const SizedBox(height: 16),
       Builder(
@@ -1365,12 +1418,20 @@ class _AddStockScreenState extends State<AddStockScreen> {
       const SizedBox(height: 16),
       TextFormField(
         controller: _buyPriceController,
-        decoration: const InputDecoration(
+        decoration: InputDecoration(
           labelText: 'Buy Price (₹) *',
           hintText: 'e.g., 2500.50',
-          border: OutlineInputBorder(),
+          border: const OutlineInputBorder(),
+          helperText: _buyPriceFromLtp
+              ? 'Prefilled from Global Stocks LTP'
+              : null,
         ),
         keyboardType: TextInputType.number,
+        onChanged: (_) {
+          if (_buyPriceFromLtp) {
+            setState(() => _buyPriceFromLtp = false);
+          }
+        },
         validator: (value) {
           if (value == null || value.isEmpty) {
             return 'Please enter buy price';
@@ -1380,16 +1441,6 @@ class _AddStockScreenState extends State<AddStockScreen> {
           }
           return null;
         },
-      ),
-      const SizedBox(height: 16),
-      TextFormField(
-        controller: _currentPriceController,
-        decoration: const InputDecoration(
-          labelText: 'Current Price (₹)',
-          hintText: 'e.g., 2600.75',
-          border: OutlineInputBorder(),
-        ),
-        keyboardType: TextInputType.number,
       ),
       const SizedBox(height: 16),
       ListTile(
@@ -1429,12 +1480,12 @@ class _AddStockScreenState extends State<AddStockScreen> {
                   _buildInfoRow('Sector', widget.stock!.sector),
                 if (widget.stock!.sixthHighestPrice > 0)
                   _buildInfoRow(
-                    '6th Highest Price',
+                    'High',
                     formatInr(widget.stock!.sixthHighestPrice),
                   ),
                 if (widget.stock!.sixthLowestPrice > 0)
                   _buildInfoRow(
-                    '6th Lowest Price',
+                    'Low',
                     formatInr(widget.stock!.sixthLowestPrice),
                   ),
               ],
@@ -1449,50 +1500,48 @@ class _AddStockScreenState extends State<AddStockScreen> {
             onPressed: provider.isLoading
                 ? null
                 : () async {
-                    if (_formKey.currentState!.validate()) {
-                      final watchList = context
-                          .read<AuthProvider>()
-                          .useAsStockWatchList;
-                      final qty = watchList
-                          ? 1.0
-                          : double.parse(_quantityController.text);
-                      final stock = Stock(
-                        id: widget.stock?.id ?? 0,
-                        symbol: _symbolController.text.toUpperCase(),
-                        name: _nameController.text,
-                        quantity: qty,
-                        buyPrice: double.parse(_buyPriceController.text),
-                        currentPrice: _currentPriceController.text.isEmpty
-                            ? 0.0
-                            : double.parse(_currentPriceController.text),
-                        createdAt:
-                            widget.stock?.createdAt ?? DateTime.now(),
-                        updatedAt: DateTime.now(),
+                    await _tryPrefillBuyPriceFromLtp();
+                    if (!_formKey.currentState!.validate()) return;
+
+                    final watchList =
+                        context.read<AuthProvider>().useAsStockWatchList;
+                    final qty = watchList
+                        ? 1.0
+                        : double.parse(_quantityController.text);
+                    final stock = Stock(
+                      id: widget.stock?.id ?? 0,
+                      symbol: _symbolController.text.toUpperCase(),
+                      name: widget.stock?.name ?? '',
+                      quantity: qty,
+                      buyPrice: double.parse(_buyPriceController.text),
+                      // Current price is filled from Yahoo / Global_Stocks on the backend.
+                      currentPrice: 0.0,
+                      createdAt: widget.stock?.createdAt ?? DateTime.now(),
+                      updatedAt: DateTime.now(),
+                    );
+
+                    if (widget.stock == null) {
+                      await provider.addStock(
+                        stock,
+                        transactionDate: _transactionDate,
                       );
-
-                      if (widget.stock == null) {
-                        await provider.addStock(
-                          stock,
-                          transactionDate: _transactionDate,
-                        );
-                      } else {
-                        await provider.updateStock(widget.stock!.id, stock);
-                      }
-
-                      if (provider.error != null) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('Error: ${provider.error}'),
-                              backgroundColor: Colors.red,
-                            ),
-                          );
-                        }
-                        return;
-                      }
-
-                      if (context.mounted) Navigator.pop(context);
+                    } else {
+                      await provider.updateStock(widget.stock!.id, stock);
                     }
+
+                    if (provider.error != null) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Error: ${provider.error}'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                      return;
+                    }
+
+                    if (context.mounted) Navigator.pop(context);
                   },
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),

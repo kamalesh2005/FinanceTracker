@@ -62,7 +62,7 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
       if (!mounted) return;
       setState(() => _rules = rs);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Admin recommendation rules saved')),
+        const SnackBar(content: Text('Admin signal rules saved')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -88,7 +88,7 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 Text(
-                  'Default recommendation rules',
+                  'Default signal rules',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
