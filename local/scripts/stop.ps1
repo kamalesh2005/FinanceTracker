@@ -1,9 +1,15 @@
 # Stop Finance Tracker Application (Windows)
+# Use -Restart to stop, then rebuild and start again in RELEASE mode.
+param(
+    [switch]$Restart,
+    [switch]$Debug
+)
 
 $ErrorActionPreference = "SilentlyContinue"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectDir = Split-Path -Parent $ScriptDir
-$PidFile = Join-Path $ScriptDir ".app.pids"
+$LocalDir = Split-Path -Parent $ScriptDir
+$ProjectDir = Split-Path -Parent $LocalDir
+$PidFile = Join-Path $LocalDir "logs\.app.pids"
 
 Write-Host "Stopping Finance Tracker application..."
 
@@ -65,3 +71,17 @@ if (Test-Path $ChromeProfile) {
 }
 
 Write-Host "All processes stopped."
+
+if ($Restart) {
+    $ErrorActionPreference = "Stop"
+    $startScript = Join-Path $ScriptDir "start.ps1"
+    if ($Debug) {
+        Write-Host ""
+        Write-Host "Rebuilding and restarting in DEBUG mode..."
+        & $startScript -Debug
+    } else {
+        Write-Host ""
+        Write-Host "Rebuilding and restarting in RELEASE mode..."
+        & $startScript
+    }
+}

@@ -47,6 +47,33 @@ func AuthRequired(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+// OptionalAuth sets user context when a valid Bearer token is present.
+// Invalid or missing tokens are ignored so public routes still work.
+func OptionalAuth(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		header := c.GetHeader("Authorization")
+		if header == "" || !strings.HasPrefix(header, "Bearer ") {
+			c.Next()
+			return
+		}
+		tokenStr := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+		claims, err := auth.ParseToken(tokenStr)
+		if err != nil {
+			c.Next()
+			return
+		}
+		var user models.User
+		if err := db.First(&user, claims.UserID).Error; err != nil || !user.Enabled {
+			c.Next()
+			return
+		}
+		c.Set(ContextUserIDKey, user.ID)
+		c.Set(ContextRoleKey, user.Role)
+		c.Set(ContextUserKey, user)
+		c.Next()
+	}
+}
+
 func RequireAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get(ContextRoleKey)

@@ -1,0 +1,16 @@
+# Environment files hold real credentials; only the *.example files are tracked.
+local/env/*.env
+oci/env/*.env
+
+# Local run artifacts
+local/logs/
+local/build/
+
+# Production build artifacts and deployment credentials
+oci/build/
+oci/secrets/
+
+# SSH keys anywhere in the tree
+*.key
+*.key.pub
+*.pem

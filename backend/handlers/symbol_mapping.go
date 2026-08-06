@@ -1,7 +1,10 @@
 package handlers
 
 import (
+	"financetracker/dailyclose"
 	"financetracker/models"
+	"financetracker/nseimport"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -223,7 +226,7 @@ func (h *Handler) DeleteSymbolMapping(c *gin.Context) {
 
 func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 	var stocks []models.Stock
-	if err := h.DB.Order("symbol ASC").Find(&stocks).Error; err != nil {
+	if err := h.DB.Where("pull_data = ?", models.PullDataYes).Order("symbol ASC").Find(&stocks).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -282,18 +285,117 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetAllStocksAdmin returns every row in Global_Stocks (no holdings filter).
-// Used by admins to correct name/sector for any symbol in the catalog.
+// GetAllStocksAdmin returns a paginated Global_Stocks page for admins.
+// Query: q, series, listing_category, pull_data, page (1-based), page_size (default 50, max 100).
 func (h *Handler) GetAllStocksAdmin(c *gin.Context) {
-	var stocks []models.Stock
-	if err := h.DB.Order("symbol ASC").Find(&stocks).Error; err != nil {
+	page := 1
+	if raw := strings.TrimSpace(c.Query("page")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			page = n
+		}
+	}
+	pageSize := 50
+	if raw := strings.TrimSpace(c.Query("page_size")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			pageSize = n
+		}
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	q := h.DB.Model(&models.Stock{})
+	if search := strings.TrimSpace(c.Query("q")); search != "" {
+		like := "%" + search + "%"
+		q = q.Where("symbol ILIKE ? OR name ILIKE ? OR sector ILIKE ? OR industry ILIKE ?", like, like, like, like)
+	}
+	if series := strings.TrimSpace(c.Query("series")); series != "" {
+		q = q.Where("UPPER(series) = ?", strings.ToUpper(series))
+	}
+	if cat := strings.TrimSpace(c.Query("listing_category")); cat != "" {
+		q = q.Where("listing_category ILIKE ?", strings.TrimSpace(cat))
+	}
+	if pull := strings.ToUpper(strings.TrimSpace(c.Query("pull_data"))); pull == models.PullDataYes || pull == models.PullDataNo {
+		q = q.Where("pull_data = ?", pull)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, stocks)
+
+	var stocks []models.Stock
+	offset := (page - 1) * pageSize
+	if err := q.Order("symbol ASC").Offset(offset).Limit(pageSize).Find(&stocks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":     stocks,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
 }
 
-// UpdateStockAdminFields lets admins correct Yahoo-sourced fields (sector, name).
+// ImportNSECatalogAdmin upserts Global_Stocks from an uploaded NSE_All CSV.
+func (h *Handler) ImportNSECatalogAdmin(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required (multipart field name: file)"})
+		return
+	}
+	f, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "could not open uploaded file"})
+		return
+	}
+	defer f.Close()
+
+	result, err := nseimport.ImportCSV(h.DB, f)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := BackfillPullDataFromHoldings(h.DB); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "import succeeded but pull_data backfill failed: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// ImportClosingPricesAdmin upserts one day's closes from a BSE gain/loss xlsx (glDDMMYYYY.xlsx).
+// Does not recalculate MAs or sixth-high/low.
+func (h *Handler) ImportClosingPricesAdmin(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required (multipart field name: file)"})
+		return
+	}
+	f, err := file.Open()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "could not open uploaded file"})
+		return
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "could not read uploaded file"})
+		return
+	}
+
+	result, err := dailyclose.ImportClosingPricesXLSX(h.DB, data, file.Filename)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// UpdateStockAdminFields lets admins correct Yahoo-sourced fields (sector, industry, name).
 func (h *Handler) UpdateStockAdminFields(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
 	var stock models.Stock
@@ -303,8 +405,9 @@ func (h *Handler) UpdateStockAdminFields(c *gin.Context) {
 	}
 
 	var req struct {
-		Name   *string `json:"name"`
-		Sector *string `json:"sector"`
+		Name     *string `json:"name"`
+		Sector   *string `json:"sector"`
+		Industry *string `json:"industry"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -319,6 +422,10 @@ func (h *Handler) UpdateStockAdminFields(c *gin.Context) {
 	if req.Sector != nil {
 		stock.Sector = strings.TrimSpace(*req.Sector)
 		updates["sector"] = stock.Sector
+	}
+	if req.Industry != nil {
+		stock.Industry = strings.TrimSpace(*req.Industry)
+		updates["industry"] = stock.Industry
 	}
 	if len(updates) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})

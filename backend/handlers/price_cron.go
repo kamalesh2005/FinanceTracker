@@ -12,7 +12,7 @@ import (
 // intraday market-hours cron.
 func (h *Handler) UpdateAllCurrentPrices() {
 	var stocks []models.Stock
-	if err := h.DB.Find(&stocks).Error; err != nil {
+	if err := h.DB.Where("pull_data = ?", models.PullDataYes).Find(&stocks).Error; err != nil {
 		log.Printf("IntradayPriceCron: failed to load stocks: %v", err)
 		return
 	}

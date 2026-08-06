@@ -52,6 +52,7 @@ class UnmappedStock {
   final String symbol;
   final String name;
   final String sector;
+  final String industry;
   final double currentPrice;
   final double sixthHighestPrice;
   final String yahooSymbol;
@@ -65,6 +66,7 @@ class UnmappedStock {
     required this.symbol,
     required this.name,
     this.sector = '',
+    this.industry = '',
     this.currentPrice = 0,
     this.sixthHighestPrice = 0,
     this.yahooSymbol = '',
@@ -80,6 +82,7 @@ class UnmappedStock {
       symbol: json['symbol'] ?? '',
       name: json['name'] ?? '',
       sector: json['sector'] ?? '',
+      industry: json['industry'] ?? '',
       currentPrice: (json['current_price'] as num?)?.toDouble() ?? 0,
       sixthHighestPrice: (json['sixth_highest_price'] as num?)?.toDouble() ?? 0,
       yahooSymbol: json['yahoo_symbol'] ?? '',

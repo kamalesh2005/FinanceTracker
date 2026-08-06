@@ -24,7 +24,7 @@ class StocksScreen extends StatefulWidget {
 class _StocksScreenState extends State<StocksScreen> {
   bool _isTableView = true;
 
-  /// null = default multi-key sort (Sector → Market Cap → Symbol → Account)
+  /// null = default multi-key sort (Industry → Market Cap → Symbol → Account)
   String? _sortColumn;
   bool _sortAscending = true;
 
@@ -57,11 +57,11 @@ class _StocksScreenState extends State<StocksScreen> {
     'AT HOLD PRICE',
   ];
 
-  final Set<String> _selectedSectors = {};
-  final Set<String> _selectedMarketCaps = {};
-  final Set<String> _selectedSources = {};
-  final Set<String> _selectedRecommendations = {};
-  bool _onlyStocksToAction = true;
+  String? _selectedIndustry;
+  String? _selectedMarketCap;
+  String? _selectedSource;
+  String? _selectedRecommendation;
+  bool _onlyStocksToAction = false;
 
   static const double _headerHeight = 48;
   static const double _rowHeight = 90;
@@ -82,6 +82,7 @@ class _StocksScreenState extends State<StocksScreen> {
 
   final Set<String> _selectedColumns = {..._defaultSelectedColumns};
   static const List<String> _allColumns = [
+    'Industry',
     'Symbol',
     'Account',
     'Qty',
@@ -90,7 +91,6 @@ class _StocksScreenState extends State<StocksScreen> {
     'Current',
     'P/L',
     'P/L %',
-    'Sector',
     'Last Actioned',
     'Price Range',
     'High',
@@ -101,19 +101,30 @@ class _StocksScreenState extends State<StocksScreen> {
     'News',
   ];
 
-  static const Set<String> _defaultSelectedColumns = {
+  /// Columns pinned on the left when selected (order matters).
+  static const List<String> _frozenColumnNames = [
+    'Industry',
     'Symbol',
-    'Account',
-    'Qty',
-    'Current Value',
+  ];
+
+  /// Sentinel stored in hidden_columns so the v2 default-hide migration runs once.
+  static const String _columnDefaultsV2Sentinel = '__defaults_v2';
+
+  static const Set<String> _defaultHiddenColumns = {
     'Buy Price',
     'Current',
     'P/L',
-    'P/L %',
-    'Sector',
-    'Price Range',
     'High',
     'Low',
+  };
+
+  static const Set<String> _defaultSelectedColumns = {
+    'Industry',
+    'Symbol',
+    'Qty',
+    'Current Value',
+    'P/L %',
+    'Price Range',
     'Trend',
     'Signal',
     'Actions',
@@ -214,7 +225,7 @@ class _StocksScreenState extends State<StocksScreen> {
         return 120;
       case 'P/L %':
         return 80;
-      case 'Sector':
+      case 'Industry':
         return 160;
       case 'Signal':
         return 160;
@@ -253,7 +264,6 @@ class _StocksScreenState extends State<StocksScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final auth = context.watch<AuthProvider>();
     final screenWidth = MediaQuery.sizeOf(context).width;
     final narrowAppBar = screenWidth < _narrowAppBarBreakpoint;
     // Force card view on phones; respect toggle on tablet/desktop.
@@ -329,22 +339,8 @@ class _StocksScreenState extends State<StocksScreen> {
                     },
                     tooltip: showTableView ? 'Card view' : 'Table view',
                   ),
-                if (!narrowAppBar)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Center(
-                      child: Text(
-                        auth.user?.displayName ?? '',
-                        style: const TextStyle(fontSize: 13),
-                      ),
-                    ),
-                  ),
                 IconButton(
-                  tooltip: () {
-                    if (!narrowAppBar) return 'Configure';
-                    final name = auth.user?.displayName ?? '';
-                    return name.isNotEmpty ? 'Configure ($name)' : 'Configure';
-                  }(),
+                  tooltip: 'Configure',
                   icon: const Icon(Icons.settings_outlined),
                   onPressed: _openConfigure,
                 ),
@@ -419,26 +415,26 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   bool get _hasActiveFilters =>
-      _selectedSectors.isNotEmpty ||
-      _selectedMarketCaps.isNotEmpty ||
-      _selectedSources.isNotEmpty ||
-      _selectedRecommendations.isNotEmpty ||
-      !_onlyStocksToAction;
+      _selectedIndustry != null ||
+      _selectedMarketCap != null ||
+      _selectedSource != null ||
+      _selectedRecommendation != null ||
+      _onlyStocksToAction;
 
   void _clearFilters() {
     setState(() {
-      _selectedSectors.clear();
-      _selectedMarketCaps.clear();
-      _selectedSources.clear();
-      _selectedRecommendations.clear();
-      _onlyStocksToAction = true;
+      _selectedIndustry = null;
+      _selectedMarketCap = null;
+      _selectedSource = null;
+      _selectedRecommendation = null;
+      _onlyStocksToAction = false;
     });
   }
 
   String _stockRowKey(Stock stock) => '${stock.id}|${stock.source}';
 
-  String _sectorKey(Stock stock) =>
-      stock.sector.isNotEmpty ? stock.sector : _unspecified;
+  String _industryKey(Stock stock) =>
+      stock.industry.isNotEmpty ? stock.industry : _unspecified;
 
   String _marketCapKey(Stock stock) =>
       stock.marketCap.isNotEmpty ? stock.marketCap : _unspecified;
@@ -449,16 +445,16 @@ class _StocksScreenState extends State<StocksScreen> {
   bool _isManualAddSource(Stock stock) =>
       stock.source.isEmpty || stock.source == _manualAddSource;
 
-  List<String> _sectorOptions(List<Stock> stocks) {
-    final sectors = stocks
-        .map((s) => s.sector.trim())
+  List<String> _industryOptions(List<Stock> stocks) {
+    final industries = stocks
+        .map((s) => s.industry.trim())
         .where((s) => s.isNotEmpty)
         .toSet()
         .toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-    final hasUnspecified = stocks.any((s) => s.sector.trim().isEmpty);
-    if (hasUnspecified) sectors.add(_unspecified);
-    return sectors;
+    final hasUnspecified = stocks.any((s) => s.industry.trim().isEmpty);
+    if (hasUnspecified) industries.add(_unspecified);
+    return industries;
   }
 
   List<String> _sourceOptions(List<Stock> stocks) {
@@ -474,53 +470,39 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Widget _buildFilterBar(FinanceProvider provider) {
-    final sectorOptions = _sectorOptions(provider.stocks);
+    final industryOptions = _industryOptions(provider.stocks);
     final sourceOptions = _sourceOptions(provider.stocks);
     final narrow = MediaQuery.sizeOf(context).width < _cardViewBreakpoint;
-    final dropdownFilterCount = _selectedSectors.length +
-        _selectedMarketCaps.length +
-        _selectedSources.length +
-        _selectedRecommendations.length;
+    final dropdownFilterCount = [
+      _selectedIndustry,
+      _selectedMarketCap,
+      _selectedSource,
+      _selectedRecommendation,
+    ].whereType<String>().length;
 
-    final sectorMenu = _buildFilterMenu(
-      label: 'Sector',
-      selected: _selectedSectors,
-      options: sectorOptions,
-      onChanged: (next) => setState(() {
-        _selectedSectors
-          ..clear()
-          ..addAll(next);
-      }),
+    final industryMenu = _buildFilterMenu(
+      label: 'Industry',
+      selected: _selectedIndustry,
+      options: industryOptions,
+      onChanged: (next) => setState(() => _selectedIndustry = next),
     );
     final marketCapMenu = _buildFilterMenu(
       label: 'Market Cap',
-      selected: _selectedMarketCaps,
+      selected: _selectedMarketCap,
       options: _marketCapOptions,
-      onChanged: (next) => setState(() {
-        _selectedMarketCaps
-          ..clear()
-          ..addAll(next);
-      }),
+      onChanged: (next) => setState(() => _selectedMarketCap = next),
     );
     final accountMenu = _buildFilterMenu(
       label: 'Account',
-      selected: _selectedSources,
+      selected: _selectedSource,
       options: sourceOptions,
-      onChanged: (next) => setState(() {
-        _selectedSources
-          ..clear()
-          ..addAll(next);
-      }),
+      onChanged: (next) => setState(() => _selectedSource = next),
     );
     final recommendationMenu = _buildFilterMenu(
       label: 'Signal',
-      selected: _selectedRecommendations,
+      selected: _selectedRecommendation,
       options: _recommendationOptions,
-      onChanged: (next) => setState(() {
-        _selectedRecommendations
-          ..clear()
-          ..addAll(next);
-      }),
+      onChanged: (next) => setState(() => _selectedRecommendation = next),
     );
     final actionChip = FilterChip(
       avatar: Icon(
@@ -553,7 +535,7 @@ class _StocksScreenState extends State<StocksScreen> {
                   _buildCollapsedFiltersButton(
                     activeCount: dropdownFilterCount,
                     onPressed: () => _showCollapsedFiltersSheet(
-                      sectorOptions: sectorOptions,
+                      industryOptions: industryOptions,
                       sourceOptions: sourceOptions,
                     ),
                   ),
@@ -572,7 +554,7 @@ class _StocksScreenState extends State<StocksScreen> {
                 runSpacing: 8,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  sectorMenu,
+                  industryMenu,
                   marketCapMenu,
                   accountMenu,
                   recommendationMenu,
@@ -611,7 +593,7 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Future<void> _showCollapsedFiltersSheet({
-    required List<String> sectorOptions,
+    required List<String> industryOptions,
     required List<String> sourceOptions,
   }) async {
     await showModalBottomSheet<void>(
@@ -642,47 +624,35 @@ class _StocksScreenState extends State<StocksScreen> {
                       ),
                       const SizedBox(height: 12),
                       _buildFilterMenu(
-                        label: 'Sector',
-                        selected: _selectedSectors,
-                        options: sectorOptions,
-                        onChanged: (next) => apply(() {
-                          _selectedSectors
-                            ..clear()
-                            ..addAll(next);
-                        }),
+                        label: 'Industry',
+                        selected: _selectedIndustry,
+                        options: industryOptions,
+                        onChanged: (next) =>
+                            apply(() => _selectedIndustry = next),
                       ),
                       const SizedBox(height: 8),
                       _buildFilterMenu(
                         label: 'Market Cap',
-                        selected: _selectedMarketCaps,
+                        selected: _selectedMarketCap,
                         options: _marketCapOptions,
-                        onChanged: (next) => apply(() {
-                          _selectedMarketCaps
-                            ..clear()
-                            ..addAll(next);
-                        }),
+                        onChanged: (next) =>
+                            apply(() => _selectedMarketCap = next),
                       ),
                       const SizedBox(height: 8),
                       _buildFilterMenu(
                         label: 'Account',
-                        selected: _selectedSources,
+                        selected: _selectedSource,
                         options: sourceOptions,
-                        onChanged: (next) => apply(() {
-                          _selectedSources
-                            ..clear()
-                            ..addAll(next);
-                        }),
+                        onChanged: (next) =>
+                            apply(() => _selectedSource = next),
                       ),
                       const SizedBox(height: 8),
                       _buildFilterMenu(
                         label: 'Signal',
-                        selected: _selectedRecommendations,
+                        selected: _selectedRecommendation,
                         options: _recommendationOptions,
-                        onChanged: (next) => apply(() {
-                          _selectedRecommendations
-                            ..clear()
-                            ..addAll(next);
-                        }),
+                        onChanged: (next) =>
+                            apply(() => _selectedRecommendation = next),
                       ),
                       const SizedBox(height: 16),
                       Align(
@@ -705,24 +675,17 @@ class _StocksScreenState extends State<StocksScreen> {
 
   Widget _buildFilterMenu({
     required String label,
-    required Set<String> selected,
+    required String? selected,
     required List<String> options,
-    required ValueChanged<Set<String>> onChanged,
+    required ValueChanged<String?> onChanged,
   }) {
-    final count = selected.length;
-    final buttonLabel = count > 0 ? '$label ($count)' : label;
+    final active = selected != null;
+    final buttonLabel = active ? '$label: $selected' : label;
     final colorScheme = Theme.of(context).colorScheme;
-    final active = count > 0;
     return PopupMenuButton<String>(
       tooltip: 'Filter by $label',
       onSelected: (value) {
-        final next = Set<String>.from(selected);
-        if (next.contains(value)) {
-          next.remove(value);
-        } else {
-          next.add(value);
-        }
-        onChanged(next);
+        onChanged(selected == value ? null : value);
       },
       itemBuilder: (context) {
         if (options.isEmpty) {
@@ -737,7 +700,7 @@ class _StocksScreenState extends State<StocksScreen> {
             .map(
               (option) => CheckedPopupMenuItem<String>(
                 value: option,
-                checked: selected.contains(option),
+                checked: selected == option,
                 child: Text(option),
               ),
             )
@@ -762,6 +725,7 @@ class _StocksScreenState extends State<StocksScreen> {
             const SizedBox(width: 6),
             Text(
               buttonLabel,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: active ? colorScheme.primary : colorScheme.onSurface,
                 fontWeight: active ? FontWeight.w600 : FontWeight.normal,
@@ -781,30 +745,27 @@ class _StocksScreenState extends State<StocksScreen> {
 
   List<Stock> _filteredAndSortedStocks(FinanceProvider provider) {
     final filtered = provider.stocks.where((stock) {
-      if (_selectedSectors.isNotEmpty &&
-          !_selectedSectors.contains(_sectorKey(stock))) {
+      if (_selectedIndustry != null &&
+          _industryKey(stock) != _selectedIndustry) {
         return false;
       }
-      if (_selectedMarketCaps.isNotEmpty &&
-          !_selectedMarketCaps.contains(_marketCapKey(stock))) {
+      if (_selectedMarketCap != null &&
+          _marketCapKey(stock) != _selectedMarketCap) {
         return false;
       }
-      if (_selectedSources.isNotEmpty &&
-          !_selectedSources.contains(_sourceKey(stock))) {
+      if (_selectedSource != null && _sourceKey(stock) != _selectedSource) {
         return false;
       }
       final recommendation =
           _getRecommendation(stock, _trendFor(stock, provider));
-      if (_selectedRecommendations.isNotEmpty) {
-        final matches = _selectedRecommendations.any((label) {
-          if (label == 'NO ACTION REQD' ||
-              label == 'AT BUY PRICE' ||
-              label == 'AT SELL PRICE' ||
-              label == 'AT HOLD PRICE') {
-            return recommendation == label;
-          }
-          return recommendation.contains(label);
-        });
+      if (_selectedRecommendation != null) {
+        final label = _selectedRecommendation!;
+        final matches = label == 'NO ACTION REQD' ||
+                label == 'AT BUY PRICE' ||
+                label == 'AT SELL PRICE' ||
+                label == 'AT HOLD PRICE'
+            ? recommendation == label
+            : recommendation.contains(label);
         if (!matches) return false;
       }
       if (_onlyStocksToAction) {
@@ -909,7 +870,7 @@ class _StocksScreenState extends State<StocksScreen> {
     }
 
     final recommendation = _getRecommendation(stock, trend);
-    final sectorLine = _cardSectorMarketCapLine(stock);
+    final industryLine = _cardIndustryMarketCapLine(stock);
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -956,10 +917,10 @@ class _StocksScreenState extends State<StocksScreen> {
                             style: const TextStyle(
                                 fontSize: 12, color: Colors.grey),
                           ),
-                        if (sectorLine != null) ...[
+                        if (industryLine != null) ...[
                           const SizedBox(height: 2),
                           Text(
-                            sectorLine,
+                            industryLine,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
@@ -1010,8 +971,8 @@ class _StocksScreenState extends State<StocksScreen> {
                   formatInr(stock.currentPrice),
                 ),
                 _buildCompactInfoColumn(
-                  'Invested',
-                  formatInr(invested),
+                  'Current Value',
+                  formatInr(current),
                 ),
                 _buildCompactInfoColumn(
                   'P/L',
@@ -1193,13 +1154,13 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  String? _cardSectorMarketCapLine(Stock stock) {
-    final sector = stock.sector.trim();
+  String? _cardIndustryMarketCapLine(Stock stock) {
+    final industry = stock.industry.trim();
     final marketCap = stock.marketCap.trim();
-    if (sector.isEmpty && marketCap.isEmpty) return null;
-    if (sector.isEmpty) return '($marketCap)';
-    if (marketCap.isEmpty) return sector;
-    return '$sector ($marketCap)';
+    if (industry.isEmpty && marketCap.isEmpty) return null;
+    if (industry.isEmpty) return '($marketCap)';
+    if (marketCap.isEmpty) return industry;
+    return '$industry ($marketCap)';
   }
 
   Widget _buildCardRecommendationTrendRow({
@@ -1296,10 +1257,13 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Widget _buildStockTable(FinanceProvider provider, List<Stock> stocks) {
-    final freezeSymbol = _selectedColumns.contains('Symbol');
+    final frozenColumns = _frozenColumnNames
+        .where((column) => _selectedColumns.contains(column))
+        .toList();
     final scrollableColumns = _allColumns
-        .where(
-            (column) => _selectedColumns.contains(column) && column != 'Symbol')
+        .where((column) =>
+            _selectedColumns.contains(column) &&
+            !_frozenColumnNames.contains(column))
         .toList();
     final headerColor = Theme.of(context).colorScheme.surfaceContainerHighest;
     final borderColor = Theme.of(context).dividerColor;
@@ -1307,10 +1271,13 @@ class _StocksScreenState extends State<StocksScreen> {
       0,
       (sum, column) => sum + _columnWidth(column),
     );
+    final frozenWidth = frozenColumns.fold<double>(
+      0,
+      (sum, column) => sum + _columnWidth(column),
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final frozenWidth = freezeSymbol ? _symbolColumnWidth : 0.0;
         final availableScrollableWidth =
             (constraints.maxWidth - frozenWidth).clamp(0.0, double.infinity);
         final needsHorizontalScroll =
@@ -1339,13 +1306,17 @@ class _StocksScreenState extends State<StocksScreen> {
                 height: _headerHeight,
                 child: Row(
                   children: [
-                    if (freezeSymbol)
-                      _buildHeaderCell(
-                        'Symbol',
-                        width: _symbolColumnWidth,
-                        frozen: true,
-                        headerColor: headerColor,
-                        borderColor: borderColor,
+                    if (frozenColumns.isNotEmpty)
+                      Row(
+                        children: frozenColumns
+                            .map((column) => _buildHeaderCell(
+                                  column,
+                                  width: _columnWidth(column),
+                                  frozen: true,
+                                  headerColor: headerColor,
+                                  borderColor: borderColor,
+                                ))
+                            .toList(),
                       ),
                     Expanded(
                       child: SingleChildScrollView(
@@ -1374,7 +1345,7 @@ class _StocksScreenState extends State<StocksScreen> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (freezeSymbol)
+                  if (frozenColumns.isNotEmpty)
                     DecoratedBox(
                       decoration: BoxDecoration(
                         color: Theme.of(context).colorScheme.surface,
@@ -1388,18 +1359,19 @@ class _StocksScreenState extends State<StocksScreen> {
                         ],
                       ),
                       child: SizedBox(
-                        width: _symbolColumnWidth,
+                        width: frozenWidth,
                         child: ListView.builder(
                           controller: _verticalFrozenController,
                           itemCount: stocks.length,
                           itemExtent: _rowHeight,
                           physics: const AlwaysScrollableScrollPhysics(),
                           itemBuilder: (context, index) {
-                            return _buildFrozenSymbolCell(
+                            return _buildFrozenRow(
                               stocks[index],
                               provider,
                               borderColor,
                               index.isEven,
+                              frozenColumns,
                             );
                           },
                         ),
@@ -1567,11 +1539,12 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  Widget _buildFrozenSymbolCell(
+  Widget _buildFrozenRow(
     Stock stock,
     FinanceProvider provider,
     Color borderColor,
     bool isEven,
+    List<String> frozenColumns,
   ) {
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -1582,20 +1555,29 @@ class _StocksScreenState extends State<StocksScreen> {
           bottom: BorderSide(color: borderColor.withOpacity(0.5)),
         ),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: _buildCellWidget(
-            'Symbol',
-            stock,
-            0,
-            0,
-            null,
-            '',
-            provider,
-          ),
-        ),
+      child: Row(
+        children: frozenColumns
+            .map(
+              (column) => SizedBox(
+                width: _columnWidth(column),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: _buildCellWidget(
+                      column,
+                      stock,
+                      0,
+                      0,
+                      null,
+                      '',
+                      provider,
+                    ),
+                  ),
+                ),
+              ),
+            )
+            .toList(),
       ),
     );
   }
@@ -1623,14 +1605,29 @@ class _StocksScreenState extends State<StocksScreen> {
               ),
             );
           },
-          child: Text(
-            stock.symbol,
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              color: Colors.blue,
-              decoration: TextDecoration.underline,
-            ),
-            overflow: TextOverflow.ellipsis,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                stock.symbol,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue,
+                  decoration: TextDecoration.underline,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (stock.source.isNotEmpty)
+                Text(
+                  stock.source,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
           ),
         );
       case 'Qty':
@@ -1699,8 +1696,8 @@ class _StocksScreenState extends State<StocksScreen> {
             color: profitLoss >= 0 ? Colors.green : Colors.red,
           ),
         );
-      case 'Sector':
-        return _buildSectorWithMarketCap(stock);
+      case 'Industry':
+        return _buildIndustryWithMarketCap(stock);
       case 'Trend':
         return trend != null
             ? FittedBox(
@@ -2107,10 +2104,10 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  /// Sector with market-cap letter, e.g. Energy(L). Tooltip on L/M/S.
-  Widget _buildSectorWithMarketCap(Stock stock) {
+  /// Industry with market-cap letter, e.g. Oil & Gas(L). Tooltip on L/M/S.
+  Widget _buildIndustryWithMarketCap(Stock stock) {
     const style = TextStyle(color: Colors.blue);
-    final sector = stock.sector.trim();
+    final industry = stock.industry.trim();
     final letter = switch (stock.marketCap) {
       'Large Cap' => 'L',
       'Mid Cap' => 'M',
@@ -2124,12 +2121,12 @@ class _StocksScreenState extends State<StocksScreen> {
       _ => '',
     };
 
-    if (sector.isEmpty && letter.isEmpty) {
+    if (industry.isEmpty && letter.isEmpty) {
       return const Text('-', style: style);
     }
     if (letter.isEmpty) {
       return Text(
-        sector.isEmpty ? '-' : sector,
+        industry.isEmpty ? '-' : industry,
         style: style,
         overflow: TextOverflow.ellipsis,
       );
@@ -2139,7 +2136,7 @@ class _StocksScreenState extends State<StocksScreen> {
       TextSpan(
         style: style,
         children: [
-          if (sector.isNotEmpty) TextSpan(text: sector),
+          if (industry.isNotEmpty) TextSpan(text: industry),
           const TextSpan(text: '('),
           WidgetSpan(
             alignment: PlaceholderAlignment.baseline,
@@ -2807,8 +2804,12 @@ class _StocksScreenState extends State<StocksScreen> {
 
   Future<void> _loadColumnPreferences() async {
     try {
-      final hidden =
-          _normalizeHiddenColumns(await ApiService.getHiddenStockColumns());
+      final raw = await ApiService.getHiddenStockColumns();
+      final hasV2 = raw.contains(_columnDefaultsV2Sentinel);
+      final hidden = <String>{
+        ..._normalizeHiddenColumns(raw),
+        if (!hasV2) ..._defaultHiddenColumns,
+      }.toList();
       if (!mounted) return;
       setState(() {
         _selectedColumns
@@ -2818,6 +2819,10 @@ class _StocksScreenState extends State<StocksScreen> {
           _selectedColumns.addAll(_defaultSelectedColumns);
         }
       });
+      if (!hasV2) {
+        // Persist migrated hide-set + sentinel so this does not re-run.
+        await _saveColumnPreferences();
+      }
     } catch (_) {
       // Keep defaults if config cannot be loaded.
     }
@@ -2843,6 +2848,10 @@ class _StocksScreenState extends State<StocksScreen> {
           // Renamed to Account; preserve hidden preference.
           out.add('Account');
           break;
+        case 'Sector':
+          // Renamed to Industry; preserve hidden preference.
+          out.add('Industry');
+          break;
         case 'Recommendation':
           out.add('Signal');
           break;
@@ -2867,8 +2876,10 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Future<void> _saveColumnPreferences() async {
-    final hidden =
-        _allColumns.where((c) => !_selectedColumns.contains(c)).toList();
+    final hidden = [
+      ..._allColumns.where((c) => !_selectedColumns.contains(c)),
+      _columnDefaultsV2Sentinel,
+    ];
     try {
       await ApiService.saveHiddenStockColumns(hidden);
     } catch (e) {
@@ -2942,8 +2953,8 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   int _defaultStockCompare(Stock a, Stock b) {
-    final sectorCmp = _compareEmptyLast(a.sector, b.sector);
-    if (sectorCmp != 0) return sectorCmp;
+    final industryCmp = _compareEmptyLast(a.industry, b.industry);
+    if (industryCmp != 0) return industryCmp;
 
     final marketCapCmp =
         _marketCapRank(a.marketCap).compareTo(_marketCapRank(b.marketCap));
@@ -3003,8 +3014,8 @@ class _StocksScreenState extends State<StocksScreen> {
         return _profitLoss(a).compareTo(_profitLoss(b));
       case 'P/L %':
         return _profitLossPct(a).compareTo(_profitLossPct(b));
-      case 'Sector':
-        return _compareEmptyLast(a.sector, b.sector);
+      case 'Industry':
+        return _compareEmptyLast(a.industry, b.industry);
       case 'Signal':
         return _getRecommendation(a, _trendFor(a, provider))
             .compareTo(_getRecommendation(b, _trendFor(b, provider)));

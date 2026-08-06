@@ -3,7 +3,9 @@ import 'package:http/http.dart' as http;
 import '../models/stock.dart';
 import '../models/stock_trend.dart';
 import '../models/mutual_fund.dart';
+import '../models/global_mutual_fund.dart';
 import '../models/symbol_mapping.dart';
+import '../models/mf_scheme_mapping.dart';
 import '../models/user.dart';
 
 class ApiService {
@@ -36,6 +38,15 @@ class ApiService {
   }
 
   static String _errorMessage(http.Response response, String fallback) {
+    if (response.statusCode == 429) {
+      try {
+        final body = json.decode(response.body);
+        if (body is Map && body['error'] != null) {
+          return body['error'].toString();
+        }
+      } catch (_) {}
+      return 'Too many attempts, please try again later';
+    }
     try {
       final body = json.decode(response.body);
       if (body is Map && body['error'] != null) {
@@ -43,6 +54,17 @@ class ApiService {
       }
     } catch (_) {}
     return fallback;
+  }
+
+  static Future<Map<String, dynamic>> captchaConfig() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/auth/captcha-config'),
+      headers: _headers(),
+    );
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to load captcha config'));
   }
 
   /// Decodes a JSON list body; treats null / non-list as an empty list.
@@ -81,11 +103,75 @@ class ApiService {
     throw Exception(_errorMessage(response, 'Failed to check username'));
   }
 
+  static Future<bool> checkEmail(String email) async {
+    final uri = Uri.parse('$baseUrl/auth/check-email').replace(
+      queryParameters: {'email': email},
+    );
+    final response = await http.get(uri, headers: _headers());
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return data['available'] == true;
+    }
+    throw Exception(_errorMessage(response, 'Failed to check email'));
+  }
+
+  static Future<bool> checkMobile(String mobile) async {
+    final uri = Uri.parse('$baseUrl/auth/check-mobile').replace(
+      queryParameters: {'mobile': mobile},
+    );
+    final response = await http.get(uri, headers: _headers());
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return data['available'] == true;
+    }
+    throw Exception(_errorMessage(response, 'Failed to check mobile'));
+  }
+
+  static Future<AppUser> updateProfile({
+    String? username,
+    String? email,
+    String? mobile,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/auth/profile'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        if (username != null) 'username': username,
+        if (email != null) 'email': email,
+        if (mobile != null) 'mobile': mobile,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return AppUser.fromJson(json.decode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception(_errorMessage(response, 'Failed to update profile'));
+  }
+
+  static Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/auth/change-password'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'current_password': currentPassword,
+        'new_password': newPassword,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode != 200) {
+      throw Exception(_errorMessage(response, 'Failed to change password'));
+    }
+  }
+
   static Future<Map<String, dynamic>> register({
     required String username,
     String? email,
     String? mobile,
     required String password,
+    String? turnstileToken,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/auth/register'),
@@ -95,6 +181,7 @@ class ApiService {
         if (email != null && email.isNotEmpty) 'email': email,
         if (mobile != null && mobile.isNotEmpty) 'mobile': mobile,
         'password': password,
+        'turnstileToken': turnstileToken ?? '',
       }),
     );
     if (response.statusCode == 201) {
@@ -214,18 +301,287 @@ class ApiService {
     throw Exception('Failed to load stocks');
   }
 
-  /// All Global_Stocks rows (admin only). Not filtered by the caller's holdings.
-  static Future<List<Stock>> getAdminStocks() async {
+  /// Paginated Global_Stocks catalog (admin only).
+  static Future<
+      ({
+        List<Stock> items,
+        int total,
+        int page,
+        int pageSize,
+      })> getAdminStocks({
+    String q = '',
+    String series = '',
+    String listingCategory = '',
+    String pullData = '',
+    int page = 1,
+    int pageSize = 50,
+  }) async {
+    final params = <String, String>{
+      'page': '$page',
+      'page_size': '$pageSize',
+    };
+    if (q.trim().isNotEmpty) params['q'] = q.trim();
+    if (series.trim().isNotEmpty) params['series'] = series.trim();
+    if (listingCategory.trim().isNotEmpty) {
+      params['listing_category'] = listingCategory.trim();
+    }
+    if (pullData.trim().isNotEmpty) params['pull_data'] = pullData.trim();
+
     final response = await http.get(
-      Uri.parse('$baseUrl/admin/stocks'),
+      Uri.parse('$baseUrl/admin/stocks').replace(queryParameters: params),
       headers: _headers(),
     );
     _checkUnauthorized(response);
     if (response.statusCode == 200) {
-      final data = _decodeList(response.body);
-      return data.map((json) => Stock.fromJson(json)).toList();
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final list = (data['items'] as List<dynamic>? ?? [])
+          .map((e) => Stock.fromJson(e as Map<String, dynamic>))
+          .toList();
+      return (
+        items: list,
+        total: (data['total'] as num?)?.toInt() ?? list.length,
+        page: (data['page'] as num?)?.toInt() ?? page,
+        pageSize: (data['page_size'] as num?)?.toInt() ?? pageSize,
+      );
     }
-    throw Exception('Failed to load admin stocks');
+    throw Exception(_errorMessage(response, 'Failed to load admin stocks'));
+  }
+
+  /// Upload NSE_All CSV to upsert Global_Stocks catalog (admin only).
+  static Future<
+      ({
+        int created,
+        int updated,
+        int skipped,
+        int errors,
+      })> importNseCatalog(List<int> bytes, String filename) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/admin/stocks/import-nse'),
+    );
+    if (_token != null && _token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $_token';
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        created: (data['created'] as num?)?.toInt() ?? 0,
+        updated: (data['updated'] as num?)?.toInt() ?? 0,
+        skipped: (data['skipped'] as num?)?.toInt() ?? 0,
+        errors: (data['errors'] as num?)?.toInt() ?? 0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'NSE catalog import failed'));
+  }
+
+  static Future<
+      ({
+        int created,
+        int updated,
+        int skipped,
+        int unmatched,
+        int errors,
+      })> importClosingPrices(List<int> bytes, String filename) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/admin/stocks/import-closes'),
+    );
+    if (_token != null && _token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $_token';
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        created: (data['created'] as num?)?.toInt() ?? 0,
+        updated: (data['updated'] as num?)?.toInt() ?? 0,
+        skipped: (data['skipped'] as num?)?.toInt() ?? 0,
+        unmatched: (data['unmatched'] as num?)?.toInt() ?? 0,
+        errors: (data['errors'] as num?)?.toInt() ?? 0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Closing prices import failed'));
+  }
+
+  /// Upload ETF CSV to upsert Global_Stocks fields (admin only).
+  static Future<
+      ({
+        int created,
+        int updated,
+        int skipped,
+        int errors,
+      })> importEtfCsv(List<int> bytes, String filename) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/admin/stocks/import-etf'),
+    );
+    if (_token != null && _token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $_token';
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        created: (data['created'] as num?)?.toInt() ?? 0,
+        updated: (data['updated'] as num?)?.toInt() ?? 0,
+        skipped: (data['skipped'] as num?)?.toInt() ?? 0,
+        errors: (data['errors'] as num?)?.toInt() ?? 0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'ETF catalog import failed'));
+  }
+
+  /// Paginated Global_MutualFunds catalog for admins.
+  static Future<
+      ({
+        List<GlobalMutualFund> items,
+        int total,
+        int page,
+        int pageSize,
+      })> getAdminMutualFunds({
+    String q = '',
+    int page = 1,
+    int pageSize = 50,
+  }) async {
+    final params = <String, String>{
+      'page': '$page',
+      'page_size': '$pageSize',
+    };
+    if (q.trim().isNotEmpty) params['q'] = q.trim();
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/mutualfunds').replace(queryParameters: params),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final list = (data['items'] as List<dynamic>? ?? [])
+          .map((e) => GlobalMutualFund.fromJson(e as Map<String, dynamic>))
+          .toList();
+      return (
+        items: list,
+        total: (data['total'] as num?)?.toInt() ?? list.length,
+        page: (data['page'] as num?)?.toInt() ?? page,
+        pageSize: (data['page_size'] as num?)?.toInt() ?? pageSize,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to load admin mutual funds'));
+  }
+
+  /// Upload catalog xlsx/csv or MF_VAR NAV csv (admin only).
+  static Future<
+      ({
+        String kind,
+        int created,
+        int updated,
+        int skipped,
+        int errors,
+      })> importMutualFunds(List<int> bytes, String filename) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/admin/mutualfunds/import'),
+    );
+    if (_token != null && _token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $_token';
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        kind: data['kind']?.toString() ?? '',
+        created: (data['created'] as num?)?.toInt() ?? 0,
+        updated: (data['updated'] as num?)?.toInt() ?? 0,
+        skipped: (data['skipped'] as num?)?.toInt() ?? 0,
+        errors: (data['errors'] as num?)?.toInt() ?? 0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Mutual fund import failed'));
+  }
+
+  /// Looks up a Global_MutualFunds row by ISIN.
+  static Future<
+      ({
+        String isin,
+        String symbol,
+        String schemeName,
+        double currentNav,
+      })?> lookupGlobalMutualFund(String isin) async {
+    final trimmed = isin.trim();
+    if (trimmed.isEmpty) return null;
+    final response = await http.get(
+      Uri.parse(
+        '$baseUrl/mutualfunds/lookup?isin=${Uri.encodeQueryComponent(trimmed)}',
+      ),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 404) return null;
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        isin: data['isin']?.toString() ?? trimmed.toUpperCase(),
+        symbol: data['symbol']?.toString() ?? '',
+        schemeName: data['scheme_name']?.toString() ?? '',
+        currentNav: (data['current_nav'] as num?)?.toDouble() ?? 0.0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to look up mutual fund'));
+  }
+
+  /// Catalog search for Manual Add autocomplete.
+  static Future<
+      List<
+          ({
+            String isin,
+            String symbol,
+            String schemeName,
+            double currentNav,
+          })>> searchGlobalMutualFunds(String query, {int limit = 20}) async {
+    final q = query.trim();
+    if (q.isEmpty) return [];
+    final uri = Uri.parse('$baseUrl/mutualfunds/search').replace(
+      queryParameters: {
+        'q': q,
+        'limit': '$limit',
+      },
+    );
+    final response = await http.get(uri, headers: _headers());
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final list = json.decode(response.body) as List<dynamic>;
+      return list.map((e) {
+        final data = e as Map<String, dynamic>;
+        return (
+          isin: data['isin']?.toString() ?? '',
+          symbol: data['symbol']?.toString() ?? '',
+          schemeName: data['scheme_name']?.toString() ?? '',
+          currentNav: (data['current_nav'] as num?)?.toDouble() ?? 0.0,
+        );
+      }).toList();
+    }
+    throw Exception(_errorMessage(response, 'Failed to search mutual funds'));
   }
 
   /// Looks up a Global_Stocks row by symbol (no holding required).
@@ -251,6 +607,33 @@ class ApiService {
       );
     }
     throw Exception(_errorMessage(response, 'Failed to look up stock'));
+  }
+
+  /// Catalog search for Manual Add autocomplete.
+  static Future<List<({String symbol, String name, double currentPrice})>>
+      searchGlobalStocks(String query, {int limit = 20}) async {
+    final q = query.trim();
+    if (q.isEmpty) return [];
+    final uri = Uri.parse('$baseUrl/stocks/search').replace(
+      queryParameters: {
+        'q': q,
+        'limit': '$limit',
+      },
+    );
+    final response = await http.get(uri, headers: _headers());
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final list = json.decode(response.body) as List<dynamic>;
+      return list.map((e) {
+        final data = e as Map<String, dynamic>;
+        return (
+          symbol: data['symbol']?.toString() ?? '',
+          name: data['name']?.toString() ?? '',
+          currentPrice: (data['current_price'] as num?)?.toDouble() ?? 0.0,
+        );
+      }).where((e) => e.symbol.isNotEmpty).toList();
+    }
+    throw Exception(_errorMessage(response, 'Failed to search stocks'));
   }
 
   static Future<Stock> createStock(Stock stock) async {
@@ -319,10 +702,12 @@ class ApiService {
     int id, {
     String? name,
     String? sector,
+    String? industry,
   }) async {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
     if (sector != null) body['sector'] = sector;
+    if (industry != null) body['industry'] = industry;
 
     final response = await http.put(
       Uri.parse('$baseUrl/stocks/$id/admin'),
@@ -398,6 +783,77 @@ class ApiService {
     _checkUnauthorized(response);
     if (response.statusCode != 200) {
       throw Exception('Failed to delete symbol mapping');
+    }
+  }
+
+  // MF scheme mapping APIs
+  static Future<List<MFSchemeMapping>> getMFSchemeMappings({String? query}) async {
+    final uri = query != null && query.isNotEmpty
+        ? Uri.parse(
+            '$baseUrl/mf-scheme-mappings?q=${Uri.encodeQueryComponent(query)}',
+          )
+        : Uri.parse('$baseUrl/mf-scheme-mappings');
+    final response = await http.get(uri, headers: _headers());
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = _decodeList(response.body);
+      return data.map((json) => MFSchemeMapping.fromJson(json)).toList();
+    }
+    throw Exception('Failed to load MF scheme mappings');
+  }
+
+  static Future<List<MFSchemeMapping>> getUnmappedMFSchemes() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/unmapped-mf-schemes'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = _decodeList(response.body);
+      return data.map((json) => MFSchemeMapping.fromJson(json)).toList();
+    }
+    throw Exception('Failed to load unmapped MF schemes');
+  }
+
+  static Future<MFSchemeMapping> createMFSchemeMapping(
+    MFSchemeMapping mapping,
+  ) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/mf-scheme-mappings'),
+      headers: _headers(jsonBody: true),
+      body: json.encode(mapping.toJson()),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201) {
+      return MFSchemeMapping.fromJson(json.decode(response.body));
+    }
+    throw Exception(_errorMessage(response, 'Failed to create MF scheme mapping'));
+  }
+
+  static Future<MFSchemeMapping> updateMFSchemeMapping(
+    int id,
+    MFSchemeMapping mapping,
+  ) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/mf-scheme-mappings/$id'),
+      headers: _headers(jsonBody: true),
+      body: json.encode(mapping.toJson()),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return MFSchemeMapping.fromJson(json.decode(response.body));
+    }
+    throw Exception(_errorMessage(response, 'Failed to update MF scheme mapping'));
+  }
+
+  static Future<void> deleteMFSchemeMapping(int id) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/mf-scheme-mappings/$id'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete MF scheme mapping');
     }
   }
 
@@ -618,7 +1074,72 @@ class ApiService {
     if (response.statusCode == 201) {
       return MutualFund.fromJson(json.decode(response.body));
     }
-    throw Exception('Failed to create mutual fund');
+    throw Exception(_errorMessage(response, 'Failed to create mutual fund'));
+  }
+
+  /// Replace mutual fund holdings for a broker/bulk source.
+  /// Items: scheme_name (required for match), optional isin (HDFC fallback),
+  /// quantity, nav (buy/avg cost), optional current_nav (broker last NAV).
+  static Future<
+      ({
+        int count,
+        int created,
+        int updated,
+        int deleted,
+        List<Map<String, dynamic>> unmatched,
+      })> replaceMutualFundsBySource({
+    required String source,
+    required List<
+            ({
+              String schemeName,
+              String isin,
+              double quantity,
+              double nav,
+              double currentNav,
+            })>
+        items,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/mutualfunds/bulk'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'source': source,
+        'items': items
+            .map((item) => {
+                  'scheme_name': item.schemeName,
+                  if (item.isin.isNotEmpty) 'isin': item.isin,
+                  'quantity': item.quantity,
+                  'nav': item.nav,
+                  if (item.currentNav > 0) 'current_nav': item.currentNav,
+                })
+            .toList(),
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final unmatchedRaw = data['unmatched'];
+      final unmatched = <Map<String, dynamic>>[];
+      if (unmatchedRaw is List) {
+        for (final e in unmatchedRaw) {
+          if (e is Map<String, dynamic>) {
+            unmatched.add(e);
+          } else if (e is Map) {
+            unmatched.add(Map<String, dynamic>.from(e));
+          }
+        }
+      }
+      return (
+        count: (data['count'] as num?)?.toInt() ?? 0,
+        created: (data['created'] as num?)?.toInt() ?? 0,
+        updated: (data['updated'] as num?)?.toInt() ?? 0,
+        deleted: (data['deleted'] as num?)?.toInt() ?? 0,
+        unmatched: unmatched,
+      );
+    }
+    throw Exception(
+      _errorMessage(response, 'Failed to replace mutual funds by source'),
+    );
   }
 
   static Future<MutualFund> updateMutualFund(int id, MutualFund mf) async {
@@ -631,7 +1152,7 @@ class ApiService {
     if (response.statusCode == 200) {
       return MutualFund.fromJson(json.decode(response.body));
     }
-    throw Exception('Failed to update mutual fund');
+    throw Exception(_errorMessage(response, 'Failed to update mutual fund'));
   }
 
   static Future<void> deleteMutualFund(int id) async {

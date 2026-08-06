@@ -7,6 +7,7 @@ import (
 	"financetracker/models"
 	"financetracker/notify"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -72,14 +73,25 @@ func generateOTPCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+func (h *Handler) CaptchaConfig(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"turnstileSiteKey": auth.TurnstileSiteKey(),
+		"enabled":          true,
+	})
+}
+
 func (h *Handler) CheckUsername(c *gin.Context) {
 	username := normalizeUsername(c.Query("username"))
 	if err := validateUsernameFormat(username); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	q := h.DB.Where("LOWER(username) = ?", username)
+	if excludeID := middleware.CurrentUserID(c); excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
 	var existing models.User
-	err := h.DB.Where("LOWER(username) = ?", username).First(&existing).Error
+	err := q.First(&existing).Error
 	if err == nil {
 		c.JSON(http.StatusOK, gin.H{"available": false})
 		return
@@ -91,12 +103,59 @@ func (h *Handler) CheckUsername(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"available": true})
 }
 
+func (h *Handler) CheckEmail(c *gin.Context) {
+	email := normalizeEmail(c.Query("email"))
+	if email == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+	q := h.DB.Where("email = ?", email)
+	if excludeID := middleware.CurrentUserID(c); excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+	var existing models.User
+	err := q.First(&existing).Error
+	if err == nil {
+		c.JSON(http.StatusOK, gin.H{"available": false})
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check email"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"available": true})
+}
+
+func (h *Handler) CheckMobile(c *gin.Context) {
+	mobile := normalizeMobile(c.Query("mobile"))
+	if mobile == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mobile is required"})
+		return
+	}
+	q := h.DB.Where("mobile = ?", mobile)
+	if excludeID := middleware.CurrentUserID(c); excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+	var existing models.User
+	err := q.First(&existing).Error
+	if err == nil {
+		c.JSON(http.StatusOK, gin.H{"available": false})
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check mobile"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"available": true})
+}
+
 func (h *Handler) Register(c *gin.Context) {
 	var req struct {
-		Username string `json:"username" binding:"required"`
-		Email    string `json:"email"`
-		Mobile   string `json:"mobile"`
-		Password string `json:"password" binding:"required"`
+		Username       string `json:"username" binding:"required"`
+		Email          string `json:"email"`
+		Mobile         string `json:"mobile"`
+		Password       string `json:"password" binding:"required"`
+		TurnstileToken string `json:"turnstileToken"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -104,6 +163,16 @@ func (h *Handler) Register(c *gin.Context) {
 	}
 	if len(req.Password) < 6 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 6 characters"})
+		return
+	}
+
+	if err := auth.VerifyTurnstile(req.TurnstileToken, c.ClientIP()); err != nil {
+		log.Printf("register: turnstile rejected (tokenLen=%d): %v", len(strings.TrimSpace(req.TurnstileToken)), err)
+		msg := "captcha verification failed, please try again"
+		if strings.Contains(err.Error(), "token") {
+			msg = "please complete the captcha and try again"
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": msg})
 		return
 	}
 
@@ -228,6 +297,136 @@ func (h *Handler) Me(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, publicUser(user))
+}
+
+func (h *Handler) UpdateProfile(c *gin.Context) {
+	v, _ := c.Get(middleware.ContextUserKey)
+	user, ok := v.(models.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		Username *string `json:"username"`
+		Email    *string `json:"email"`
+		Mobile   *string `json:"mobile"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Username == nil && req.Email == nil && req.Mobile == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		return
+	}
+
+	updates := map[string]interface{}{}
+
+	if req.Username != nil {
+		username := normalizeUsername(*req.Username)
+		if username == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username cannot be empty"})
+			return
+		}
+		if err := validateUsernameFormat(username); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		var existing models.User
+		err := h.DB.Where("LOWER(username) = ? AND id <> ?", username, user.ID).First(&existing).Error
+		if err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "username already taken"})
+			return
+		} else if err != gorm.ErrRecordNotFound {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check username"})
+			return
+		}
+		updates["username"] = username
+	}
+
+	if req.Email != nil {
+		email := normalizeEmail(*req.Email)
+		if email == "" {
+			updates["email"] = gorm.Expr("NULL")
+		} else {
+			var existing models.User
+			err := h.DB.Where("email = ? AND id <> ?", email, user.ID).First(&existing).Error
+			if err == nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "email already registered"})
+				return
+			} else if err != gorm.ErrRecordNotFound {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check email"})
+				return
+			}
+			updates["email"] = email
+		}
+	}
+
+	if req.Mobile != nil {
+		mobile := normalizeMobile(*req.Mobile)
+		if mobile == "" {
+			updates["mobile"] = gorm.Expr("NULL")
+		} else {
+			var existing models.User
+			err := h.DB.Where("mobile = ? AND id <> ?", mobile, user.ID).First(&existing).Error
+			if err == nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "mobile already registered"})
+				return
+			} else if err != gorm.ErrRecordNotFound {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check mobile"})
+				return
+			}
+			updates["mobile"] = mobile
+		}
+	}
+
+	if err := h.DB.Model(&user).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "username, email, or mobile already registered"})
+		return
+	}
+	if err := h.DB.First(&user, user.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reload profile"})
+		return
+	}
+	c.JSON(http.StatusOK, publicUser(user))
+}
+
+func (h *Handler) ChangePassword(c *gin.Context) {
+	v, _ := c.Get(middleware.ContextUserKey)
+	user, ok := v.(models.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password" binding:"required"`
+		NewPassword     string `json:"new_password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(req.NewPassword) < 6 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 6 characters"})
+		return
+	}
+	if !auth.CheckPassword(user.PasswordHash, req.CurrentPassword) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is incorrect"})
+		return
+	}
+
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+		return
+	}
+	if err := h.DB.Model(&user).Update("password_hash", hash).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "password updated"})
 }
 
 func (h *Handler) ForgotPassword(c *gin.Context) {

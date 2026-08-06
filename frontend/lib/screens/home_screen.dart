@@ -43,15 +43,6 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: authAppBarActions(
           context,
           extra: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: Center(
-                child: Text(
-                  auth.user?.displayName ?? '',
-                  style: const TextStyle(fontSize: 13),
-                ),
-              ),
-            ),
             if (auth.isAdmin)
               IconButton(
                 tooltip: 'Admin',
@@ -85,12 +76,13 @@ class _HomeScreenState extends State<HomeScreen> {
           }
 
           final summary = provider.portfolioSummary;
-          final totalInvested = (summary['total_invested'] ?? 0.0).toDouble();
-          final currentValue = (summary['current_value'] ?? 0.0).toDouble();
-          final profitLoss = (summary['profit_loss'] ?? 0.0).toDouble();
+          final totalInvested = _asDouble(summary['total_invested']);
+          final currentValue = _asDouble(summary['current_value']);
+          final profitLoss = _asDouble(summary['profit_loss']);
           final profitLossPercentage =
-              (summary['profit_loss_percentage'] ?? 0.0).toDouble();
-          final stockCount = (summary['stock_count'] as num?)?.toInt() ?? 0;
+              _asDouble(summary['profit_loss_percentage']);
+          final stockCount = _asInt(summary['stock_count']);
+          final mfCount = _asInt(summary['mf_count']);
           final bySource = (summary['by_source'] as List<dynamic>?) ?? [];
           final byMfSource = (summary['by_mf_source'] as List<dynamic>?) ?? [];
 
@@ -118,8 +110,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           const SizedBox(height: 8),
                           _buildSummaryRow(
                             'Number of Mutual Funds',
-                            'Coming soon',
-                            Colors.grey,
+                            mfCount.toString(),
                           ),
                         ],
                       ),
@@ -141,6 +132,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(height: 16),
                 _buildMutualFundsCard(
                   watchList: watchList,
+                  mfCount: mfCount,
                   byMfSource: byMfSource,
                 ),
               ],
@@ -177,7 +169,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 12),
             if (watchList)
-              _buildSummaryRow('Number of Stocks', stockCount.toString())
+              bySource.isEmpty
+                  ? _buildSummaryRow('Number of Stocks', stockCount.toString())
+                  : _buildByAccountCountTable(bySource)
             else if (bySource.isEmpty)
               const Text('No stock holdings by account')
             else
@@ -190,6 +184,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildMutualFundsCard({
     required bool watchList,
+    required int mfCount,
     required List<dynamic> byMfSource,
   }) {
     return Card(
@@ -213,10 +208,12 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 12),
             if (watchList)
-              Text(
-                'Coming soon',
-                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-              )
+              byMfSource.isEmpty
+                  ? _buildSummaryRow(
+                      'Number of Mutual Funds',
+                      mfCount.toString(),
+                    )
+                  : _buildByAccountCountTable(byMfSource)
             else if (byMfSource.isEmpty)
               const Text('No mutual fund holdings by account')
             else
@@ -225,6 +222,18 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  static double _asDouble(dynamic value, [double fallback = 0.0]) {
+    if (value == null) return fallback;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString()) ?? fallback;
+  }
+
+  static int _asInt(dynamic value, [int fallback = 0]) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? fallback;
   }
 
   Widget _buildByAccountTable(List<dynamic> rows) {
@@ -239,12 +248,12 @@ class _HomeScreenState extends State<HomeScreen> {
           DataColumn(label: Text('P/L %')),
         ],
         rows: rows.map((row) {
-          final map = row as Map<String, dynamic>;
-          final source = map['source'] as String? ?? '-';
-          final invested = (map['total_invested'] ?? 0.0).toDouble();
-          final current = (map['current_value'] ?? 0.0).toDouble();
-          final pl = (map['profit_loss'] ?? 0.0).toDouble();
-          final plPct = (map['profit_loss_percentage'] ?? 0.0).toDouble();
+          final map = Map<String, dynamic>.from(row as Map);
+          final source = map['source']?.toString() ?? '-';
+          final invested = _asDouble(map['total_invested']);
+          final current = _asDouble(map['current_value']);
+          final pl = _asDouble(map['profit_loss']);
+          final plPct = _asDouble(map['profit_loss_percentage']);
           final plColor = pl >= 0 ? Colors.green : Colors.red;
 
           return DataRow(
@@ -263,6 +272,33 @@ class _HomeScreenState extends State<HomeScreen> {
                 '${plPct.toStringAsFixed(2)}%',
                 style: TextStyle(color: plColor),
               )),
+            ],
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildByAccountCountTable(List<dynamic> rows) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        columns: const [
+          DataColumn(label: Text('Account')),
+          DataColumn(label: Text('Count')),
+        ],
+        rows: rows.map((row) {
+          final map = Map<String, dynamic>.from(row as Map);
+          final source = map['source']?.toString() ?? '-';
+          final count = _asInt(map['count']);
+
+          return DataRow(
+            cells: [
+              DataCell(Text(
+                source,
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              )),
+              DataCell(Text(count.toString())),
             ],
           );
         }).toList(),

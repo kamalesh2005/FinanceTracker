@@ -93,7 +93,7 @@ class _SymbolMappingsScreenState extends State<SymbolMappingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const AppBrandTitle('Symbol Mappings'),
+        title: const AppBrandTitle('Stock Symbol Mappings'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),

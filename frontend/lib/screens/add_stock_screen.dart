@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -35,10 +36,14 @@ class _AddStockScreenState extends State<AddStockScreen> {
   late DateTime _transactionDate;
   List<Stock> _importedStocks = [];
   bool _isImporting = false;
+  bool _isSavingImported = false;
   String? _importSource;
   /// True when Buy Price was last set from a Global_Stocks LTP lookup.
   bool _buyPriceFromLtp = false;
   String? _ltpLookupSymbol;
+  /// Catalog symbol confirmed via autocomplete selection or exact lookup.
+  String? _confirmedCatalogSymbol;
+  String? _confirmedCatalogName;
 
   @override
   void initState() {
@@ -50,8 +55,13 @@ class _AddStockScreenState extends State<AddStockScreen> {
     _buyPriceController =
         TextEditingController(text: widget.stock?.buyPrice.toString() ?? '');
     _transactionDate = DateTime.now();
+    if (widget.stock != null) {
+      _confirmedCatalogSymbol = widget.stock!.symbol.toUpperCase();
+      _confirmedCatalogName = widget.stock!.name;
+    }
     _symbolFocusNode.addListener(() {
       if (!_symbolFocusNode.hasFocus) {
+        _confirmCatalogExactMatch();
         _tryPrefillBuyPriceFromLtp();
       }
     });
@@ -62,6 +72,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
         setState(() {});
       }
       if (widget.stock == null && _symbolController.text.trim().isNotEmpty) {
+        _confirmCatalogExactMatch();
         _tryPrefillBuyPriceFromLtp();
       }
     });
@@ -125,6 +136,53 @@ class _AddStockScreenState extends State<AddStockScreen> {
       _buyPriceFromLtp = true;
       _ltpLookupSymbol = symbol;
     });
+  }
+
+  void _selectCatalogHit(
+    ({String symbol, String name, double currentPrice}) hit,
+  ) {
+    final symbol = hit.symbol.toUpperCase();
+    setState(() {
+      _symbolController.text = symbol;
+      _symbolController.selection = TextSelection.collapsed(offset: symbol.length);
+      _confirmedCatalogSymbol = symbol;
+      _confirmedCatalogName = hit.name;
+    });
+    if (hit.currentPrice > 0) {
+      _applyLtpToBuyPrice(symbol, hit.currentPrice);
+    }
+  }
+
+  Future<void> _confirmCatalogExactMatch() async {
+    if (widget.stock != null) return;
+    final symbol = _symbolController.text.trim().toUpperCase();
+    if (symbol.isEmpty) return;
+    if (_confirmedCatalogSymbol == symbol) return;
+    try {
+      final hit = await ApiService.lookupGlobalStock(symbol);
+      if (!mounted) return;
+      if (hit == null) {
+        setState(() {
+          _confirmedCatalogSymbol = null;
+          _confirmedCatalogName = null;
+        });
+        return;
+      }
+      _selectCatalogHit(hit);
+    } catch (_) {
+      // Best-effort; validator will block submit if unconfirmed.
+    }
+  }
+
+  Future<List<({String symbol, String name, double currentPrice})>>
+      _searchCatalog(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return [];
+    try {
+      return await ApiService.searchGlobalStocks(q);
+    } catch (_) {
+      return [];
+    }
   }
 
   Future<Uint8List?> _readPickedFileBytes(PlatformFile file) async {
@@ -1013,71 +1071,82 @@ class _AddStockScreenState extends State<AddStockScreen> {
   }
 
   Future<void> _saveImportedStocks() async {
-    if (_importedStocks.isEmpty || _importSource == null) return;
-
-    final provider = context.read<FinanceProvider>();
-    final watchList = context.read<AuthProvider>().useAsStockWatchList;
-    final toSave = watchList
-        ? _importedStocks
-            .map(
-              (s) => Stock(
-                id: s.id,
-                symbol: s.symbol,
-                name: s.name,
-                sector: s.sector,
-                marketCap: s.marketCap,
-                source: s.source,
-                quantity: 1,
-                buyPrice: s.buyPrice,
-                currentPrice: s.currentPrice,
-                sixthHighestPrice: s.sixthHighestPrice,
-                sixthLowestPrice: s.sixthLowestPrice,
-                lastFetchedDate: s.lastFetchedDate,
-                lastPriceFetchedDate: s.lastPriceFetchedDate,
-                createdAt: s.createdAt,
-                updatedAt: s.updatedAt,
-                isin: s.isin,
-                lastBuyPrice: s.lastBuyPrice,
-                lastBuyDate: s.lastBuyDate,
-                lastSalePrice: s.lastSalePrice,
-                lastSaleDate: s.lastSaleDate,
-              ),
-            )
-            .toList()
-        : _importedStocks;
-    await provider.addStocksBulk(toSave, source: _importSource!);
-
-    if (provider.error != null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: ${provider.error}'),
-            backgroundColor: Colors.red,
-            duration: const Duration(days: 1),
-            action: SnackBarAction(
-              label: 'Close',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
-          ),
-        );
-      }
+    if (_importedStocks.isEmpty || _importSource == null || _isSavingImported) {
       return;
     }
 
-    setState(() {
-      _importedStocks = [];
-      _importSource = null;
-    });
+    setState(() => _isSavingImported = true);
 
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Stocks imported successfully'),
-          backgroundColor: Colors.green,
-        ),
-      );
-      Navigator.pop(context);
+    try {
+      final provider = context.read<FinanceProvider>();
+      final watchList = context.read<AuthProvider>().useAsStockWatchList;
+      final toSave = watchList
+          ? _importedStocks
+              .map(
+                (s) => Stock(
+                  id: s.id,
+                  symbol: s.symbol,
+                  name: s.name,
+                  sector: s.sector,
+                  industry: s.industry,
+                  marketCap: s.marketCap,
+                  source: s.source,
+                  quantity: 1,
+                  buyPrice: s.buyPrice,
+                  currentPrice: s.currentPrice,
+                  sixthHighestPrice: s.sixthHighestPrice,
+                  sixthLowestPrice: s.sixthLowestPrice,
+                  lastFetchedDate: s.lastFetchedDate,
+                  lastPriceFetchedDate: s.lastPriceFetchedDate,
+                  createdAt: s.createdAt,
+                  updatedAt: s.updatedAt,
+                  isin: s.isin,
+                  lastBuyPrice: s.lastBuyPrice,
+                  lastBuyDate: s.lastBuyDate,
+                  lastSalePrice: s.lastSalePrice,
+                  lastSaleDate: s.lastSaleDate,
+                ),
+              )
+              .toList()
+          : _importedStocks;
+      await provider.addStocksBulk(toSave, source: _importSource!);
+
+      if (provider.error != null) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Error: ${provider.error}'),
+              backgroundColor: Colors.red,
+              duration: const Duration(days: 1),
+              action: SnackBarAction(
+                label: 'Close',
+                textColor: Colors.white,
+                onPressed: () {},
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      setState(() {
+        _importedStocks = [];
+        _importSource = null;
+      });
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Stocks imported successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSavingImported = false);
+      }
     }
   }
 
@@ -1295,24 +1364,45 @@ class _AddStockScreenState extends State<AddStockScreen> {
                           Row(
                             children: [
                               Expanded(
-                                child: ElevatedButton(
-                                  onPressed: _saveImportedStocks,
+                                child: ElevatedButton.icon(
+                                  onPressed: _isSavingImported
+                                      ? null
+                                      : _saveImportedStocks,
+                                  icon: _isSavingImported
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : const Icon(Icons.save),
+                                  label: Text(
+                                    _isSavingImported
+                                        ? 'Saving...'
+                                        : 'Save All Stocks',
+                                  ),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: Colors.green,
                                     foregroundColor: Colors.white,
+                                    disabledBackgroundColor:
+                                        Colors.green.shade300,
+                                    disabledForegroundColor: Colors.white,
                                   ),
-                                  child: const Text('Save All Stocks'),
                                 ),
                               ),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: OutlinedButton(
-                                  onPressed: () {
-                                    setState(() {
-                                      _importedStocks = [];
-                                      _importSource = null;
-                                    });
-                                  },
+                                  onPressed: _isSavingImported
+                                      ? null
+                                      : () {
+                                          setState(() {
+                                            _importedStocks = [];
+                                            _importSource = null;
+                                          });
+                                        },
                                   child: const Text('Clear'),
                                 ),
                               ),
@@ -1364,25 +1454,110 @@ class _AddStockScreenState extends State<AddStockScreen> {
 
   List<Widget> _buildManualStockFormFields() {
     return [
-      TextFormField(
-        controller: _symbolController,
-        focusNode: _symbolFocusNode,
-        textCapitalization: TextCapitalization.characters,
-        decoration: const InputDecoration(
-          labelText: 'Symbol *',
-          hintText: 'e.g., RELIANCE, TCS',
-          border: OutlineInputBorder(),
+      if (widget.stock != null)
+        TextFormField(
+          controller: _symbolController,
+          enabled: false,
+          decoration: const InputDecoration(
+            labelText: 'Symbol *',
+            border: OutlineInputBorder(),
+            helperText: 'Symbol cannot be changed for existing holdings',
+          ),
+        )
+      else
+        RawAutocomplete<({String symbol, String name, double currentPrice})>(
+          textEditingController: _symbolController,
+          focusNode: _symbolFocusNode,
+          displayStringForOption: (o) => o.symbol,
+          optionsBuilder: (TextEditingValue value) async {
+            final q = value.text.trim();
+            if (q.isEmpty) {
+              return const Iterable<
+                  ({String symbol, String name, double currentPrice})>.empty();
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 250));
+            if (!mounted || _symbolController.text.trim() != q) {
+              return const Iterable<
+                  ({String symbol, String name, double currentPrice})>.empty();
+            }
+            return _searchCatalog(q);
+          },
+          onSelected: _selectCatalogHit,
+          fieldViewBuilder:
+              (context, controller, focusNode, onFieldSubmitted) {
+            return TextFormField(
+              controller: controller,
+              focusNode: focusNode,
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                labelText: 'Symbol *',
+                hintText: 'Start typing to search catalog',
+                border: const OutlineInputBorder(),
+                helperText: _confirmedCatalogName != null &&
+                        _confirmedCatalogName!.isNotEmpty
+                    ? _confirmedCatalogName
+                    : 'Choose a symbol from the NSE catalog',
+              ),
+              onChanged: (_) {
+                _ltpLookupSymbol = null;
+                if (_confirmedCatalogSymbol != null &&
+                    _confirmedCatalogSymbol !=
+                        controller.text.trim().toUpperCase()) {
+                  setState(() {
+                    _confirmedCatalogSymbol = null;
+                    _confirmedCatalogName = null;
+                  });
+                }
+              },
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter a symbol';
+                }
+                final sym = value.trim().toUpperCase();
+                if (_confirmedCatalogSymbol == null ||
+                    _confirmedCatalogSymbol != sym) {
+                  return 'Select a symbol from the catalog suggestions';
+                }
+                return null;
+              },
+            );
+          },
+          optionsViewBuilder: (context, onSelected, options) {
+            return Align(
+              alignment: Alignment.topLeft,
+              child: Material(
+                elevation: 4,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 240, maxWidth: 480),
+                  child: ListView.builder(
+                    padding: EdgeInsets.zero,
+                    shrinkWrap: true,
+                    itemCount: options.length,
+                    itemBuilder: (context, index) {
+                      final option = options.elementAt(index);
+                      final price = option.currentPrice > 0
+                          ? ' · ${formatInr(option.currentPrice)}'
+                          : '';
+                      return ListTile(
+                        dense: true,
+                        title: Text(
+                          option.symbol,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Text(
+                          '${option.name}$price',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () => onSelected(option),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            );
+          },
         ),
-        onChanged: (_) {
-          _ltpLookupSymbol = null;
-        },
-        validator: (value) {
-          if (value == null || value.isEmpty) {
-            return 'Please enter a symbol';
-          }
-          return null;
-        },
-      ),
       const SizedBox(height: 16),
       Builder(
         builder: (context) {
@@ -1476,8 +1651,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                if (widget.stock!.sector.isNotEmpty)
-                  _buildInfoRow('Sector', widget.stock!.sector),
+                if (widget.stock!.industry.isNotEmpty)
+                  _buildInfoRow('Industry', widget.stock!.industry),
                 if (widget.stock!.sixthHighestPrice > 0)
                   _buildInfoRow(
                     'High',
@@ -1500,6 +1675,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
             onPressed: provider.isLoading
                 ? null
                 : () async {
+                    await _confirmCatalogExactMatch();
                     await _tryPrefillBuyPriceFromLtp();
                     if (!_formKey.currentState!.validate()) return;
 
@@ -1511,7 +1687,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                     final stock = Stock(
                       id: widget.stock?.id ?? 0,
                       symbol: _symbolController.text.toUpperCase(),
-                      name: widget.stock?.name ?? '',
+                      name: _confirmedCatalogName ?? widget.stock?.name ?? '',
                       quantity: qty,
                       buyPrice: double.parse(_buyPriceController.text),
                       // Current price is filled from Yahoo / Global_Stocks on the backend.

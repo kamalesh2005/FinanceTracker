@@ -12,6 +12,12 @@ import (
 const (
 	OnMatchExit     = "exit"
 	OnMatchContinue = "continue"
+
+	// DefaultBookProfitCondition is the built-in Book Profit formula.
+	DefaultBookProfitCondition = `(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95 AND curr_price > avg_buy_price)`
+
+	// LegacyBookProfitCondition is the prior default (before requiring curr_price > avg_buy_price).
+	LegacyBookProfitCondition = `(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95)`
 )
 
 // NamedValue is a reusable constant referenced in rule formulas.
@@ -93,7 +99,7 @@ func DefaultRuleset(fluctuationPct float64) Ruleset {
 			{
 				Order:          5,
 				Recommendation: "Book Profit",
-				Condition:      `(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95)`,
+				Condition:      DefaultBookProfitCondition,
 				OnMatch:        OnMatchContinue,
 				Enabled:        true,
 			},
@@ -268,4 +274,42 @@ func (r *Ruleset) SetNamedValue(name string, value float64) {
 		}
 	}
 	r.NamedValues = append(r.NamedValues, NamedValue{Name: name, Value: value})
+}
+
+// PatchLegacyBookProfitConditions upgrades Book Profit rows that still use the
+// prior default formula (missing curr_price > avg_buy_price on the sixth-high branch).
+// Returns true when any rule was changed.
+func PatchLegacyBookProfitConditions(r *Ruleset) bool {
+	if r == nil {
+		return false
+	}
+	changed := false
+	for i := range r.Rules {
+		if r.Rules[i].Recommendation != "Book Profit" {
+			continue
+		}
+		cond := strings.TrimSpace(r.Rules[i].Condition)
+		if cond == DefaultBookProfitCondition {
+			continue
+		}
+		if cond == LegacyBookProfitCondition || isLegacySixthHighBookProfit(cond) {
+			r.Rules[i].Condition = DefaultBookProfitCondition
+			changed = true
+		}
+	}
+	return changed
+}
+
+func isLegacySixthHighBookProfit(cond string) bool {
+	c := strings.ToLower(strings.ReplaceAll(cond, " ", ""))
+	if !strings.Contains(c, "sixth_highest_price") || !strings.Contains(c, "0.95") {
+		return false
+	}
+	// Already has the avg_buy_price guard on the sixth-high path.
+	if strings.Contains(c, "curr_price>avg_buy_price") {
+		return false
+	}
+	// Only rewrite formulas that still look like the prior default shape.
+	return strings.Contains(c, "set_profit_booking_price>0") &&
+		strings.Contains(c, "curr_price>set_profit_booking_price")
 }

@@ -3,7 +3,10 @@ import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import 'symbol_mappings_screen.dart';
 import 'unmapped_stocks_screen.dart';
+import 'mf_scheme_mappings_screen.dart';
+import 'unmapped_mf_schemes_screen.dart';
 import 'admin_stock_data_screen.dart';
+import 'admin_mutual_fund_data_screen.dart';
 import 'admin_users_screen.dart';
 import 'admin_app_settings_screen.dart';
 
@@ -27,7 +30,7 @@ class AdminScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Manage users, app defaults, broker-to-Yahoo symbol mappings, and Yahoo-sourced stock data.',
+            'Manage users, app defaults, stock and mutual fund mappings, and catalog data.',
             style: TextStyle(color: Colors.grey.shade700),
           ),
           const SizedBox(height: 24),
@@ -56,30 +59,72 @@ class AdminScreen extends StatelessWidget {
             icon: Icons.warning_amber_rounded,
             color: Colors.orange,
             title: 'Unmapped Stocks',
-            subtitle: 'Stocks missing Yahoo data or with incorrect mappings',
+            subtitle:
+                'Broker symbols missing Yahoo data or with incorrect mappings',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const UnmappedStocksScreen()),
             ),
           ),
           _AdminTile(
+            icon: Icons.warning_amber_rounded,
+            color: Colors.deepOrange,
+            title: 'Unmapped Mutual Funds',
+            subtitle:
+                'Broker scheme names missing catalog ISIN or with incorrect mappings',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const UnmappedMFSchemesScreen(),
+              ),
+            ),
+          ),
+          _AdminTile(
             icon: Icons.map_outlined,
             color: Colors.blue,
-            title: 'Symbol Mappings',
-            subtitle: 'View all, search, add or edit source → Yahoo mappings',
+            title: 'Stock Symbol Mappings',
+            subtitle:
+                'View, search, add or edit broker → Yahoo symbol mappings',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const SymbolMappingsScreen()),
             ),
           ),
           _AdminTile(
+            icon: Icons.account_tree_outlined,
+            color: Colors.cyan,
+            title: 'Mutual Fund Scheme Mappings',
+            subtitle:
+                'View, search, add or edit broker → catalog ISIN mappings',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const MFSchemeMappingsScreen(),
+              ),
+            ),
+          ),
+          _AdminTile(
             icon: Icons.edit_note,
             color: Colors.teal,
             title: 'Update Stock Data',
-            subtitle: 'Correct sector, name and other Yahoo-fetched fields',
+            subtitle:
+                'Browse catalog, edit name/industry, upload NSE or ETF CSV',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const AdminStockDataScreen()),
+            ),
+          ),
+          _AdminTile(
+            icon: Icons.account_balance,
+            color: Colors.brown,
+            title: 'Update Mutual Fund Data',
+            subtitle:
+                'Browse catalog, upload NSCCL xlsx/csv or MF_VAR NAV CSV',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const AdminMutualFundDataScreen(),
+              ),
             ),
           ),
         ],

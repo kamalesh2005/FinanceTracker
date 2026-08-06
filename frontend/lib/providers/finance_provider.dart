@@ -392,6 +392,43 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
+  /// Replace holdings for a broker/bulk source. Returns unmatched row count from server.
+  Future<
+      ({
+        int count,
+        int unmatched,
+      })?> replaceMutualFundsBySource({
+    required String source,
+    required List<
+            ({
+              String schemeName,
+              String isin,
+              double quantity,
+              double nav,
+              double currentNav,
+            })>
+        items,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final result = await ApiService.replaceMutualFundsBySource(
+        source: source,
+        items: items,
+      );
+      await loadMutualFunds();
+      return (count: result.count, unmatched: result.unmatched.length);
+    } catch (e) {
+      _error = e.toString();
+      return null;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> updateMutualFund(int id, MutualFund mf) async {
     _isLoading = true;
     _error = null;

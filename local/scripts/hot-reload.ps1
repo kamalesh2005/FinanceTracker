@@ -1,7 +1,7 @@
 # Hot-reload the running Flutter frontend (Windows)
-# Requires the app to have been started with .\scripts\start.ps1 (command channel).
-# Usage: .\scripts\hot-reload.ps1
-#        .\scripts\hot-reload.ps1 -Restart
+# Requires the app to have been started with .\local\scripts\start.ps1 (command channel).
+# Usage: .\local\scripts\hot-reload.ps1
+#        .\local\scripts\hot-reload.ps1 -Restart
 
 param(
     [switch]$Restart
@@ -9,7 +9,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$LogsDir = Join-Path $ScriptDir "logs"
+$LocalDir = Split-Path -Parent $ScriptDir
+$LogsDir = Join-Path $LocalDir "logs"
 $CmdFile = Join-Path $LogsDir "frontend.cmd"
 $OutLog = Join-Path $LogsDir "frontend.out.log"
 
@@ -30,7 +31,7 @@ function Test-CommandChannelReady {
 }
 
 if (-not (Test-FrontendRunning)) {
-    Write-Error "Frontend is not running on port 3000. Start it with .\scripts\start.ps1 first."
+    Write-Error "Frontend is not running on port 3000. Start it with .\local\scripts\start.ps1 first."
 }
 
 if (-not (Test-CommandChannelReady)) {
@@ -39,10 +40,10 @@ Hot reload command channel is not available.
 
 The current Flutter session was started without stdin control.
 Restart once with:
-  .\scripts\start.ps1
+  .\local\scripts\start.ps1
 
 Then use:
-  .\scripts\hot-reload.ps1
+  .\local\scripts\hot-reload.ps1
 "@
 }
 

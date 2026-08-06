@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/symbol_mapping.dart';
 import '../services/api_service.dart';
+import '../utils/currency_format.dart';
 import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
@@ -30,8 +31,13 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
   late TextEditingController _yahooController;
   late TextEditingController _isinController;
   late TextEditingController _notesController;
+  final _yahooFocusNode = FocusNode();
   late String _sourceFormat;
   bool _saving = false;
+
+  /// Catalog symbol confirmed via autocomplete selection or initial prefill.
+  String? _confirmedYahooSymbol;
+  String? _confirmedYahooName;
 
   static const _formats = ['ICICIDirect', 'NSE', 'Manual', 'Other'];
 
@@ -42,9 +48,11 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
     _sourceController = TextEditingController(
       text: m?.sourceSymbol ?? widget.initialSourceSymbol ?? '',
     );
-    _yahooController = TextEditingController(
-      text: m?.yahooSymbol ?? widget.initialYahooSymbol ?? '',
-    );
+    final yahoo = (m?.yahooSymbol ?? widget.initialYahooSymbol ?? '').trim();
+    _yahooController = TextEditingController(text: yahoo);
+    if (yahoo.isNotEmpty) {
+      _confirmedYahooSymbol = yahoo.toUpperCase();
+    }
     _isinController = TextEditingController(
       text: m?.isin ?? widget.initialIsin ?? '',
     );
@@ -59,7 +67,32 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
     _yahooController.dispose();
     _isinController.dispose();
     _notesController.dispose();
+    _yahooFocusNode.dispose();
     super.dispose();
+  }
+
+  Future<List<({String symbol, String name, double currentPrice})>>
+      _searchCatalog(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) return [];
+    try {
+      return await ApiService.searchGlobalStocks(q);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  void _selectCatalogHit(
+    ({String symbol, String name, double currentPrice}) hit,
+  ) {
+    final symbol = hit.symbol.toUpperCase();
+    setState(() {
+      _yahooController.text = symbol;
+      _yahooController.selection =
+          TextSelection.collapsed(offset: symbol.length);
+      _confirmedYahooSymbol = symbol;
+      _confirmedYahooName = hit.name;
+    });
   }
 
   Future<void> _save() async {
@@ -125,15 +158,100 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
                     (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 16),
-              TextFormField(
-                controller: _yahooController,
-                decoration: const InputDecoration(
-                  labelText: 'Yahoo / NSE Symbol *',
-                  hintText: 'e.g. HEROMOTOCO, AXISBANK, M&M',
-                  border: OutlineInputBorder(),
-                ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Required' : null,
+              RawAutocomplete<({String symbol, String name, double currentPrice})>(
+                textEditingController: _yahooController,
+                focusNode: _yahooFocusNode,
+                displayStringForOption: (o) => o.symbol,
+                optionsBuilder: (TextEditingValue value) async {
+                  final q = value.text.trim();
+                  if (q.isEmpty) {
+                    return const Iterable<
+                        ({String symbol, String name, double currentPrice})>.empty();
+                  }
+                  await Future<void>.delayed(const Duration(milliseconds: 250));
+                  if (!mounted || _yahooController.text.trim() != q) {
+                    return const Iterable<
+                        ({String symbol, String name, double currentPrice})>.empty();
+                  }
+                  return _searchCatalog(q);
+                },
+                onSelected: _selectCatalogHit,
+                fieldViewBuilder:
+                    (context, controller, focusNode, onFieldSubmitted) {
+                  return TextFormField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: InputDecoration(
+                      labelText: 'Yahoo / NSE Symbol *',
+                      hintText: 'Start typing to search catalog',
+                      border: const OutlineInputBorder(),
+                      helperText: _confirmedYahooName != null &&
+                              _confirmedYahooName!.isNotEmpty
+                          ? _confirmedYahooName
+                          : 'Choose a symbol from the NSE catalog',
+                    ),
+                    onChanged: (_) {
+                      if (_confirmedYahooSymbol != null &&
+                          _confirmedYahooSymbol !=
+                              controller.text.trim().toUpperCase()) {
+                        setState(() {
+                          _confirmedYahooSymbol = null;
+                          _confirmedYahooName = null;
+                        });
+                      }
+                    },
+                    validator: (value) {
+                      if (value == null || value.trim().isEmpty) {
+                        return 'Required';
+                      }
+                      final sym = value.trim().toUpperCase();
+                      if (_confirmedYahooSymbol == null ||
+                          _confirmedYahooSymbol != sym) {
+                        return 'Select a symbol from the catalog suggestions';
+                      }
+                      return null;
+                    },
+                  );
+                },
+                optionsViewBuilder: (context, onSelected, options) {
+                  return Align(
+                    alignment: Alignment.topLeft,
+                    child: Material(
+                      elevation: 4,
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxHeight: 240,
+                          maxWidth: 480,
+                        ),
+                        child: ListView.builder(
+                          padding: EdgeInsets.zero,
+                          shrinkWrap: true,
+                          itemCount: options.length,
+                          itemBuilder: (context, index) {
+                            final option = options.elementAt(index);
+                            final price = option.currentPrice > 0
+                                ? ' · ${formatInr(option.currentPrice)}'
+                                : '';
+                            return ListTile(
+                              dense: true,
+                              title: Text(
+                                option.symbol,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Text(
+                                '${option.name}$price',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () => onSelected(option),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 16),
               TextFormField(

@@ -191,7 +191,8 @@ func rulesetNeedsDefaultRulesRewrite(rs recrules.Ruleset) bool {
 // MigrateRecommendationRulesHoldThresholds upgrades App_Config (and user
 // overrides) to the current DefaultRuleset when they are missing Hold/threshold
 // rules, still have split BUY/Book Profit/SELL rows, or still include WATCH.
-// Preserves fluctuation_pct. Subsequent startups no-op once the shape matches.
+// Also patches legacy Book Profit formulas that omit curr_price > avg_buy_price.
+// Preserves fluctuation_pct. Subsequent startups no-op once rules are current.
 func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 	var cfg models.AppConfig
 	if err := db.First(&cfg, 1).Error; err != nil {
@@ -208,22 +209,29 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate hold/threshold rules: parse App_Config: %w", err)
 	}
+	adminChanged := false
 	if rulesetNeedsDefaultRulesRewrite(adminRS) {
 		fluct := recrules.FluctuationFromRuleset(adminRS, cfg.DefaultRecommendationFluctuationPct)
 		if fluct <= 0 {
 			fluct = defaultRecommendationFluctuationPct
 		}
-		fresh := recrules.DefaultRuleset(fluct)
-		raw, mErr := fresh.Marshal()
+		adminRS = recrules.DefaultRuleset(fluct)
+		adminChanged = true
+		log.Printf("Migrated App_Config recommendation rules to combined Hold/threshold defaults")
+	} else if recrules.PatchLegacyBookProfitConditions(&adminRS) {
+		adminChanged = true
+		log.Printf("Patched App_Config Book Profit rule to require curr_price > avg_buy_price")
+	}
+	if adminChanged {
+		raw, mErr := adminRS.Marshal()
 		if mErr != nil {
 			return mErr
 		}
 		cfg.RecommendationRulesJSON = raw
-		cfg.DefaultRecommendationFluctuationPct = fluct
+		cfg.DefaultRecommendationFluctuationPct = recrules.FluctuationFromRuleset(adminRS, cfg.DefaultRecommendationFluctuationPct)
 		if err := db.Save(&cfg).Error; err != nil {
 			return err
 		}
-		log.Printf("Migrated App_Config recommendation rules to combined Hold/threshold defaults")
 	}
 
 	var users []models.UserConfig
@@ -241,15 +249,23 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 			log.Printf("Skip user_config %d hold/threshold rules migrate: %v", uc.UserID, pErr)
 			continue
 		}
-		if !rulesetNeedsDefaultRulesRewrite(userRS) {
+		userChanged := false
+		if rulesetNeedsDefaultRulesRewrite(userRS) {
+			fluct := recrules.FluctuationFromRuleset(userRS, cfg.DefaultRecommendationFluctuationPct)
+			if fluct <= 0 {
+				fluct = defaultRecommendationFluctuationPct
+			}
+			userRS = recrules.DefaultRuleset(fluct)
+			userChanged = true
+			log.Printf("Migrated User_Config recommendation rules for user_id=%d to combined Hold/threshold defaults", uc.UserID)
+		} else if recrules.PatchLegacyBookProfitConditions(&userRS) {
+			userChanged = true
+			log.Printf("Patched User_Config Book Profit rule for user_id=%d", uc.UserID)
+		}
+		if !userChanged {
 			continue
 		}
-		fluct := recrules.FluctuationFromRuleset(userRS, cfg.DefaultRecommendationFluctuationPct)
-		if fluct <= 0 {
-			fluct = defaultRecommendationFluctuationPct
-		}
-		fresh := recrules.DefaultRuleset(fluct)
-		raw, mErr := fresh.Marshal()
+		raw, mErr := userRS.Marshal()
 		if mErr != nil {
 			return mErr
 		}
@@ -257,7 +273,6 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 		if err := db.Save(uc).Error; err != nil {
 			return err
 		}
-		log.Printf("Migrated User_Config recommendation rules for user_id=%d to combined Hold/threshold defaults", uc.UserID)
 	}
 	return nil
 }
@@ -509,6 +524,7 @@ func (h *Handler) PutPreferences(c *gin.Context) {
 }
 
 // normalizeUserHoldingsToQtyOne sets every positive holding to qty 1 and open buy lots totaling 1.
+// Also sets every positive User_MutualFunds quantity to 1 (MFs have no lot ledger).
 func normalizeUserHoldingsToQtyOne(db *gorm.DB, userID uint) error {
 	var positions []models.UserStock
 	if err := db.Where("user_id = ? AND quantity > 0", userID).Find(&positions).Error; err != nil {
@@ -519,7 +535,9 @@ func normalizeUserHoldingsToQtyOne(db *gorm.DB, userID uint) error {
 			return err
 		}
 	}
-	return nil
+	return db.Model(&models.MutualFund{}).
+		Where("user_id = ? AND quantity > 0", userID).
+		Update("quantity", 1).Error
 }
 
 func normalizePositionLotsToOne(db *gorm.DB, pos models.UserStock) error {

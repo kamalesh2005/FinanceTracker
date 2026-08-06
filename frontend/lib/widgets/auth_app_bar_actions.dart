@@ -1,19 +1,80 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../screens/profile_screen.dart';
 
 /// AppBar actions for authenticated screens.
-/// Order: [extra] → Logout → Help (Help is always rightmost).
+/// Order: [extra] → Profile avatar menu → Help (Help is always rightmost).
 List<Widget> authAppBarActions(
   BuildContext context, {
   List<Widget> extra = const [],
 }) {
+  final auth = context.watch<AuthProvider>();
+  final user = auth.user;
+  final initial = user?.avatarInitial ?? '?';
+  final identity = user?.menuIdentity ?? 'Account';
+
   return [
     ...extra,
-    IconButton(
-      tooltip: 'Logout',
-      icon: const Icon(Icons.logout),
-      onPressed: () => context.read<AuthProvider>().logout(),
+    PopupMenuButton<String>(
+      tooltip: 'Account',
+      offset: const Offset(0, 40),
+      onSelected: (value) {
+        if (value == 'profile') {
+          final isAlreadyProfile =
+              context.findAncestorWidgetOfExactType<ProfileScreen>() != null;
+          if (isAlreadyProfile) return;
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const ProfileScreen()),
+          );
+        } else if (value == 'logout') {
+          context.read<AuthProvider>().logout();
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem<String>(
+          enabled: false,
+          child: Text(
+            identity,
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<String>(
+          value: 'profile',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.person_outline),
+            title: Text('Profile'),
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'logout',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.logout),
+            title: Text('Logout'),
+          ),
+        ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: CircleAvatar(
+          radius: 14,
+          backgroundColor: Theme.of(context).colorScheme.primary,
+          foregroundColor: Theme.of(context).colorScheme.onPrimary,
+          child: Text(
+            initial,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+        ),
+      ),
     ),
     IconButton(
       tooltip: 'Help',
@@ -51,7 +112,7 @@ void showAppHelpDialog(BuildContext context) {
               'Your dashboard shows portfolio totals (invested, current value, '
               'P/L) broken down by account for stocks and mutual funds. Tap '
               'Manage on either card to open that section. Gear opens Configure; '
-              'logout and Help are always in the top bar.',
+              'your profile avatar and Help are always in the top bar.',
             ),
             SizedBox(height: 12),
             Text(

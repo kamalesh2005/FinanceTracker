@@ -115,6 +115,7 @@ class AuthProvider extends ChangeNotifier {
     String? email,
     String? mobile,
     required String password,
+    String? turnstileToken,
   }) async {
     _error = null;
     try {
@@ -123,6 +124,7 @@ class AuthProvider extends ChangeNotifier {
         email: email,
         mobile: mobile,
         password: password,
+        turnstileToken: turnstileToken,
       );
       await _persistSession(result['token'] as String, result['user'] as AppUser);
       await loadPreferences();
@@ -137,6 +139,45 @@ class AuthProvider extends ChangeNotifier {
   Future<void> logout() async {
     await _clearSession();
     notifyListeners();
+  }
+
+  Future<bool> updateProfile({
+    required String username,
+    required String email,
+    required String mobile,
+  }) async {
+    _error = null;
+    try {
+      _user = await ApiService.updateProfile(
+        username: username,
+        email: email,
+        mobile: mobile,
+      );
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _error = e.toString().replaceFirst('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    _error = null;
+    try {
+      await ApiService.changePassword(
+        currentPassword: currentPassword,
+        newPassword: newPassword,
+      );
+      return true;
+    } catch (e) {
+      _error = e.toString().replaceFirst('Exception: ', '');
+      notifyListeners();
+      return false;
+    }
   }
 
   Future<void> loadPreferences() async {

@@ -444,6 +444,7 @@ func main() {
 		&models.User{},
 		&models.PasswordResetOTP{},
 		&models.Stock{},
+		&models.GlobalMutualFund{},
 		&models.MutualFund{},
 		&models.Portfolio{},
 		&models.UserStock{},
@@ -451,6 +452,9 @@ func main() {
 		&models.UserConfig{},
 		&models.AppConfig{},
 		&models.SymbolMapping{},
+		&models.MFSchemeMapping{},
+		&models.StockDailyClose{},
+		&models.StockDailyCloseSync{},
 	); err != nil {
 		log.Fatal("Failed to migrate database:", err)
 	}
@@ -483,6 +487,10 @@ func main() {
 		log.Fatal("Failed to seed symbol mappings:", err)
 	}
 
+	if err := handlers.BackfillPullDataFromHoldings(db); err != nil {
+		log.Fatal("Failed to backfill pull_data:", err)
+	}
+
 	if err := handlers.LoadNSEEquityISINIndex(); err != nil {
 		csvPath := os.Getenv("NSE_EQUITY_CSV_PATH")
 		if csvPath == "" {
@@ -494,12 +502,14 @@ func main() {
 	}
 
 	r := gin.Default()
+	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
 
+	r.Use(middleware.NoCache())
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
-		ExposeHeaders:    []string{"Content-Length"},
+		ExposeHeaders:    []string{"Content-Length", "Retry-After"},
 		AllowCredentials: true,
 	}))
 
@@ -510,10 +520,14 @@ func main() {
 	api := r.Group("/api/v1")
 	{
 		authPublic := api.Group("/auth")
+		authPublic.Use(middleware.OptionalAuth(db))
 		{
-			authPublic.POST("/register", h.Register)
-			authPublic.GET("/check-username", h.CheckUsername)
-			authPublic.POST("/login", h.Login)
+			authPublic.GET("/captcha-config", h.CaptchaConfig)
+			authPublic.POST("/register", middleware.RateLimit(5, time.Hour), h.Register)
+			authPublic.GET("/check-username", middleware.RateLimit(30, time.Minute), h.CheckUsername)
+			authPublic.GET("/check-email", middleware.RateLimit(30, time.Minute), h.CheckEmail)
+			authPublic.GET("/check-mobile", middleware.RateLimit(30, time.Minute), h.CheckMobile)
+			authPublic.POST("/login", middleware.RateLimit(20, 15*time.Minute), h.Login)
 			authPublic.POST("/forgot-password", h.ForgotPassword)
 			authPublic.POST("/reset-password", h.ResetPassword)
 		}
@@ -522,6 +536,8 @@ func main() {
 		authed.Use(middleware.AuthRequired(db))
 		{
 			authed.GET("/auth/me", h.Me)
+			authed.PUT("/auth/profile", h.UpdateProfile)
+			authed.POST("/auth/change-password", h.ChangePassword)
 
 			authed.GET("/config/stock-columns", h.GetStockColumnConfig)
 			authed.PUT("/config/stock-columns", h.PutStockColumnConfig)
@@ -534,6 +550,7 @@ func main() {
 			authed.GET("/stocks/trends", h.GetStockTrends)
 			authed.GET("/stocks/history", h.GetStockHistory)
 			authed.GET("/stocks/lookup", h.LookupStockBySymbol)
+			authed.GET("/stocks/search", h.SearchStocks)
 			authed.POST("/stocks/refresh-prices", h.RefreshStockPrices)
 			authed.GET("/stocks/:id", h.GetStock)
 			authed.PUT("/stocks/:id", h.UpdateStock)
@@ -549,6 +566,9 @@ func main() {
 
 			authed.GET("/mutualfunds", h.GetMutualFunds)
 			authed.POST("/mutualfunds", h.CreateMutualFund)
+			authed.POST("/mutualfunds/bulk", h.ReplaceSourceMutualFunds)
+			authed.GET("/mutualfunds/search", h.SearchMutualFunds)
+			authed.GET("/mutualfunds/lookup", h.LookupMutualFundByISIN)
 			authed.GET("/mutualfunds/:id", h.GetMutualFund)
 			authed.PUT("/mutualfunds/:id", h.UpdateMutualFund)
 			authed.DELETE("/mutualfunds/:id", h.DeleteMutualFund)
@@ -562,12 +582,23 @@ func main() {
 				admin.DELETE("/stocks/:id", h.DeleteStock)
 				admin.PUT("/stocks/:id/admin", h.UpdateStockAdminFields)
 				admin.GET("/admin/stocks", h.GetAllStocksAdmin)
+				admin.POST("/admin/stocks/import-nse", h.ImportNSECatalogAdmin)
+				admin.POST("/admin/stocks/import-closes", h.ImportClosingPricesAdmin)
+				admin.POST("/admin/stocks/import-etf", h.ImportETFCSVAdmin)
+				admin.GET("/admin/mutualfunds", h.GetAllMutualFundsAdmin)
+				admin.POST("/admin/mutualfunds/import", h.ImportMutualFundsAdmin)
 
 				admin.GET("/symbol-mappings", h.GetSymbolMappings)
 				admin.POST("/symbol-mappings", h.CreateSymbolMapping)
 				admin.PUT("/symbol-mappings/:id", h.UpdateSymbolMapping)
 				admin.DELETE("/symbol-mappings/:id", h.DeleteSymbolMapping)
 				admin.GET("/admin/unmapped-stocks", h.GetUnmappedStocks)
+
+				admin.GET("/mf-scheme-mappings", h.GetMFSchemeMappings)
+				admin.POST("/mf-scheme-mappings", h.CreateMFSchemeMapping)
+				admin.PUT("/mf-scheme-mappings/:id", h.UpdateMFSchemeMapping)
+				admin.DELETE("/mf-scheme-mappings/:id", h.DeleteMFSchemeMapping)
+				admin.GET("/admin/unmapped-mf-schemes", h.GetUnmappedMFSchemes)
 
 				admin.GET("/admin/users", h.ListUsers)
 				admin.POST("/admin/users", h.CreateUser)

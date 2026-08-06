@@ -4,6 +4,7 @@ import (
 	"financetracker/auth"
 	"financetracker/middleware"
 	"financetracker/models"
+	"financetracker/recrules"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,9 +18,50 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	var configs []models.UserConfig
+	_ = h.DB.Find(&configs).Error
+	cfgByUser := make(map[uint]models.UserConfig, len(configs))
+	for _, cfg := range configs {
+		cfgByUser[cfg.UserID] = cfg
+	}
+
 	out := make([]gin.H, 0, len(users))
 	for _, u := range users {
-		out = append(out, publicUser(u))
+		row := publicUser(u)
+		cfg, ok := cfgByUser[u.ID]
+		if !ok {
+			row["recommendation_fluctuation_pct"] = nil
+			row["recommendation_rules_is_override"] = false
+			row["recommendation_rules_count"] = 0
+			row["recommendation_rules"] = nil
+			out = append(out, row)
+			continue
+		}
+
+		hasRulesOverride := cfg.RecommendationRulesJSON != nil &&
+			strings.TrimSpace(*cfg.RecommendationRulesJSON) != ""
+		var fluct any
+		rulesCount := 0
+		var rulesMap any
+		if hasRulesOverride {
+			if rs, err := recrules.Parse(*cfg.RecommendationRulesJSON); err == nil {
+				rulesCount = len(rs.Rules)
+				rulesMap = rs.ToMap()
+				if v := recrules.FluctuationFromRuleset(rs, 0); v > 0 {
+					fluct = v
+				}
+			}
+		}
+		if fluct == nil && cfg.RecommendationFluctuationPct != nil && *cfg.RecommendationFluctuationPct > 0 {
+			fluct = *cfg.RecommendationFluctuationPct
+		}
+
+		row["recommendation_fluctuation_pct"] = fluct
+		row["recommendation_rules_is_override"] = hasRulesOverride
+		row["recommendation_rules_count"] = rulesCount
+		row["recommendation_rules"] = rulesMap
+		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, out)
 }

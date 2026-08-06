@@ -1,0 +1,16 @@
+[Unit]
+Description=FinanceTracker API
+After=network.target postgresql.service
+
+[Service]
+WorkingDirectory=/opt/financetracker
+EnvironmentFile=/opt/financetracker/.env
+ExecStart=/opt/financetracker/financetracker
+Restart=always
+RestartSec=3
+User=opc
+Group=opc
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,10 +1,11 @@
 #!/bin/bash
 # Hot-reload the running Flutter frontend
-# Usage: ./scripts/hot-reload.sh
-#        ./scripts/hot-reload.sh --restart
+# Usage: ./local/scripts/hot-reload.sh
+#        ./local/scripts/hot-reload.sh --restart
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FLUTTER_PID_FILE="$SCRIPT_DIR/logs/flutter.pid"
+LOCAL_DIR="$(dirname "$SCRIPT_DIR")"
+FLUTTER_PID_FILE="$LOCAL_DIR/logs/flutter.pid"
 
 RESTART=0
 if [[ "${1:-}" == "--restart" || "${1:-}" == "-Restart" ]]; then
@@ -13,7 +14,7 @@ fi
 
 if [[ ! -f "$FLUTTER_PID_FILE" ]]; then
   echo "Flutter pid file not found: $FLUTTER_PID_FILE"
-  echo "Start the app with ./scripts/start.sh first."
+  echo "Start the app with ./local/scripts/start.sh first."
   exit 1
 fi
 

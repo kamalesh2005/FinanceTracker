@@ -3,6 +3,7 @@ class Stock {
   final String symbol;
   final String name;
   final String sector;
+  final String industry;
   final String marketCap;
   /// Holding source (e.g. Manual Add, ICICIDirect). One list row per source+stock.
   final String source;
@@ -33,12 +34,16 @@ class Stock {
   final double consensusUpside;
   final String consensusType;
   final DateTime? lastConsensusFetchedDate;
+  final String series;
+  final String listingCategory;
+  final String pullData;
 
   Stock({
     required this.id,
     required this.symbol,
     required this.name,
     this.sector = '',
+    this.industry = '',
     this.marketCap = '',
     this.source = '',
     required this.quantity,
@@ -67,63 +72,70 @@ class Stock {
     this.consensusUpside = 0.0,
     this.consensusType = '',
     this.lastConsensusFetchedDate,
+    this.series = '',
+    this.listingCategory = '',
+    this.pullData = 'N',
   });
+
+  static int _asInt(dynamic value, [int fallback = 0]) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    return int.tryParse(value?.toString() ?? '') ?? fallback;
+  }
+
+  static double _asDouble(dynamic value, [double fallback = 0.0]) {
+    if (value == null) return fallback;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString()) ?? fallback;
+  }
+
+  static DateTime? _asDate(dynamic value) {
+    if (value == null) return null;
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return null;
+    return DateTime.tryParse(raw);
+  }
 
   factory Stock.fromJson(Map<String, dynamic> json) {
     return Stock(
-      id: json['id'],
-      symbol: json['symbol'] ?? '',
-      name: json['name'] ?? '',
-      sector: json['sector'] ?? '',
-      marketCap: json['market_cap'] ?? '',
-      source: json['source'] ?? '',
-      quantity: json['quantity']?.toDouble() ?? 0.0,
-      buyPrice: json['average_buy_price']?.toDouble() ??
-          json['buy_price']?.toDouble() ??
-          0.0,
-      currentPrice: json['current_price']?.toDouble() ?? 0.0,
-      sixthHighestPrice: json['sixth_highest_price']?.toDouble() ?? 0.0,
-      sixthLowestPrice: json['sixth_lowest_price']?.toDouble() ?? 0.0,
-      lastFetchedDate: json['last_fetched_date'] != null
-          ? DateTime.parse(json['last_fetched_date'])
-          : null,
-      lastPriceFetchedDate: json['last_price_fetched_date'] != null
-          ? DateTime.parse(json['last_price_fetched_date'])
-          : null,
-      createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'])
-          : DateTime.now(),
-      updatedAt: json['updated_at'] != null
-          ? DateTime.parse(json['updated_at'])
-          : DateTime.now(),
-      isin: json['isin'],
-      lastBuyPrice: json['last_buy_price']?.toDouble() ?? 0.0,
-      lastBuyDate: json['last_buy_date'] != null
-          ? DateTime.parse(json['last_buy_date'])
-          : null,
-      lastSalePrice: json['last_sale_price']?.toDouble() ?? 0.0,
-      lastSaleDate: json['last_sale_date'] != null
-          ? DateTime.parse(json['last_sale_date'])
-          : null,
-      lastHoldPrice: json['last_hold_price']?.toDouble() ?? 0.0,
-      lastHoldDate: json['last_hold_date'] != null
-          ? DateTime.parse(json['last_hold_date'])
-          : null,
-      setBuyPrice: json['set_buy_price']?.toDouble() ?? 0.0,
-      setProfitBookingPrice:
-          json['set_profit_booking_price']?.toDouble() ?? 0.0,
-      setStopLossPrice: json['set_stop_loss_price']?.toDouble() ?? 0.0,
+      id: _asInt(json['id']),
+      symbol: json['symbol']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      sector: json['sector']?.toString() ?? '',
+      industry: json['industry']?.toString() ?? '',
+      marketCap: json['market_cap']?.toString() ?? '',
+      source: json['source']?.toString() ?? '',
+      quantity: _asDouble(json['quantity']),
+      buyPrice: _asDouble(
+        json['average_buy_price'] ?? json['buy_price'],
+      ),
+      currentPrice: _asDouble(json['current_price']),
+      sixthHighestPrice: _asDouble(json['sixth_highest_price']),
+      sixthLowestPrice: _asDouble(json['sixth_lowest_price']),
+      lastFetchedDate: _asDate(json['last_fetched_date']),
+      lastPriceFetchedDate: _asDate(json['last_price_fetched_date']),
+      createdAt: _asDate(json['created_at']) ?? DateTime.now(),
+      updatedAt: _asDate(json['updated_at']) ?? DateTime.now(),
+      isin: json['isin']?.toString(),
+      lastBuyPrice: _asDouble(json['last_buy_price']),
+      lastBuyDate: _asDate(json['last_buy_date']),
+      lastSalePrice: _asDouble(json['last_sale_price']),
+      lastSaleDate: _asDate(json['last_sale_date']),
+      lastHoldPrice: _asDouble(json['last_hold_price']),
+      lastHoldDate: _asDate(json['last_hold_date']),
+      setBuyPrice: _asDouble(json['set_buy_price']),
+      setProfitBookingPrice: _asDouble(json['set_profit_booking_price']),
+      setStopLossPrice: _asDouble(json['set_stop_loss_price']),
       trendlyneUrl: json['trendlyne_url']?.toString() ?? '',
-      consensusDate: json['consensus_date'] != null
-          ? DateTime.parse(json['consensus_date'])
-          : null,
-      consensusLtp: json['consensus_ltp']?.toDouble() ?? 0.0,
-      consensusTarget: json['consensus_target']?.toDouble() ?? 0.0,
-      consensusUpside: json['consensus_upside']?.toDouble() ?? 0.0,
+      consensusDate: _asDate(json['consensus_date']),
+      consensusLtp: _asDouble(json['consensus_ltp']),
+      consensusTarget: _asDouble(json['consensus_target']),
+      consensusUpside: _asDouble(json['consensus_upside']),
       consensusType: json['consensus_type']?.toString() ?? '',
-      lastConsensusFetchedDate: json['last_consensus_fetched_date'] != null
-          ? DateTime.parse(json['last_consensus_fetched_date'])
-          : null,
+      lastConsensusFetchedDate: _asDate(json['last_consensus_fetched_date']),
+      series: json['series']?.toString() ?? '',
+      listingCategory: json['listing_category']?.toString() ?? '',
+      pullData: json['pull_data']?.toString() ?? 'N',
     );
   }
 

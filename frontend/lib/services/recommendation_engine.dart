@@ -155,7 +155,7 @@ class RecommendationRuleset {
           order: 5,
           recommendation: 'Book Profit',
           condition:
-              '(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95)',
+              '(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95 AND curr_price > avg_buy_price)',
           onMatch: 'continue',
         ),
         RecommendationRule(

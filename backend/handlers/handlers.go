@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"financetracker/dailyclose"
 	"financetracker/middleware"
 	"financetracker/models"
 	"financetracker/trendlyne"
@@ -83,34 +84,47 @@ func needsConsensusRefresh(last *time.Time, today time.Time) bool {
 }
 
 func (h *Handler) stocksWithHoldings(stocks []models.Stock, userID uint) []StockWithDetails {
-	stocksWithDetails := make([]StockWithDetails, 0, len(stocks))
-	for _, stock := range stocks {
-		var positions []models.UserStock
-		h.DB.Where("stock_id = ? AND user_id = ? AND quantity > 0", stock.ID, userID).
-			Order("source asc").
-			Find(&positions)
+	if len(stocks) == 0 {
+		return []StockWithDetails{}
+	}
 
-		for _, pos := range positions {
-			source := strings.TrimSpace(pos.Source)
-			if source == "" {
-				source = models.SourceManualAdd
-			}
-			stocksWithDetails = append(stocksWithDetails, StockWithDetails{
-				Stock:                 stock,
-				Source:                source,
-				Quantity:              pos.Quantity,
-				AverageBuyPrice:       pos.AvgBuyPrice,
-				LastBuyPrice:          pos.LastBuyPrice,
-				LastBuyDate:           pos.LastBuyDate,
-				LastSalePrice:         pos.LastSalePrice,
-				LastSaleDate:          pos.LastSaleDate,
-				LastHoldPrice:         pos.LastHoldPrice,
-				LastHoldDate:          pos.LastHoldDate,
-				SetBuyPrice:           pos.SetBuyPrice,
-				SetProfitBookingPrice: pos.SetProfitBookingPrice,
-				SetStopLossPrice:      pos.SetStopLossPrice,
-			})
+	byID := make(map[uint]models.Stock, len(stocks))
+	ids := make([]uint, 0, len(stocks))
+	for _, stock := range stocks {
+		byID[stock.ID] = stock
+		ids = append(ids, stock.ID)
+	}
+
+	var positions []models.UserStock
+	h.DB.Where("user_id = ? AND quantity > 0 AND stock_id IN ?", userID, ids).
+		Order("stock_id asc, source asc").
+		Find(&positions)
+
+	stocksWithDetails := make([]StockWithDetails, 0, len(positions))
+	for _, pos := range positions {
+		stock, ok := byID[pos.StockID]
+		if !ok {
+			continue
 		}
+		source := strings.TrimSpace(pos.Source)
+		if source == "" {
+			source = models.SourceManualAdd
+		}
+		stocksWithDetails = append(stocksWithDetails, StockWithDetails{
+			Stock:                 stock,
+			Source:                source,
+			Quantity:              pos.Quantity,
+			AverageBuyPrice:       pos.AvgBuyPrice,
+			LastBuyPrice:          pos.LastBuyPrice,
+			LastBuyDate:           pos.LastBuyDate,
+			LastSalePrice:         pos.LastSalePrice,
+			LastSaleDate:          pos.LastSaleDate,
+			LastHoldPrice:         pos.LastHoldPrice,
+			LastHoldDate:          pos.LastHoldDate,
+			SetBuyPrice:           pos.SetBuyPrice,
+			SetProfitBookingPrice: pos.SetProfitBookingPrice,
+			SetStopLossPrice:      pos.SetStopLossPrice,
+		})
 	}
 	return stocksWithDetails
 }
@@ -136,15 +150,9 @@ func (h *Handler) stocksForUser(userID uint) ([]models.Stock, error) {
 // Stock handlers
 func (h *Handler) GetStocks(c *gin.Context) {
 	userID := middleware.CurrentUserID(c)
-	role, _ := c.Get(middleware.ContextRoleKey)
-
-	var stocks []models.Stock
-	var err error
-	if role == models.RoleAdmin {
-		err = h.DB.Find(&stocks).Error
-	} else {
-		stocks, err = h.stocksForUser(userID)
-	}
+	// Always scope to the caller's holdings (one row per source+stock).
+	// Admin catalog browsing uses GET /admin/stocks — never load Global_Stocks here.
+	stocks, err := h.stocksForUser(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -162,26 +170,35 @@ func (h *Handler) CreateStock(c *gin.Context) {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
-	// Fetch sector and market cap from Yahoo Finance if not fetched today
+	if stock.PullData != models.PullDataYes {
+		stock.PullData = models.PullDataNo
+	}
+
+	// Fetch sector, industry, market cap, sixth high/low, and MAs (one Yahoo 1y call) if not fetched today
 	if stock.LastFetchedDate == nil || stock.LastFetchedDate.Before(today) {
-		if sector, err := fetchYahooFinanceSector(stock.Symbol); err == nil {
-			stock.Sector = sector
+		if sector, industry, err := fetchYahooFinanceAssetProfile(stock.Symbol); err == nil {
+			if sector != "" {
+				stock.Sector = sector
+			}
+			if industry != "" {
+				stock.Industry = industry
+			}
 		}
 		if marketCap, err := fetchYahooFinanceMarketCap(stock.Symbol); err == nil {
 			stock.MarketCap = classifyMarketCap(marketCap)
 		}
-
-		fetchedHistorical := false
-		if sixthHighest, err := fetchSixthHighestPrice(stock.Symbol); err == nil {
-			stock.SixthHighestPrice = sixthHighest
-			fetchedHistorical = true
-		}
-		if sixthLowest, err := fetchSixthLowestPrice(stock.Symbol); err == nil {
-			stock.SixthLowestPrice = sixthLowest
-			fetchedHistorical = true
-		}
-		if fetchedHistorical {
+		if res, err := dailyclose.SyncYahooHistory(h.DB, stock.Symbol, resolveYahooSymbol(stock.Symbol), nil, now); err == nil && !res.Skipped {
+			if res.SixthHigh > 0 {
+				stock.SixthHighestPrice = res.SixthHigh
+			}
+			if res.SixthLow > 0 {
+				stock.SixthLowestPrice = res.SixthLow
+			}
+			if res.MA7 > 0 {
+				stock.MA7, stock.MA20, stock.MA50 = res.MA7, res.MA20, res.MA50
+			}
 			stock.LastFetchedDate = &now
+			stock.LastTrendFetchedDate = &now
 		}
 	}
 
@@ -224,6 +241,85 @@ func (h *Handler) LookupStockBySymbol(c *gin.Context) {
 		"name":          stock.Name,
 		"current_price": stock.CurrentPrice,
 	})
+}
+
+// SearchStocks returns Global_Stocks catalog matches for Manual Add autocomplete.
+func (h *Handler) SearchStocks(c *gin.Context) {
+	q := strings.TrimSpace(c.Query("q"))
+	if len(q) < 1 {
+		c.JSON(http.StatusOK, []gin.H{})
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+
+	upperQ := strings.ToUpper(q)
+	likePrefix := upperQ + "%"
+	likeContains := "%" + q + "%"
+	var stocks []models.Stock
+	err := h.DB.
+		Where("UPPER(symbol) LIKE ? OR name ILIKE ?", likePrefix, likeContains).
+		Order("symbol ASC").
+		Limit(limit * 3).
+		Find(&stocks).Error
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	sort.SliceStable(stocks, func(i, j int) bool {
+		si, sj := strings.ToUpper(stocks[i].Symbol), strings.ToUpper(stocks[j].Symbol)
+		pi, pj := strings.HasPrefix(si, upperQ), strings.HasPrefix(sj, upperQ)
+		if pi != pj {
+			return pi
+		}
+		return si < sj
+	})
+	if len(stocks) > limit {
+		stocks = stocks[:limit]
+	}
+
+	out := make([]gin.H, 0, len(stocks))
+	for _, s := range stocks {
+		out = append(out, gin.H{
+			"symbol":        s.Symbol,
+			"name":          s.Name,
+			"current_price": s.CurrentPrice,
+		})
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// markStockPullDataY sets pull_data=Y so Yahoo crons include this catalog row.
+func markStockPullDataY(db *gorm.DB, stockID uint) {
+	if stockID == 0 || db == nil {
+		return
+	}
+	_ = db.Model(&models.Stock{}).
+		Where("id = ? AND pull_data <> ?", stockID, models.PullDataYes).
+		Update("pull_data", models.PullDataYes).Error
+}
+
+// BackfillPullDataFromHoldings sets pull_data=Y for any Global_Stocks row
+// referenced by User_Stocks, and normalizes blank values to N.
+func BackfillPullDataFromHoldings(db *gorm.DB) error {
+	if err := db.Exec(`
+		UPDATE "Global_Stocks"
+		SET pull_data = ?
+		WHERE id IN (SELECT DISTINCT stock_id FROM "User_Stocks")
+		  AND (pull_data IS NULL OR pull_data = '' OR pull_data <> ?)
+	`, models.PullDataYes, models.PullDataYes).Error; err != nil {
+		return err
+	}
+	return db.Exec(`
+		UPDATE "Global_Stocks"
+		SET pull_data = ?
+		WHERE pull_data IS NULL OR pull_data = ''
+	`, models.PullDataNo).Error
 }
 
 func (h *Handler) UpdateStock(c *gin.Context) {
@@ -283,6 +379,7 @@ func (h *Handler) UpdateStockHoldings(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Stock not found"})
 		return
 	}
+	markStockPullDataY(h.DB, stock.ID)
 
 	var userPosCount int64
 	if err := h.DB.Model(&models.UserStock{}).
@@ -396,26 +493,34 @@ func (h *Handler) CreateStocksBulk(c *gin.Context) {
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
 	for i := range stocks {
-		// Fetch sector and market cap from Yahoo Finance if not fetched today
+		if stocks[i].PullData != models.PullDataYes {
+			stocks[i].PullData = models.PullDataNo
+		}
+		// Fetch sector, industry, market cap, sixth high/low, and MAs (one Yahoo 1y call) if not fetched today
 		if stocks[i].LastFetchedDate == nil || stocks[i].LastFetchedDate.Before(today) {
-			if sector, err := fetchYahooFinanceSector(stocks[i].Symbol); err == nil {
-				stocks[i].Sector = sector
+			if sector, industry, err := fetchYahooFinanceAssetProfile(stocks[i].Symbol); err == nil {
+				if sector != "" {
+					stocks[i].Sector = sector
+				}
+				if industry != "" {
+					stocks[i].Industry = industry
+				}
 			}
 			if marketCap, err := fetchYahooFinanceMarketCap(stocks[i].Symbol); err == nil {
 				stocks[i].MarketCap = classifyMarketCap(marketCap)
 			}
-
-			fetchedHistorical := false
-			if sixthHighest, err := fetchSixthHighestPrice(stocks[i].Symbol); err == nil {
-				stocks[i].SixthHighestPrice = sixthHighest
-				fetchedHistorical = true
-			}
-			if sixthLowest, err := fetchSixthLowestPrice(stocks[i].Symbol); err == nil {
-				stocks[i].SixthLowestPrice = sixthLowest
-				fetchedHistorical = true
-			}
-			if fetchedHistorical {
+			if res, err := dailyclose.SyncYahooHistory(h.DB, stocks[i].Symbol, resolveYahooSymbol(stocks[i].Symbol), nil, now); err == nil && !res.Skipped {
+				if res.SixthHigh > 0 {
+					stocks[i].SixthHighestPrice = res.SixthHigh
+				}
+				if res.SixthLow > 0 {
+					stocks[i].SixthLowestPrice = res.SixthLow
+				}
+				if res.MA7 > 0 {
+					stocks[i].MA7, stocks[i].MA20, stocks[i].MA50 = res.MA7, res.MA20, res.MA50
+				}
 				stocks[i].LastFetchedDate = &now
+				stocks[i].LastTrendFetchedDate = &now
 			}
 		}
 	}
@@ -433,9 +538,10 @@ func (h *Handler) findOrCreateStock(symbol, name, isin string) (models.Stock, er
 	if err := h.DB.Where("symbol = ?", symbol).First(&stock).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			stock = models.Stock{
-				Symbol: symbol,
-				ISIN:   rawISIN,
-				Name:   name,
+				Symbol:   symbol,
+				ISIN:     rawISIN,
+				Name:     name,
+				PullData: models.PullDataYes,
 			}
 			h.applyYahooDataWithAutoMapping(&stock, models.SourceFormatManual)
 
@@ -454,6 +560,8 @@ func (h *Handler) findOrCreateStock(symbol, name, isin string) (models.Stock, er
 		stock.ISIN = rawISIN
 		_ = h.DB.Model(&stock).Update("isin", rawISIN)
 	}
+	markStockPullDataY(h.DB, stock.ID)
+	stock.PullData = models.PullDataYes
 	if stock.CurrentPrice == 0 || stock.SixthHighestPrice < 1 || stock.SixthLowestPrice < 1 {
 		h.applyYahooDataWithAutoMapping(&stock, models.SourceFormatManual)
 		h.persistYahooStockFields(&stock)
@@ -461,36 +569,59 @@ func (h *Handler) findOrCreateStock(symbol, name, isin string) (models.Stock, er
 	return stock, nil
 }
 
-func applyYahooDataToStock(symbol string, stock *models.Stock) {
-	now := time.Now()
-	fetchedHistorical := false
+// findCatalogStock looks up an existing Global_Stocks row (no create).
+func (h *Handler) findCatalogStock(symbol string) (models.Stock, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	var stock models.Stock
+	if err := h.DB.Where("UPPER(symbol) = ?", symbol).First(&stock).Error; err != nil {
+		return stock, err
+	}
+	return stock, nil
+}
 
-	if sector, err := fetchYahooFinanceSector(symbol); err == nil {
-		stock.Sector = sector
+func (h *Handler) applyYahooDataToStock(symbol string, stock *models.Stock) {
+	now := time.Now()
+
+	if sector, industry, err := fetchYahooFinanceAssetProfile(symbol); err == nil {
+		if sector != "" {
+			stock.Sector = sector
+		}
+		if industry != "" {
+			stock.Industry = industry
+		}
 	}
 	if marketCap, err := fetchYahooFinanceMarketCap(symbol); err == nil {
 		stock.MarketCap = classifyMarketCap(marketCap)
 	}
-	if sixthHighest, err := fetchSixthHighestPrice(symbol); err == nil {
-		stock.SixthHighestPrice = sixthHighest
-		fetchedHistorical = true
-	}
-	if sixthLowest, err := fetchSixthLowestPrice(symbol); err == nil {
-		stock.SixthLowestPrice = sixthLowest
-		fetchedHistorical = true
+	res, err := dailyclose.SyncYahooHistory(h.DB, stock.Symbol, resolveYahooSymbol(symbol), nil, now)
+	if err == nil {
+		if !res.Skipped {
+			if res.SixthHigh > 0 {
+				stock.SixthHighestPrice = res.SixthHigh
+			}
+			if res.SixthLow > 0 {
+				stock.SixthLowestPrice = res.SixthLow
+			}
+			if res.MA7 > 0 {
+				stock.MA7, stock.MA20, stock.MA50 = res.MA7, res.MA20, res.MA50
+				stock.StockSTDelta, stock.StockMTDelta = res.STDelta, res.MTDelta
+			}
+			stock.LastFetchedDate = &now
+			stock.LastTrendFetchedDate = &now
+		}
+	} else {
+		log.Printf("applyYahooDataToStock [%s]: daily-close sync FAIL: %v", stock.Symbol, err)
 	}
 	if currentPrice, err := fetchYahooFinancePrice(symbol); err == nil {
 		stock.CurrentPrice = currentPrice
 		stock.LastPriceFetchedDate = &now
-	}
-	if fetchedHistorical {
-		stock.LastFetchedDate = &now
 	}
 }
 
 func (h *Handler) persistYahooStockFields(stock *models.Stock) {
 	updates := map[string]interface{}{
 		"sector":                  stock.Sector,
+		"industry":                stock.Industry,
 		"market_cap":              stock.MarketCap,
 		"sixth_highest_price":     stock.SixthHighestPrice,
 		"sixth_lowest_price":      stock.SixthLowestPrice,
@@ -502,7 +633,10 @@ func (h *Handler) persistYahooStockFields(stock *models.Stock) {
 }
 
 func needsYahooHistoricalData(stock *models.Stock) bool {
-	return stock == nil || stock.SixthHighestPrice < 1 || stock.SixthLowestPrice < 1
+	return stock == nil ||
+		stock.SixthHighestPrice < 1 ||
+		stock.SixthLowestPrice < 1 ||
+		strings.TrimSpace(stock.Industry) == ""
 }
 
 func needsYahooAnyData(stock *models.Stock) bool {
@@ -516,7 +650,7 @@ func (h *Handler) applyYahooDataWithAutoMapping(stock *models.Stock, sourceForma
 		return
 	}
 
-	applyYahooDataToStock(stock.Symbol, stock)
+	h.applyYahooDataToStock(stock.Symbol, stock)
 	if !needsYahooAnyData(stock) {
 		return
 	}
@@ -534,7 +668,7 @@ func (h *Handler) applyYahooDataWithAutoMapping(stock *models.Stock, sourceForma
 			mapped := resolveYahooSymbol(stock.Symbol)
 			log.Printf("stock ISIN auto-map result for %s: isin=%s created=%v yahoo=%s", stock.Symbol, isin, createdMapping, mapped)
 			if createdMapping || mapped != stock.Symbol {
-				applyYahooDataToStock(stock.Symbol, stock)
+				h.applyYahooDataToStock(stock.Symbol, stock)
 				log.Printf("stock ISIN auto-map refetch for %s: price=%.2f high6=%.2f low6=%.2f",
 					stock.Symbol, stock.CurrentPrice, stock.SixthHighestPrice, stock.SixthLowestPrice)
 			}
@@ -558,7 +692,7 @@ func (h *Handler) applyYahooDataWithAutoMapping(stock *models.Stock, sourceForma
 	mapped := resolveYahooSymbol(stock.Symbol)
 	log.Printf("stock name auto-map result for %s: name=%q created=%v yahoo=%s", stock.Symbol, name, createdMapping, mapped)
 	if createdMapping || mapped != stock.Symbol {
-		applyYahooDataToStock(stock.Symbol, stock)
+		h.applyYahooDataToStock(stock.Symbol, stock)
 		log.Printf("stock name auto-map refetch for %s: price=%.2f high6=%.2f low6=%.2f",
 			stock.Symbol, stock.CurrentPrice, stock.SixthHighestPrice, stock.SixthLowestPrice)
 	} else {
@@ -583,11 +717,16 @@ func (h *Handler) CreateBuyTransaction(c *gin.Context) {
 	}
 
 	source := normalizeSource(req.Source)
-	stock, err := h.findOrCreateStock(req.Symbol, req.Name, "")
+	stock, err := h.findCatalogStock(req.Symbol)
 	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "symbol not found in catalog; select a stock from suggestions"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	markStockPullDataY(h.DB, stock.ID)
 
 	userID := middleware.CurrentUserID(c)
 	qty := req.Quantity
@@ -674,7 +813,7 @@ func (h *Handler) ReplaceSourceBuyTransactions(c *gin.Context) {
 			}
 		}
 		if createdMapping {
-			applyYahooDataToStock(item.Symbol, &stock)
+			h.applyYahooDataToStock(item.Symbol, &stock)
 			h.persistYahooStockFields(&stock)
 		}
 
@@ -1030,7 +1169,7 @@ func fetchYahooFinancePriceForTicker(nseBase string) (float64, error) {
 	return 0, fmt.Errorf("price not found for %s", nseBase)
 }
 
-func fetchYahooFinanceSector(symbol string) (string, error) {
+func fetchYahooFinanceAssetProfile(symbol string) (sector, industry string, err error) {
 	suffixes := []string{".NS", ".BO", ""}
 	resolved := resolveYahooSymbol(symbol)
 
@@ -1057,7 +1196,8 @@ func fetchYahooFinanceSector(symbol string) (string, error) {
 			QuoteSummary struct {
 				Result []struct {
 					AssetProfile struct {
-						Sector string `json:"sector"`
+						Sector   string `json:"sector"`
+						Industry string `json:"industry"`
 					} `json:"assetProfile"`
 				} `json:"result"`
 				Error interface{} `json:"error"`
@@ -1072,8 +1212,11 @@ func fetchYahooFinanceSector(symbol string) (string, error) {
 		if result.QuoteSummary.Error != nil {
 			continue
 		}
-		if len(result.QuoteSummary.Result) > 0 && result.QuoteSummary.Result[0].AssetProfile.Sector != "" {
-			return result.QuoteSummary.Result[0].AssetProfile.Sector, nil
+		if len(result.QuoteSummary.Result) > 0 {
+			ap := result.QuoteSummary.Result[0].AssetProfile
+			if ap.Sector != "" || ap.Industry != "" {
+				return ap.Sector, ap.Industry, nil
+			}
 		}
 	}
 
@@ -1127,14 +1270,14 @@ func fetchYahooFinanceSector(symbol string) (string, error) {
 		"MID150BEES": "Financial Services",
 	}
 
-	if sector, exists := sectorMap[resolved]; exists {
-		return sector, nil
+	if s, exists := sectorMap[resolved]; exists {
+		return s, "", nil
 	}
-	if sector, exists := sectorMap[symbol]; exists {
-		return sector, nil
+	if s, exists := sectorMap[symbol]; exists {
+		return s, "", nil
 	}
 
-	return "", fmt.Errorf("sector not found for %s", symbol)
+	return "", "", fmt.Errorf("sector not found for %s", symbol)
 }
 
 // classifyMarketCap maps Yahoo marketCap (INR rupees for .NS/.BO) to Indian segment labels.
@@ -1616,13 +1759,52 @@ func stockTrendFromStock(stock models.Stock) StockTrend {
 }
 
 func (h *Handler) fetchAndPersistStockTrend(stock *models.Stock, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta float64, now time.Time) error {
-	currentPrice, ma7, ma20, ma50, stockSTDelta, stockMTDelta, err := fetchMovingAverages(stock.Symbol)
+	res, err := dailyclose.SyncYahooHistory(h.DB, stock.Symbol, resolveYahooSymbol(stock.Symbol), nil, now)
 	if err != nil {
 		return err
 	}
-	applyTrendToStock(stock, currentPrice, ma7, ma20, ma50, sensexMA7, sensexMA20, sensexMA50, stockSTDelta, marketSTDelta, stockMTDelta, marketMTDelta, now)
+	if sensexMA7 == 0 && sensexMA20 == 0 {
+		sensexMA7, sensexMA20, sensexMA50 = stock.SensexMA7, stock.SensexMA20, stock.SensexMA50
+		marketSTDelta, marketMTDelta = stock.MarketSTDelta, stock.MarketMTDelta
+	}
+	price := res.LatestClose
+	if price <= 0 {
+		price = stock.CurrentPrice
+	}
+	applyTrendToStock(stock, price, res.MA7, res.MA20, res.MA50, sensexMA7, sensexMA20, sensexMA50, res.STDelta, marketSTDelta, res.MTDelta, marketMTDelta, now)
+	if !res.Skipped {
+		if res.SixthHigh > 0 {
+			stock.SixthHighestPrice = res.SixthHigh
+		}
+		if res.SixthLow > 0 {
+			stock.SixthLowestPrice = res.SixthLow
+		}
+		stock.LastFetchedDate = &now
+	}
 	h.persistTrendFields(stock)
+	if !res.Skipped && (res.SixthHigh > 0 || res.SixthLow > 0) {
+		_ = h.DB.Model(stock).Updates(map[string]interface{}{
+			"sixth_highest_price": stock.SixthHighestPrice,
+			"sixth_lowest_price":  stock.SixthLowestPrice,
+			"last_fetched_date":   stock.LastFetchedDate,
+		}).Error
+	}
 	return nil
+}
+
+func (h *Handler) syncSensexHistory(now time.Time) (dailyclose.SyncResult, error) {
+	res, err := dailyclose.SyncYahooHistory(h.DB, dailyclose.SensexSymbol, dailyclose.SensexYahooTicker, []string{""}, now)
+	if err != nil {
+		return res, err
+	}
+	if res.MA7 == 0 && res.MA20 == 0 {
+		if ma7, ma20, ma50, _, _, ok := dailyclose.LoadLatestMAs(h.DB, dailyclose.SensexSymbol); ok {
+			res.MA7, res.MA20, res.MA50 = ma7, ma20, ma50
+			res.STDelta = calcDelta(ma7, ma20)
+			res.MTDelta = calcDelta(ma20, ma50)
+		}
+	}
+	return res, nil
 }
 
 type HistoricalDataPoint struct {
@@ -1734,7 +1916,10 @@ func (h *Handler) GetStockTrends(c *gin.Context) {
 
 	var sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta float64
 	if needsFetch {
-		_, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, _ = fetchMovingAverages("^BSESN")
+		if sx, err := h.syncSensexHistory(now); err == nil {
+			sensexMA7, sensexMA20, sensexMA50 = sx.MA7, sx.MA20, sx.MA50
+			marketSTDelta, marketMTDelta = sx.STDelta, sx.MTDelta
+		}
 	}
 
 	for i := range stocks {
@@ -1782,7 +1967,7 @@ func (h *Handler) RefreshStockPrices(c *gin.Context) {
 // already fetched today. Used by POST /stocks/refresh-prices and the daily cron.
 func (h *Handler) RefreshAllStockPricesAndTrends() error {
 	var stocks []models.Stock
-	if err := h.DB.Find(&stocks).Error; err != nil {
+	if err := h.DB.Where("pull_data = ?", models.PullDataYes).Find(&stocks).Error; err != nil {
 		return err
 	}
 
@@ -1791,16 +1976,25 @@ func (h *Handler) RefreshAllStockPricesAndTrends() error {
 	log.Printf("RefreshStockPrices: starting for %d stocks", len(stocks))
 
 	needsAnyTrend := false
+	needsAnyHistorical := false
 	for i := range stocks {
 		if needsTrendData(&stocks[i], today) {
 			needsAnyTrend = true
-			break
+		}
+		if stocks[i].LastFetchedDate == nil || stocks[i].LastFetchedDate.Before(today) || needsYahooHistoricalData(&stocks[i]) {
+			needsAnyHistorical = true
 		}
 	}
 	var sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta float64
-	if needsAnyTrend {
-		_, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, _ = fetchMovingAverages("^BSESN")
-		log.Printf("RefreshStockPrices: Sensex MA7=%.2f MA20=%.2f MA50=%.2f marketSTDelta=%.2f marketMTDelta=%.2f", sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta)
+	if needsAnyTrend || needsAnyHistorical {
+		if sx, err := h.syncSensexHistory(now); err == nil {
+			sensexMA7, sensexMA20, sensexMA50 = sx.MA7, sx.MA20, sx.MA50
+			marketSTDelta, marketMTDelta = sx.STDelta, sx.MTDelta
+			log.Printf("RefreshStockPrices: Sensex MA7=%.2f MA20=%.2f MA50=%.2f marketSTDelta=%.2f marketMTDelta=%.2f skipped=%v",
+				sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, sx.Skipped)
+		} else {
+			log.Printf("RefreshStockPrices: Sensex sync FAIL: %v", err)
+		}
 	}
 
 	for i := range stocks {
@@ -1842,11 +2036,18 @@ func (h *Handler) RefreshAllStockPricesAndTrends() error {
 		needsHistorical := s.LastFetchedDate == nil ||
 			s.LastFetchedDate.Before(today) ||
 			needsYahooHistoricalData(s)
+		needsTrend := needsTrendData(s, today)
 
 		if needsHistorical {
-			if sector, err := fetchYahooFinanceSector(s.Symbol); err == nil {
-				s.Sector = sector
-				h.DB.Model(s).Update("sector", sector)
+			if sector, industry, err := fetchYahooFinanceAssetProfile(s.Symbol); err == nil {
+				if sector != "" {
+					s.Sector = sector
+					h.DB.Model(s).Update("sector", sector)
+				}
+				if industry != "" {
+					s.Industry = industry
+					h.DB.Model(s).Update("industry", industry)
+				}
 			}
 			if s.MarketCap == "" {
 				if marketCap, err := fetchYahooFinanceMarketCap(s.Symbol); err == nil {
@@ -1855,58 +2056,31 @@ func (h *Handler) RefreshAllStockPricesAndTrends() error {
 					h.DB.Model(s).Update("market_cap", label)
 				}
 			}
-
-			fetchedHigh := false
-			fetchedLow := false
-			if sixthHighest, err := fetchSixthHighestPrice(s.Symbol); err == nil {
-				s.SixthHighestPrice = sixthHighest
-				h.DB.Model(s).Update("sixth_highest_price", sixthHighest)
-				fetchedHigh = true
-			} else {
-				log.Printf("RefreshStockPrices [%s]: sixth-high FAIL via %s: %v", s.Symbol, resolveYahooSymbol(s.Symbol), err)
-			}
-			if sixthLowest, err := fetchSixthLowestPrice(s.Symbol); err == nil {
-				s.SixthLowestPrice = sixthLowest
-				h.DB.Model(s).Update("sixth_lowest_price", sixthLowest)
-				fetchedLow = true
-			} else {
-				log.Printf("RefreshStockPrices [%s]: sixth-low FAIL via %s: %v", s.Symbol, resolveYahooSymbol(s.Symbol), err)
-			}
-
-			// Only stamp LastFetchedDate when historical data was retrieved,
-			// so failed symbols (e.g. unmapped tickers) are retried later.
-			if fetchedHigh || fetchedLow {
-				s.LastFetchedDate = &now
-				h.DB.Model(s).Update("last_fetched_date", now)
-			}
-
-			if needsYahooHistoricalData(s) && strings.TrimSpace(s.ISIN) != "" {
-				log.Printf("RefreshStockPrices [%s]: historical still missing — ISIN auto-map retry", s.Symbol)
-				h.applyYahooDataWithAutoMapping(s, models.SourceFormatManual)
-				h.persistYahooStockFields(s)
-			}
-		} else {
-			log.Printf("RefreshStockPrices [%s]: historical skipped (fresh)", s.Symbol)
 		}
 
-		if needsTrendData(s, today) {
+		if needsHistorical || needsTrend {
 			if err := h.fetchAndPersistStockTrend(s, sensexMA7, sensexMA20, sensexMA50, marketSTDelta, marketMTDelta, now); err != nil {
-				log.Printf("RefreshStockPrices [%s]: trend FAIL: %v", s.Symbol, err)
+				log.Printf("RefreshStockPrices [%s]: history/trend FAIL: %v", s.Symbol, err)
+				if needsYahooHistoricalData(s) && strings.TrimSpace(s.ISIN) != "" {
+					log.Printf("RefreshStockPrices [%s]: historical still missing — ISIN auto-map retry", s.Symbol)
+					h.applyYahooDataWithAutoMapping(s, models.SourceFormatManual)
+					h.persistYahooStockFields(s)
+				}
 			} else {
-				log.Printf("RefreshStockPrices [%s]: trend OK %s ma7=%.2f ma20=%.2f ma50=%.2f adjST=%.2f adjMT=%.2f",
-					s.Symbol, s.Trend, s.MA7, s.MA20, s.MA50, s.AdjustedSTDelta, s.AdjustedMTDelta)
+				log.Printf("RefreshStockPrices [%s]: history/trend OK %s ma7=%.2f ma20=%.2f ma50=%.2f high6=%.2f low6=%.2f adjST=%.2f adjMT=%.2f",
+					s.Symbol, s.Trend, s.MA7, s.MA20, s.MA50, s.SixthHighestPrice, s.SixthLowestPrice, s.AdjustedSTDelta, s.AdjustedMTDelta)
 			}
 		} else {
-			log.Printf("RefreshStockPrices [%s]: trend skipped (already fetched today)", s.Symbol)
+			log.Printf("RefreshStockPrices [%s]: history/trend skipped (already fetched today)", s.Symbol)
 		}
 
 		status := "OK"
 		if needsYahooAnyData(s) {
 			status = "INCOMPLETE"
 		}
-		log.Printf("RefreshStockPrices [%s]: DONE status=%s yahoo=%s price=%.2f high6=%.2f low6=%.2f sector=%q mcap=%q priceErr=%q",
+		log.Printf("RefreshStockPrices [%s]: DONE status=%s yahoo=%s price=%.2f high6=%.2f low6=%.2f sector=%q industry=%q mcap=%q priceErr=%q",
 			s.Symbol, status, resolveYahooSymbol(s.Symbol), s.CurrentPrice, s.SixthHighestPrice, s.SixthLowestPrice,
-			s.Sector, s.MarketCap, priceErr)
+			s.Sector, s.Industry, s.MarketCap, priceErr)
 	}
 	log.Printf("RefreshStockPrices: finished %d stocks", len(stocks))
 	return nil
@@ -2092,7 +2266,33 @@ func (h *Handler) GetMutualFunds(c *gin.Context) {
 	if mfs == nil {
 		mfs = []models.MutualFund{}
 	}
+	enrichUserMutualFundsNAV(h.DB, mfs)
 	c.JSON(http.StatusOK, mfs)
+}
+
+func applyCatalogToUserMF(db *gorm.DB, mf *models.MutualFund) error {
+	isin := strings.ToUpper(strings.TrimSpace(mf.ISIN))
+	if isin == "" {
+		return fmt.Errorf("isin is required (select a scheme from the catalog)")
+	}
+	global, err := findGlobalMutualFundByISIN(db, isin)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("isin not found in Global_MutualFunds catalog")
+		}
+		return err
+	}
+	mf.ISIN = global.ISIN
+	if strings.TrimSpace(mf.SchemeCode) == "" {
+		mf.SchemeCode = global.Symbol
+	}
+	if strings.TrimSpace(mf.SchemeName) == "" {
+		mf.SchemeName = global.SchemeName
+	}
+	if mf.CurrentNAV <= 0 && global.CurrentNAV > 0 {
+		mf.CurrentNAV = global.CurrentNAV
+	}
+	return nil
 }
 
 func (h *Handler) CreateMutualFund(c *gin.Context) {
@@ -2105,11 +2305,20 @@ func (h *Handler) CreateMutualFund(c *gin.Context) {
 	if strings.TrimSpace(mf.Source) == "" {
 		mf.Source = models.SourceManualAdd
 	}
+	if h.userUsesWatchList(mf.UserID) {
+		mf.Quantity = 1
+	}
+	if err := applyCatalogToUserMF(h.DB, &mf); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.DB.Create(&mf).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, mf)
+	list := []models.MutualFund{mf}
+	enrichUserMutualFundsNAV(h.DB, list)
+	c.JSON(http.StatusCreated, list[0])
 }
 
 func (h *Handler) GetMutualFund(c *gin.Context) {
@@ -2120,17 +2329,20 @@ func (h *Handler) GetMutualFund(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Mutual Fund not found"})
 		return
 	}
-	c.JSON(http.StatusOK, mf)
+	list := []models.MutualFund{mf}
+	enrichUserMutualFundsNAV(h.DB, list)
+	c.JSON(http.StatusOK, list[0])
 }
 
 func (h *Handler) UpdateMutualFund(c *gin.Context) {
 	userID := middleware.CurrentUserID(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 32)
-	var mf models.MutualFund
-	if err := h.DB.Where("id = ? AND user_id = ?", uint(id), userID).First(&mf).Error; err != nil {
+	var existing models.MutualFund
+	if err := h.DB.Where("id = ? AND user_id = ?", uint(id), userID).First(&existing).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Mutual Fund not found"})
 		return
 	}
+	var mf models.MutualFund
 	if err := c.ShouldBindJSON(&mf); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -2140,11 +2352,26 @@ func (h *Handler) UpdateMutualFund(c *gin.Context) {
 	if strings.TrimSpace(mf.Source) == "" {
 		mf.Source = models.SourceManualAdd
 	}
+	if h.userUsesWatchList(userID) {
+		mf.Quantity = 1
+	}
+	// Legacy rows without ISIN may keep free-text edit until linked.
+	if strings.TrimSpace(mf.ISIN) == "" && strings.TrimSpace(existing.ISIN) != "" {
+		mf.ISIN = existing.ISIN
+	}
+	if strings.TrimSpace(mf.ISIN) != "" {
+		if err := applyCatalogToUserMF(h.DB, &mf); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	if err := h.DB.Save(&mf).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, mf)
+	list := []models.MutualFund{mf}
+	enrichUserMutualFundsNAV(h.DB, list)
+	c.JSON(http.StatusOK, list[0])
 }
 
 func (h *Handler) DeleteMutualFund(c *gin.Context) {
@@ -2172,6 +2399,7 @@ func (h *Handler) GetPortfolio(c *gin.Context) {
 	}
 	var mfs []models.MutualFund
 	h.DB.Where("user_id = ?", userID).Find(&mfs)
+	enrichUserMutualFundsNAV(h.DB, mfs)
 
 	c.JSON(http.StatusOK, gin.H{
 		"stocks":       h.stocksWithHoldings(stocks, userID),
@@ -2181,66 +2409,123 @@ func (h *Handler) GetPortfolio(c *gin.Context) {
 
 func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 	userID := middleware.CurrentUserID(c)
-	stocks, err := h.stocksForUser(userID)
-	if err != nil {
+
+	// Build stock totals directly from User_Stocks so every source/account is included,
+	// independent of catalog-wide queries or N+1 lookups.
+	var positions []models.UserStock
+	if err := h.DB.Where("user_id = ? AND quantity > 0", userID).Find(&positions).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	stockIDs := make([]uint, 0, len(positions))
+	seenStock := map[uint]struct{}{}
+	for _, pos := range positions {
+		if _, ok := seenStock[pos.StockID]; ok {
+			continue
+		}
+		seenStock[pos.StockID] = struct{}{}
+		stockIDs = append(stockIDs, pos.StockID)
+	}
+	priceByID := map[uint]float64{}
+	if len(stockIDs) > 0 {
+		var stocks []models.Stock
+		if err := h.DB.Select("id, current_price").Where("id IN ?", stockIDs).Find(&stocks).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, s := range stocks {
+			priceByID[s.ID] = s.CurrentPrice
+		}
+	}
+
 	var mfs []models.MutualFund
 	h.DB.Where("user_id = ?", userID).Find(&mfs)
 
+	seenMF := map[string]struct{}{}
+	for _, mf := range mfs {
+		key := strings.TrimSpace(mf.SchemeCode)
+		if key == "" {
+			key = fmt.Sprintf("id:%d", mf.ID)
+		}
+		seenMF[key] = struct{}{}
+	}
+
 	totalInvested := 0.0
 	currentValue := 0.0
-	stockCount := 0
+	stockCount := len(seenStock)
+	mfCount := len(seenMF)
 
 	type sourceTotals struct {
 		invested float64
 		current  float64
+		count    int
 	}
 	bySourceMap := map[string]sourceTotals{}
 	byMFSourceMap := map[string]sourceTotals{}
+	seenStockBySource := map[string]map[uint]struct{}{}
+	seenMFBySource := map[string]map[string]struct{}{}
 
-	for _, stock := range stocks {
-		var positions []models.UserStock
-		h.DB.Where("stock_id = ? AND user_id = ? AND quantity > 0", stock.ID, userID).Find(&positions)
-		if len(positions) > 0 {
-			stockCount++
+	for _, pos := range positions {
+		src := strings.TrimSpace(pos.Source)
+		if src == "" {
+			src = models.SourceManualAdd
 		}
-
-		stockQuantity := 0.0
-		stockInvested := 0.0
-
-		for _, pos := range positions {
-			stockQuantity += pos.Quantity
-			stockInvested += pos.AvgBuyPrice * pos.Quantity
-
-			src := pos.Source
-			if src == "" {
-				src = models.SourceManualAdd
-			}
-			t := bySourceMap[src]
-			t.invested += pos.AvgBuyPrice * pos.Quantity
-			t.current += stock.CurrentPrice * pos.Quantity
-			bySourceMap[src] = t
-		}
-
-		totalInvested += stockInvested
-		currentValue += stock.CurrentPrice * stockQuantity
-	}
-
-	for _, mf := range mfs {
-		invested := mf.NAV * mf.Quantity
-		current := mf.CurrentNAV * mf.Quantity
+		invested := pos.AvgBuyPrice * pos.Quantity
+		current := priceByID[pos.StockID] * pos.Quantity
 		totalInvested += invested
 		currentValue += current
 
-		src := mf.Source
+		t := bySourceMap[src]
+		t.invested += invested
+		t.current += current
+		bySourceMap[src] = t
+
+		seen := seenStockBySource[src]
+		if seen == nil {
+			seen = map[uint]struct{}{}
+			seenStockBySource[src] = seen
+		}
+		seen[pos.StockID] = struct{}{}
+	}
+
+	navCache := map[string]float64{}
+	for _, mf := range mfs {
+		invested := mf.NAV * mf.Quantity
+		currentNAV := resolveMFCurrentNAV(h.DB, mf, navCache)
+		current := currentNAV * mf.Quantity
+		totalInvested += invested
+		currentValue += current
+
+		src := strings.TrimSpace(mf.Source)
 		if src == "" {
 			src = models.SourceManualAdd
 		}
 		t := byMFSourceMap[src]
 		t.invested += invested
 		t.current += current
+		byMFSourceMap[src] = t
+
+		key := strings.TrimSpace(mf.SchemeCode)
+		if key == "" {
+			key = fmt.Sprintf("id:%d", mf.ID)
+		}
+		seen := seenMFBySource[src]
+		if seen == nil {
+			seen = map[string]struct{}{}
+			seenMFBySource[src] = seen
+		}
+		seen[key] = struct{}{}
+	}
+
+	for src, seen := range seenStockBySource {
+		t := bySourceMap[src]
+		t.count = len(seen)
+		bySourceMap[src] = t
+	}
+	for src, seen := range seenMFBySource {
+		t := byMFSourceMap[src]
+		t.count = len(seen)
 		byMFSourceMap[src] = t
 	}
 
@@ -2267,6 +2552,7 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		}
 		bySource = append(bySource, gin.H{
 			"source":                 name,
+			"count":                  t.count,
 			"total_invested":         t.invested,
 			"current_value":          t.current,
 			"profit_loss":            pl,
@@ -2290,6 +2576,7 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		}
 		byMFSource = append(byMFSource, gin.H{
 			"source":                 name,
+			"count":                  t.count,
 			"total_invested":         t.invested,
 			"current_value":          t.current,
 			"profit_loss":            pl,
@@ -2303,6 +2590,7 @@ func (h *Handler) GetPortfolioSummary(c *gin.Context) {
 		"profit_loss":            profitLoss,
 		"profit_loss_percentage": profitLossPct,
 		"stock_count":            stockCount,
+		"mf_count":               mfCount,
 		"by_source":              bySource,
 		"by_mf_source":           byMFSource,
 	})

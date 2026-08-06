@@ -1,9 +1,20 @@
 #!/bin/bash
 
 # Stop Finance Tracker Application
+# Use --restart to stop, then rebuild and start again in RELEASE mode.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PID_FILE="$SCRIPT_DIR/.app.pids"
+LOCAL_DIR="$(dirname "$SCRIPT_DIR")"
+PID_FILE="$LOCAL_DIR/logs/.app.pids"
+
+RESTART=0
+DEBUG=0
+for arg in "$@"; do
+  case "$arg" in
+    --restart|-Restart) RESTART=1 ;;
+    --debug|-Debug) DEBUG=1 ;;
+  esac
+done
 
 echo "Stopping Finance Tracker application..."
 
@@ -34,3 +45,14 @@ echo "Stopping Flutter frontend..."
 pkill -f "flutter run" 2>/dev/null || true
 
 echo "All processes stopped."
+
+if [[ "$RESTART" -eq 1 ]]; then
+  echo ""
+  if [[ "$DEBUG" -eq 1 ]]; then
+    echo "Rebuilding and restarting in DEBUG mode..."
+    "$SCRIPT_DIR/start.sh" --debug
+  else
+    echo "Rebuilding and restarting in RELEASE mode..."
+    "$SCRIPT_DIR/start.sh"
+  fi
+fi

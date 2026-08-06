@@ -1,10 +1,13 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import '../widgets/app_brand_title.dart';
+import '../widgets/turnstile_widget.dart';
 
 final _usernameFormat = RegExp(r'^[a-zA-Z0-9_]{3,64}$');
+const _turnstileSiteKeyDefault = '0x4AAAAAAEE_unN60Se7PnnB';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -21,6 +24,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
   final _usernameFocus = FocusNode();
+  final _turnstileController = TurnstileController();
 
   bool _submitting = false;
   bool _obscure = true;
@@ -29,12 +33,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
   String? _usernameStatus; // null | available | taken | error | invalid
   int _checkGeneration = 0;
 
+  bool _captchaLoading = true;
+  bool _captchaEnabled = false;
+  String? _turnstileSiteKey;
+  String? _turnstileToken;
+  String? _captchaLoadError;
+
   @override
   void initState() {
     super.initState();
     _usernameFocus.addListener(_onUsernameFocusChange);
     _emailController.addListener(_onContactChanged);
     _mobileController.addListener(_onContactChanged);
+    _loadCaptchaConfig();
   }
 
   @override
@@ -49,6 +60,29 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _passwordController.dispose();
     _confirmController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadCaptchaConfig() async {
+    try {
+      final cfg = await ApiService.captchaConfig();
+      if (!mounted) return;
+      final siteKey = (cfg['turnstileSiteKey'] as String?)?.trim();
+      setState(() {
+        _captchaLoading = false;
+        _captchaEnabled = true;
+        _turnstileSiteKey =
+            (siteKey != null && siteKey.isNotEmpty) ? siteKey : _turnstileSiteKeyDefault;
+        _captchaLoadError = null;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _captchaLoading = false;
+        _captchaEnabled = true;
+        _turnstileSiteKey = _turnstileSiteKeyDefault;
+        _captchaLoadError = null;
+      });
+    }
   }
 
   void _onContactChanged() {
@@ -109,13 +143,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _usernameAvailable = available;
         _usernameStatus = available ? 'available' : 'taken';
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted || gen != _checkGeneration) return;
+      final msg = e.toString().replaceFirst('Exception: ', '');
       setState(() {
         _checkingUsername = false;
         _usernameAvailable = false;
         _usernameStatus = 'error';
       });
+      if (msg.toLowerCase().contains('too many')) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      }
     }
   }
 
@@ -124,8 +162,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _mobileController.text.trim().isNotEmpty;
   }
 
+  bool get _captchaOk {
+    if (_captchaLoading) return false;
+    if (!_captchaEnabled) return true;
+    if (!kIsWeb) return false;
+    return _turnstileToken != null && _turnstileToken!.isNotEmpty;
+  }
+
   bool get _canSubmit =>
-      _usernameAvailable && !_checkingUsername && !_submitting;
+      _usernameAvailable && !_checkingUsername && !_submitting && _captchaOk;
 
   Future<void> _submit() async {
     if (!_canSubmit) return;
@@ -137,12 +182,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
           email: _emailController.text.trim(),
           mobile: _mobileController.text.trim(),
           password: _passwordController.text,
+          turnstileToken: _turnstileToken,
         );
     if (!mounted) return;
     setState(() => _submitting = false);
     if (!ok) {
       final err = context.read<AuthProvider>().error ?? 'Registration failed';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+      _turnstileController.reset();
+      setState(() => _turnstileToken = null);
     } else {
       Navigator.of(context).popUntil((route) => route.isFirst);
     }
@@ -195,6 +243,42 @@ class _RegisterScreenState extends State<RegisterScreen> {
           style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
         );
     }
+  }
+
+  Widget _captchaSection() {
+    if (_captchaLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 8),
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+    if (_captchaLoadError != null && !_captchaEnabled) {
+      return Text(
+        _captchaLoadError!,
+        style: TextStyle(color: Colors.orange.shade800, fontSize: 12),
+      );
+    }
+    if (!_captchaEnabled) {
+      return const SizedBox.shrink();
+    }
+    final siteKey = _turnstileSiteKey;
+    if (siteKey == null || siteKey.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return TurnstileWidget(
+      siteKey: siteKey,
+      controller: _turnstileController,
+      onTokenChanged: (token) {
+        if (!mounted || token == _turnstileToken) return;
+        setState(() => _turnstileToken = token);
+      },
+    );
   }
 
   @override
@@ -298,7 +382,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       labelText: 'Password',
                       border: const OutlineInputBorder(),
                       suffixIcon: IconButton(
-                        icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
+                        icon: Icon(
+                            _obscure ? Icons.visibility : Icons.visibility_off),
                         onPressed: () => setState(() => _obscure = !_obscure),
                       ),
                     ),
@@ -325,6 +410,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
                       return null;
                     },
                   ),
+                  const SizedBox(height: 16),
+                  _captchaSection(),
+                  if (_captchaEnabled && !_captchaLoading) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _turnstileToken == null || _turnstileToken!.isEmpty
+                          ? 'Complete the captcha above to enable Register'
+                          : 'Captcha verified — you can register',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _turnstileToken == null || _turnstileToken!.isEmpty
+                            ? Colors.orange.shade800
+                            : Colors.green.shade700,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 24),
                   FilledButton(
                     onPressed: _canSubmit ? _submit : null,

@@ -5,43 +5,59 @@ import (
 	"time"
 )
 
+const (
+	PullDataYes = "Y"
+	PullDataNo  = "N"
+)
+
 type Stock struct {
-	ID                   uint        `json:"id" gorm:"primaryKey"`
-	Symbol               string      `json:"symbol" gorm:"not null;uniqueIndex"`
-	ISIN                 string      `json:"isin" gorm:"size:64;index"`
-	Name                 string      `json:"name"`
-	Sector               string      `json:"sector"`
-	MarketCap            string      `json:"market_cap"` // "Large Cap" | "Mid Cap" | "Small Cap" | ""
-	CurrentPrice         float64     `json:"current_price"`
-	SixthHighestPrice    float64     `json:"sixth_highest_price"`
-	SixthLowestPrice     float64     `json:"sixth_lowest_price"`
-	MA7                  float64     `json:"ma7"`
-	MA20                 float64     `json:"ma20"`
-	MA50                 float64     `json:"ma50"`
-	SensexMA7            float64     `json:"sensex_ma7"`
-	SensexMA20           float64     `json:"sensex_ma20"`
-	SensexMA50           float64     `json:"sensex_ma50"`
-	StockSTDelta         float64     `json:"stock_st_delta"`
-	MarketSTDelta        float64     `json:"market_st_delta"`
-	AdjustedSTDelta      float64     `json:"adjusted_st_delta"`
-	StockMTDelta         float64     `json:"stock_mt_delta"`
-	MarketMTDelta        float64     `json:"market_mt_delta"`
-	AdjustedMTDelta      float64     `json:"adjusted_mt_delta"`
-	Trend                string      `json:"trend"`
-	LastFetchedDate      *time.Time  `json:"last_fetched_date"`
-	LastPriceFetchedDate *time.Time  `json:"last_price_fetched_date"`
-	LastTrendFetchedDate *time.Time  `json:"last_trend_fetched_date"`
+	ID                   uint       `json:"id" gorm:"primaryKey"`
+	Symbol               string     `json:"symbol" gorm:"not null;uniqueIndex"`
+	ISIN                 string     `json:"isin" gorm:"size:64;index"`
+	Name                 string     `json:"name"`
+	Sector               string     `json:"sector"`
+	Industry             string     `json:"industry"`
+	MarketCap            string     `json:"market_cap"` // "Large Cap" | "Mid Cap" | "Small Cap" | ""
+	CurrentPrice         float64    `json:"current_price"`
+	SixthHighestPrice    float64    `json:"sixth_highest_price"`
+	SixthLowestPrice     float64    `json:"sixth_lowest_price"`
+	MA7                  float64    `json:"ma7"`
+	MA20                 float64    `json:"ma20"`
+	MA50                 float64    `json:"ma50"`
+	SensexMA7            float64    `json:"sensex_ma7"`
+	SensexMA20           float64    `json:"sensex_ma20"`
+	SensexMA50           float64    `json:"sensex_ma50"`
+	StockSTDelta         float64    `json:"stock_st_delta"`
+	MarketSTDelta        float64    `json:"market_st_delta"`
+	AdjustedSTDelta      float64    `json:"adjusted_st_delta"`
+	StockMTDelta         float64    `json:"stock_mt_delta"`
+	MarketMTDelta        float64    `json:"market_mt_delta"`
+	AdjustedMTDelta      float64    `json:"adjusted_mt_delta"`
+	Trend                string     `json:"trend"`
+	LastFetchedDate      *time.Time `json:"last_fetched_date"`
+	LastPriceFetchedDate *time.Time `json:"last_price_fetched_date"`
+	LastTrendFetchedDate *time.Time `json:"last_trend_fetched_date"`
+	// NSE catalog fields (from exchange CSV imports).
+	TradeDate       *time.Time `json:"trade_date"`
+	Series          string     `json:"series" gorm:"size:16"`
+	ListingCategory string     `json:"listing_category" gorm:"size:32"`
+	LastTradeDate   *time.Time `json:"last_trade_date"`
+	FaceValue       float64    `json:"face_value"`
+	IssueSize       float64    `json:"issue_size"`
+	MarketCapRs     float64    `json:"market_cap_rs"`
+	// PullData gates Yahoo crons: Y when any user holds the symbol, else N.
+	PullData string `json:"pull_data" gorm:"size:1;not null;default:N;index"`
 	// Trendlyne consensus target (scraped from research-reports page).
-	TrendlyneURL              string     `json:"trendlyne_url" gorm:"size:512"`
-	ConsensusDate             *time.Time `json:"consensus_date"`
-	ConsensusLTP              float64    `json:"consensus_ltp"`
-	ConsensusTarget           float64    `json:"consensus_target"`
-	ConsensusUpside           float64    `json:"consensus_upside"`
-	ConsensusType             string     `json:"consensus_type" gorm:"size:32"`
-	LastConsensusFetchedDate  *time.Time `json:"last_consensus_fetched_date"`
-	CreatedAt                 time.Time  `json:"created_at"`
-	UpdatedAt                 time.Time  `json:"updated_at"`
-	UserStocks                []UserStock `json:"user_stocks,omitempty" gorm:"foreignKey:StockID"`
+	TrendlyneURL             string      `json:"trendlyne_url" gorm:"size:512"`
+	ConsensusDate            *time.Time  `json:"consensus_date"`
+	ConsensusLTP             float64     `json:"consensus_ltp"`
+	ConsensusTarget          float64     `json:"consensus_target"`
+	ConsensusUpside          float64     `json:"consensus_upside"`
+	ConsensusType            string      `json:"consensus_type" gorm:"size:32"`
+	LastConsensusFetchedDate *time.Time  `json:"last_consensus_fetched_date"`
+	CreatedAt                time.Time   `json:"created_at"`
+	UpdatedAt                time.Time   `json:"updated_at"`
+	UserStocks               []UserStock `json:"user_stocks,omitempty" gorm:"foreignKey:StockID"`
 	// Legacy fields for migration - will be removed after migration
 	LegacyQuantity     float64   `json:"-" gorm:"column:quantity"`
 	LegacyBuyPrice     float64   `json:"-" gorm:"column:buy_price"`
@@ -110,19 +126,38 @@ type UserStockTransaction struct {
 	Stock            Stock           `json:"stock" gorm:"foreignKey:StockID"`
 }
 
+// GlobalMutualFund is the shared MF catalog (ISIN unique).
+type GlobalMutualFund struct {
+	ID                 uint       `json:"id" gorm:"primaryKey"`
+	ISIN               string     `json:"isin" gorm:"size:64;not null;uniqueIndex"`
+	Symbol             string     `json:"symbol" gorm:"size:32;index"` // scheme code
+	SchemeName         string     `json:"scheme_name"`
+	Series             string     `json:"series" gorm:"size:16"`
+	Type               string     `json:"type" gorm:"size:16"`
+	Haircut            float64    `json:"haircut"`
+	AcceptableQuantity float64    `json:"acceptable_quantity"`
+	ApplicableHaircut  string     `json:"applicable_haircut" gorm:"size:128"`
+	CurrentNAV         float64    `json:"current_nav"`
+	LastNAVDate        *time.Time `json:"last_nav_date"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
 type MutualFund struct {
-	ID           uint      `json:"id" gorm:"primaryKey"`
-	UserID       uint      `json:"user_id" gorm:"not null;index;default:0"`
-	SchemeCode   string    `json:"scheme_code" gorm:"not null"`
-	SchemeName   string    `json:"scheme_name"`
-	FundHouse    string    `json:"fund_house"`
-	Source       string    `json:"source" gorm:"not null;index;size:64;default:Manual Add"`
-	Quantity     float64   `json:"quantity" gorm:"not null"`
-	NAV          float64   `json:"nav" gorm:"not null"`
-	CurrentNAV   float64   `json:"current_nav"`
-	PurchaseDate time.Time `json:"purchase_date"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	UserID           uint      `json:"user_id" gorm:"not null;index;default:0"`
+	ISIN             string    `json:"isin" gorm:"size:64;index"`
+	SchemeCode       string    `json:"scheme_code" gorm:"not null"`
+	SchemeName       string    `json:"scheme_name"`
+	SourceSchemeName string    `json:"source_scheme_name" gorm:"size:512;index"`
+	FundHouse        string    `json:"fund_house"`
+	Source           string    `json:"source" gorm:"not null;index;size:64;default:Manual Add"`
+	Quantity         float64   `json:"quantity" gorm:"not null"`
+	NAV              float64   `json:"nav" gorm:"not null"`
+	CurrentNAV       float64   `json:"current_nav"`
+	PurchaseDate     time.Time `json:"purchase_date"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // UserConfig stores per-user UI preferences.
@@ -207,8 +242,41 @@ type SymbolMapping struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// MFSchemeMapping maps broker scheme names that do not match Global_MutualFunds.scheme_name
+// to a catalog ISIN. Empty MappedISIN means the row still needs admin attention.
+type MFSchemeMapping struct {
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	SourceSchemeName string    `json:"source_scheme_name" gorm:"not null;uniqueIndex;size:512"`
+	MappedISIN       string    `json:"mapped_isin" gorm:"size:64;index"`
+	SourceFormat     string    `json:"source_format" gorm:"index;size:64"`
+	Notes            string    `json:"notes"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 const (
 	SourceFormatICICIDirect = "ICICIDirect"
 	SourceFormatNSE         = "NSE"
 	SourceFormatManual      = "Manual"
 )
+
+// StockDailyClose is one trading-day close for a symbol (including SENSEX).
+type StockDailyClose struct {
+	ID            uint      `json:"id" gorm:"primaryKey"`
+	TradeDate     time.Time `json:"trade_date" gorm:"type:date;not null;uniqueIndex:idx_daily_close_sym_date"`
+	Symbol        string    `json:"symbol" gorm:"size:64;not null;uniqueIndex:idx_daily_close_sym_date;index"`
+	ClosingPrice  float64   `json:"closing_price"`
+	IsLatest      bool      `json:"is_latest" gorm:"index"`
+	MA7           float64   `json:"ma7"`
+	MA20          float64   `json:"ma20"`
+	MA50          float64   `json:"ma50"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// StockDailyCloseSync gates Yahoo history fetches to once per calendar day per symbol.
+type StockDailyCloseSync struct {
+	Symbol               string     `json:"symbol" gorm:"primaryKey;size:64"`
+	LastYahooFetchedDate *time.Time `json:"last_yahoo_fetched_date"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
