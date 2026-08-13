@@ -24,7 +24,8 @@ class StocksScreen extends StatefulWidget {
 class _StocksScreenState extends State<StocksScreen> {
   bool _isTableView = true;
 
-  /// null = default multi-key sort (Industry → Market Cap → Symbol → Account)
+  /// null = default multi-key sort (Industry → Market Cap → Symbol → Account).
+  /// Card layout always sorts by Symbol instead.
   String? _sortColumn;
   bool _sortAscending = true;
 
@@ -61,7 +62,7 @@ class _StocksScreenState extends State<StocksScreen> {
   String? _selectedMarketCap;
   String? _selectedSource;
   String? _selectedRecommendation;
-  bool _onlyStocksToAction = false;
+  bool _onlyStocksToAction = true;
 
   static const double _headerHeight = 48;
   static const double _rowHeight = 90;
@@ -361,7 +362,10 @@ class _StocksScreenState extends State<StocksScreen> {
                 return const Center(child: Text('No stocks added yet'));
               }
 
-              final stocks = _filteredAndSortedStocks(provider);
+              final stocks = _filteredAndSortedStocks(
+                provider,
+                sortBySymbol: !showTableView,
+              );
               final hasFilters = _hasActiveFilters;
 
               return Column(
@@ -743,7 +747,10 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  List<Stock> _filteredAndSortedStocks(FinanceProvider provider) {
+  List<Stock> _filteredAndSortedStocks(
+    FinanceProvider provider, {
+    bool sortBySymbol = false,
+  }) {
     final filtered = provider.stocks.where((stock) {
       if (_selectedIndustry != null &&
           _industryKey(stock) != _selectedIndustry) {
@@ -778,7 +785,7 @@ class _StocksScreenState extends State<StocksScreen> {
       }
       return true;
     }).toList();
-    return _sortedStocks(filtered, provider);
+    return _sortedStocks(filtered, provider, sortBySymbol: sortBySymbol);
   }
 
   String _getRecommendation(Stock stock, StockTrend? trend) {
@@ -2939,9 +2946,17 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  List<Stock> _sortedStocks(List<Stock> input, FinanceProvider provider) {
+  List<Stock> _sortedStocks(
+    List<Stock> input,
+    FinanceProvider provider, {
+    bool sortBySymbol = false,
+  }) {
     final stocks = List<Stock>.from(input);
-    if (_sortColumn == null) {
+    if (sortBySymbol) {
+      stocks.sort(
+        (a, b) => a.symbol.toLowerCase().compareTo(b.symbol.toLowerCase()),
+      );
+    } else if (_sortColumn == null) {
       stocks.sort(_defaultStockCompare);
     } else {
       stocks.sort((a, b) {

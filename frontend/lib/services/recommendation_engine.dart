@@ -212,7 +212,7 @@ class RecommendationEngine {
       parts.add(rule.recommendation);
     }
     if (parts.isEmpty) return 'NO ACTION REQD';
-    return parts.join(' & ');
+    return parts.join(' OR ');
   }
 
   static Map<String, dynamic> _buildContext(

@@ -213,7 +213,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
         Text('Rules', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 4),
         Text(
-          'Evaluated top to bottom. Exit stops; Continue may combine labels with &.',
+          'Evaluated top to bottom. Exit stops; Continue may combine labels with OR.',
           style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
         ),
         const SizedBox(height: 8),
