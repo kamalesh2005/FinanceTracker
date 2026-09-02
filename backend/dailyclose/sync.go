@@ -236,14 +236,13 @@ func UpsertClose(db *gorm.DB, symbol string, tradeDate time.Time, price float64)
 		}
 	}
 
-	var maxDate time.Time
-	if err = db.Model(&models.StockDailyClose{}).Where("symbol = ?", symbol).
-		Select("MAX(trade_date)").Scan(&maxDate).Error; err != nil {
+	var latest models.StockDailyClose
+	if err = db.Where("symbol = ?", symbol).Order("trade_date DESC").First(&latest).Error; err != nil {
 		return created, err
 	}
 	_ = db.Model(&models.StockDailyClose{}).Where("symbol = ?", symbol).Update("is_latest", false).Error
 	_ = db.Model(&models.StockDailyClose{}).
-		Where("symbol = ? AND trade_date = ?", symbol, maxDate).
+		Where("symbol = ? AND trade_date = ?", symbol, latest.TradeDate).
 		Update("is_latest", true).Error
 	return created, nil
 }

@@ -22,6 +22,11 @@ type Result struct {
 	Errors  int `json:"errors"`
 }
 
+type catalogRow struct {
+	stock   models.Stock
+	updates map[string]interface{}
+}
+
 func parseNSEDate(raw string) *time.Time {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -35,16 +40,17 @@ func parseNSEDate(raw string) *time.Time {
 	return nil
 }
 
-func parseFloat(raw string) float64 {
+func parseFloat(raw string) (float64, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return 0
+		return 0, false
 	}
+	raw = strings.ReplaceAll(raw, ",", "")
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return v
+	return v, true
 }
 
 func colIndex(header []string, names ...string) int {
@@ -70,7 +76,36 @@ func cell(row []string, idx int) string {
 	return strings.TrimSpace(row[idx])
 }
 
-// ImportCSV upserts Global_Stocks from an NSE_All-style CSV reader.
+func setString(updates map[string]interface{}, column, value string, assign func(string)) {
+	if value == "" {
+		return
+	}
+	assign(value)
+	updates[column] = value
+}
+
+func setFloat(updates map[string]interface{}, column, raw string, assign func(float64)) {
+	v, ok := parseFloat(raw)
+	if !ok {
+		return
+	}
+	assign(v)
+	updates[column] = v
+}
+
+func setDate(updates map[string]interface{}, column, raw string, assign func(*time.Time)) {
+	t := parseNSEDate(raw)
+	if t == nil {
+		return
+	}
+	assign(t)
+	updates[column] = *t
+}
+
+// ImportCSV upserts Global_Stocks from an NSE_All or Nifty constituent CSV.
+// Required headers: Symbol, and a name column (Security Name or Company Name).
+// Close price and Industry are optional. Only columns present with a value are written,
+// so a Nifty upload does not zero prices or wipe listing fields.
 // Does not overwrite pull_data=Y with N. Skips footer aggregate rows.
 func ImportCSV(db *gorm.DB, r io.Reader) (Result, error) {
 	var out Result
@@ -84,8 +119,9 @@ func ImportCSV(db *gorm.DB, r io.Reader) (Result, error) {
 	}
 
 	iSymbol := colIndex(header, "Symbol")
-	iName := colIndex(header, "Security Name")
+	iName := colIndex(header, "Security Name", "Company Name")
 	iClose := colIndex(header, "Close Price/Paid up value(Rs.)")
+	iIndustry := colIndex(header, "Industry")
 	iTradeDate := colIndex(header, "Trade Date")
 	iSeries := colIndex(header, "Series")
 	iCategory := colIndex(header, "Category")
@@ -94,13 +130,13 @@ func ImportCSV(db *gorm.DB, r io.Reader) (Result, error) {
 	iIssue := colIndex(header, "Issue Size")
 	iMcap := colIndex(header, "Market Cap(Rs.)")
 
-	if iSymbol < 0 || iName < 0 || iClose < 0 {
-		return out, fmt.Errorf("csv missing required columns (Symbol, Security Name, Close Price); got %v", header)
+	if iSymbol < 0 || iName < 0 {
+		return out, fmt.Errorf("csv missing required columns (Symbol, Security Name or Company Name); got %v", header)
 	}
 
 	now := time.Now()
 	const batchSize = 200
-	batch := make([]models.Stock, 0, batchSize)
+	batch := make([]catalogRow, 0, batchSize)
 
 	flush := func() {
 		if len(batch) == 0 {
@@ -108,12 +144,12 @@ func ImportCSV(db *gorm.DB, r io.Reader) (Result, error) {
 		}
 		for _, row := range batch {
 			var existing models.Stock
-			err := db.Where("symbol = ?", row.Symbol).First(&existing).Error
+			err := db.Where("UPPER(symbol) = ?", row.stock.Symbol).First(&existing).Error
 			if err == gorm.ErrRecordNotFound {
-				row.PullData = models.PullDataNo
-				if err := db.Create(&row).Error; err != nil {
+				row.stock.PullData = models.PullDataNo
+				if err := db.Create(&row.stock).Error; err != nil {
 					out.Errors++
-					log.Printf("nseimport create %s: %v", row.Symbol, err)
+					log.Printf("nseimport create %s: %v", row.stock.Symbol, err)
 					continue
 				}
 				out.Created++
@@ -121,24 +157,16 @@ func ImportCSV(db *gorm.DB, r io.Reader) (Result, error) {
 			}
 			if err != nil {
 				out.Errors++
-				log.Printf("nseimport lookup %s: %v", row.Symbol, err)
+				log.Printf("nseimport lookup %s: %v", row.stock.Symbol, err)
 				continue
 			}
-			updates := map[string]interface{}{
-				"name":                    row.Name,
-				"current_price":           row.CurrentPrice,
-				"last_price_fetched_date": row.LastPriceFetchedDate,
-				"trade_date":              row.TradeDate,
-				"series":                  row.Series,
-				"listing_category":        row.ListingCategory,
-				"last_trade_date":         row.LastTradeDate,
-				"face_value":              row.FaceValue,
-				"issue_size":              row.IssueSize,
-				"market_cap_rs":           row.MarketCapRs,
+			if len(row.updates) == 0 {
+				out.Skipped++
+				continue
 			}
-			if err := db.Model(&existing).Updates(updates).Error; err != nil {
+			if err := db.Model(&existing).Updates(row.updates).Error; err != nil {
 				out.Errors++
-				log.Printf("nseimport update %s: %v", row.Symbol, err)
+				log.Printf("nseimport update %s: %v", row.stock.Symbol, err)
 				continue
 			}
 			out.Updated++
@@ -171,21 +199,45 @@ func ImportCSV(db *gorm.DB, r io.Reader) (Result, error) {
 			out.Skipped++
 			continue
 		}
-		stock := models.Stock{
-			Symbol:               symbol,
-			Name:                 name,
-			CurrentPrice:         parseFloat(cell(rec, iClose)),
-			LastPriceFetchedDate: &now,
-			TradeDate:            parseNSEDate(cell(rec, iTradeDate)),
-			Series:               series,
-			ListingCategory:      cell(rec, iCategory),
-			LastTradeDate:        parseNSEDate(cell(rec, iLastTrade)),
-			FaceValue:            parseFloat(cell(rec, iFace)),
-			IssueSize:            parseFloat(cell(rec, iIssue)),
-			MarketCapRs:          parseFloat(cell(rec, iMcap)),
-			PullData:             models.PullDataNo,
+
+		stock := models.Stock{Symbol: symbol, PullData: models.PullDataNo}
+		updates := make(map[string]interface{})
+
+		setString(updates, "name", name, func(v string) { stock.Name = v })
+		if iSeries >= 0 {
+			setString(updates, "series", series, func(v string) { stock.Series = v })
 		}
-		batch = append(batch, stock)
+		if iIndustry >= 0 {
+			setString(updates, "industry", cell(rec, iIndustry), func(v string) { stock.Industry = v })
+		}
+		if iCategory >= 0 {
+			setString(updates, "listing_category", cell(rec, iCategory), func(v string) { stock.ListingCategory = v })
+		}
+		if iClose >= 0 {
+			if v, ok := parseFloat(cell(rec, iClose)); ok {
+				stock.CurrentPrice = v
+				stock.LastPriceFetchedDate = &now
+				updates["current_price"] = v
+				updates["last_price_fetched_date"] = now
+			}
+		}
+		if iTradeDate >= 0 {
+			setDate(updates, "trade_date", cell(rec, iTradeDate), func(t *time.Time) { stock.TradeDate = t })
+		}
+		if iLastTrade >= 0 {
+			setDate(updates, "last_trade_date", cell(rec, iLastTrade), func(t *time.Time) { stock.LastTradeDate = t })
+		}
+		if iFace >= 0 {
+			setFloat(updates, "face_value", cell(rec, iFace), func(v float64) { stock.FaceValue = v })
+		}
+		if iIssue >= 0 {
+			setFloat(updates, "issue_size", cell(rec, iIssue), func(v float64) { stock.IssueSize = v })
+		}
+		if iMcap >= 0 {
+			setFloat(updates, "market_cap_rs", cell(rec, iMcap), func(v float64) { stock.MarketCapRs = v })
+		}
+
+		batch = append(batch, catalogRow{stock: stock, updates: updates})
 		if len(batch) >= batchSize {
 			flush()
 		}

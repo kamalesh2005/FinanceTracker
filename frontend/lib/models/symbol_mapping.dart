@@ -4,7 +4,10 @@ class SymbolMapping {
   final String yahooSymbol;
   final String isin;
   final String sourceFormat;
+  final String ignore;
   final String notes;
+  /// Applied to Global_Stocks on save; not a SymbolMapping column.
+  final String industry;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -14,18 +17,22 @@ class SymbolMapping {
     required this.yahooSymbol,
     this.isin = '',
     this.sourceFormat = 'Manual',
+    this.ignore = 'N',
     this.notes = '',
+    this.industry = '',
     required this.createdAt,
     required this.updatedAt,
   });
 
   factory SymbolMapping.fromJson(Map<String, dynamic> json) {
+    final rawIgnore = (json['ignore'] ?? '').toString().trim().toUpperCase();
     return SymbolMapping(
       id: json['id'] ?? 0,
       sourceSymbol: json['source_symbol'] ?? '',
       yahooSymbol: json['yahoo_symbol'] ?? '',
       isin: json['isin'] ?? '',
       sourceFormat: json['source_format'] ?? 'Manual',
+      ignore: rawIgnore == 'Y' ? 'Y' : 'N',
       notes: json['notes'] ?? '',
       createdAt: json['created_at'] != null
           ? DateTime.parse(json['created_at'])
@@ -42,7 +49,9 @@ class SymbolMapping {
       'yahoo_symbol': yahooSymbol,
       if (isin.isNotEmpty) 'isin': isin,
       'source_format': sourceFormat,
+      'ignore': ignore == 'Y' ? 'Y' : 'N',
       'notes': notes,
+      if (industry.isNotEmpty) 'industry': industry,
     };
   }
 }
@@ -60,6 +69,8 @@ class UnmappedStock {
   final bool hasMapping;
   final bool needsAttention;
   final String reason;
+  final String ignore;
+  final String notes;
 
   UnmappedStock({
     required this.id,
@@ -74,6 +85,8 @@ class UnmappedStock {
     this.hasMapping = false,
     this.needsAttention = true,
     this.reason = '',
+    this.ignore = '',
+    this.notes = '',
   });
 
   factory UnmappedStock.fromJson(Map<String, dynamic> json) {
@@ -90,6 +103,8 @@ class UnmappedStock {
       hasMapping: json['has_mapping'] ?? false,
       needsAttention: json['needs_attention'] ?? true,
       reason: json['reason'] ?? '',
+      ignore: (json['ignore'] ?? '').toString(),
+      notes: (json['notes'] ?? '').toString(),
     );
   }
 }

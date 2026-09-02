@@ -30,6 +30,8 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
   bool _uploading = false;
   String? _error;
 
+  List<Map<String, dynamic>> _importStatus = [];
+
   int get _totalPages {
     if (_total <= 0) return 1;
     return ((_total + _pageSize - 1) / _pageSize).floor();
@@ -46,6 +48,16 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
     _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadImportStatus() async {
+    try {
+      final rows = await ApiService.getMFImportStatus();
+      if (!mounted) return;
+      setState(() => _importStatus = rows);
+    } catch (_) {
+      // Status table is secondary; keep list usable if this fails.
+    }
   }
 
   Future<void> _load({int? page}) async {
@@ -68,6 +80,7 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
         _page = result.page;
         _loading = false;
       });
+      await _loadImportStatus();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -82,6 +95,131 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
     _searchDebounce = Timer(const Duration(milliseconds: 300), () {
       _load(page: 1);
     });
+  }
+
+  String _kindLabel(String kind) {
+    switch (kind) {
+      case 'mf_catalog':
+        return 'Upload Catalog';
+      case 'mf_var':
+        return 'Upload MF_VAR (NAV)';
+      default:
+        return kind;
+    }
+  }
+
+  String _fmtTs(dynamic raw) {
+    if (raw == null) return '—';
+    final s = raw.toString().trim();
+    if (s.isEmpty) return '—';
+    final dt = DateTime.tryParse(s);
+    if (dt == null) return s;
+    final local = dt.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(local.day)}-${two(local.month)}-${local.year} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  Widget _importStatusTable() {
+    final kinds = ['mf_catalog', 'mf_var'];
+    final byKind = <String, Map<String, dynamic>>{};
+    for (final row in _importStatus) {
+      final k = (row['kind'] ?? '').toString();
+      if (k.isNotEmpty) byKind[k] = row;
+    }
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          headingRowHeight: 36,
+          dataRowMinHeight: 44,
+          dataRowMaxHeight: 56,
+          columnSpacing: 16,
+          columns: const [
+            DataColumn(label: Text('Upload')),
+            DataColumn(label: Text('Status')),
+            DataColumn(label: Text('Last attempt')),
+            DataColumn(label: Text('Last success')),
+            DataColumn(label: Text('Source')),
+            DataColumn(label: Text('Manual')),
+            DataColumn(label: Text('Run now')),
+          ],
+          rows: kinds.map((kind) {
+            final row = byKind[kind] ?? const <String, dynamic>{};
+            final status = (row['last_status'] ?? '').toString();
+            final failed = status == 'failure';
+            final statusLabel = status.isEmpty ? '—' : status;
+            final source = (row['last_source'] ?? '').toString();
+            final canRun = kind == 'mf_var';
+            return DataRow(
+              cells: [
+                DataCell(Text(_kindLabel(kind))),
+                DataCell(
+                  Text(
+                    statusLabel,
+                    style: TextStyle(
+                      fontWeight: failed ? FontWeight.w600 : FontWeight.normal,
+                      color: failed
+                          ? Colors.red.shade700
+                          : (status == 'success'
+                              ? Colors.green.shade700
+                              : null),
+                    ),
+                  ),
+                ),
+                DataCell(Text(_fmtTs(row['last_attempt_at']))),
+                DataCell(Text(_fmtTs(row['last_success_at']))),
+                DataCell(Text(source.isEmpty ? '—' : source)),
+                DataCell(
+                  TextButton.icon(
+                    onPressed: _uploading ? null : _uploadFile,
+                    icon: const Icon(Icons.upload_file, size: 18),
+                    label: const Text('Upload'),
+                  ),
+                ),
+                DataCell(
+                  canRun
+                      ? TextButton.icon(
+                          onPressed: _uploading ? null : _runMFVarPull,
+                          icon: const Icon(Icons.play_arrow, size: 18),
+                          label: const Text('Run'),
+                        )
+                      : const Text('—'),
+                ),
+              ],
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _runMFVarPull() async {
+    setState(() => _uploading = true);
+    try {
+      await ApiService.pullMFVarDaily();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('MF_VAR pull completed'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      await _load(page: 1);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('MF_VAR pull failed: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      await _loadImportStatus();
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
   }
 
   Future<void> _uploadFile() async {
@@ -142,6 +280,7 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
           backgroundColor: Colors.red,
         ),
       );
+      await _loadImportStatus();
     }
   }
 
@@ -165,12 +304,6 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),
-            )
-          else
-            IconButton(
-              tooltip: 'Upload catalog or NAV file',
-              icon: const Icon(Icons.upload_file),
-              onPressed: _uploadFile,
             ),
           ...authAppBarActions(context),
         ],
@@ -182,6 +315,8 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                _importStatusTable(),
+                const SizedBox(height: 12),
                 TextField(
                   controller: _searchController,
                   decoration: InputDecoration(
@@ -199,12 +334,6 @@ class _AdminMutualFundDataScreenState extends State<AdminMutualFundDataScreen> {
                   ),
                   onChanged: _onSearchChanged,
                   onSubmitted: (_) => _load(page: 1),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: _uploading ? null : _uploadFile,
-                  icon: const Icon(Icons.upload_file, size: 18),
-                  label: const Text('Upload catalog (xlsx/csv) or NAV CSV'),
                 ),
                 const SizedBox(height: 8),
                 Text(

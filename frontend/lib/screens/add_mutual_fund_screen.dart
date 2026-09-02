@@ -63,15 +63,13 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
   Timer? _searchDebounce;
   int _searchSeq = 0;
 
-  List<_MFImportRow> _importedFunds = [];
-  String? _importSource;
   bool _isImporting = false;
-  bool _isSavingImported = false;
+  bool _isDeletingAll = false;
 
   bool get _isEdit => widget.mutualFund != null;
+  bool get _busy => _isImporting || _isDeletingAll;
   bool get _legacyEdit =>
       _isEdit && (widget.mutualFund!.isin.trim().isEmpty);
-  bool get _hasImportPreview => _importedFunds.isNotEmpty;
 
   @override
   void initState() {
@@ -220,6 +218,83 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
     );
   }
 
+  Future<void> _confirmAndDeleteAllFunds() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete All Funds'),
+        content: const Text(
+          'This deletes every mutual fund holding and transaction for your account. The fund catalog is not removed. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingAll = true);
+    final provider = context.read<FinanceProvider>();
+    final ok = await provider.deleteAllMutualFunds();
+    if (!mounted) return;
+    setState(() => _isDeletingAll = false);
+    if (!ok) {
+      _showImportError('Error: ${provider.error}');
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('All mutual funds deleted'),
+        backgroundColor: Colors.green,
+      ),
+    );
+    Navigator.pop(context);
+  }
+
+  Future<void> _persistImportedFunds(
+    List<_MFImportRow> funds,
+    String source,
+  ) async {
+    final provider = context.read<FinanceProvider>();
+    final watchList = context.read<AuthProvider>().useAsStockWatchList;
+    final result = await provider.replaceMutualFundsBySource(
+      source: source,
+      items: funds
+          .map(
+            (f) => (
+              schemeName: f.schemeName,
+              isin: f.isin,
+              quantity: watchList ? 1.0 : f.quantity,
+              nav: f.nav,
+              currentNav: f.currentNav,
+            ),
+          )
+          .toList(),
+    );
+    if (!mounted) return;
+    setState(() => _isImporting = false);
+    if (provider.error != null || result == null) {
+      _showImportError('Error: ${provider.error ?? 'Import failed'}');
+      return;
+    }
+    final unmatchedNote =
+        result.unmatched > 0 ? ' (${result.unmatched} pending catalog link)' : '';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Saved ${result.count} mutual funds$unmatchedNote'),
+        backgroundColor: Colors.green,
+      ),
+    );
+    Navigator.pop(context);
+  }
+
   Future<void> _pickAndImportICICIDirectFile() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -235,23 +310,9 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
       if (bytes == null) throw Exception('Could not read file contents');
 
       final funds = _parseICICIMF(bytes);
-      setState(() {
-        _importedFunds = funds;
-        _importSource = 'ICICIDirect';
-        _isImporting = false;
-      });
-
-      if (!mounted) return;
-      if (funds.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Successfully imported ${funds.length} mutual funds from ICICIDirect',
-            ),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
+      if (funds.isEmpty) {
+        setState(() => _isImporting = false);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text(
@@ -266,7 +327,9 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
             ),
           ),
         );
+        return;
       }
+      await _persistImportedFunds(funds, 'ICICIDirect');
     } catch (e) {
       setState(() => _isImporting = false);
       _showImportError('Error importing ICICIDirect file: $e');
@@ -288,23 +351,9 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
       if (bytes == null) throw Exception('Could not read file contents');
 
       final funds = _parseHDFCMF(bytes);
-      setState(() {
-        _importedFunds = funds;
-        _importSource = 'HDFCSec';
-        _isImporting = false;
-      });
-
-      if (!mounted) return;
-      if (funds.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Successfully imported ${funds.length} mutual funds from HDFCSec',
-            ),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
+      if (funds.isEmpty) {
+        setState(() => _isImporting = false);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text(
@@ -319,7 +368,9 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
             ),
           ),
         );
+        return;
       }
+      await _persistImportedFunds(funds, 'HDFCSec');
     } catch (e) {
       setState(() => _isImporting = false);
       _showImportError('Error importing HDFCSec file: $e');
@@ -349,21 +400,9 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
         funds = _parseBulkExcel(bytes);
       }
 
-      setState(() {
-        _importedFunds = funds;
-        _importSource = 'Manual Bulk Upload';
-        _isImporting = false;
-      });
-
-      if (!mounted) return;
-      if (funds.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Successfully imported ${funds.length} mutual funds'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
+      if (funds.isEmpty) {
+        setState(() => _isImporting = false);
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text(
@@ -378,75 +417,12 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
             ),
           ),
         );
+        return;
       }
+      await _persistImportedFunds(funds, 'Manual Bulk Upload');
     } catch (e) {
       setState(() => _isImporting = false);
       _showImportError('Error importing file: $e');
-    }
-  }
-
-  Future<void> _saveImportedFunds() async {
-    if (_importedFunds.isEmpty || _importSource == null || _isSavingImported) {
-      return;
-    }
-
-    setState(() => _isSavingImported = true);
-    try {
-      final provider = context.read<FinanceProvider>();
-      final watchList = context.read<AuthProvider>().useAsStockWatchList;
-      final result = await provider.replaceMutualFundsBySource(
-        source: _importSource!,
-        items: _importedFunds
-            .map(
-              (f) => (
-                schemeName: f.schemeName,
-                isin: f.isin,
-                quantity: watchList ? 1.0 : f.quantity,
-                nav: f.nav,
-                currentNav: f.currentNav,
-              ),
-            )
-            .toList(),
-      );
-
-      if (provider.error != null || result == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error: ${provider.error ?? 'Import failed'}'),
-              backgroundColor: Colors.red,
-              duration: const Duration(days: 1),
-              action: SnackBarAction(
-                label: 'Close',
-                textColor: Colors.white,
-                onPressed: () {},
-              ),
-            ),
-          );
-        }
-        return;
-      }
-
-      setState(() {
-        _importedFunds = [];
-        _importSource = null;
-      });
-
-      if (!mounted) return;
-      final unmatchedNote = result.unmatched > 0
-          ? ' (${result.unmatched} pending catalog link)'
-          : '';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Saved ${result.count} mutual funds$unmatchedNote',
-          ),
-          backgroundColor: Colors.green,
-        ),
-      );
-      Navigator.pop(context);
-    } finally {
-      if (mounted) setState(() => _isSavingImported = false);
     }
   }
 
@@ -944,7 +920,29 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
           widget.mutualFund == null ? 'Add Mutual Fund' : 'Edit Mutual Fund',
         ),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: authAppBarActions(context),
+        actions: authAppBarActions(
+          context,
+          extra: [
+            if (!_isEdit)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                child: OutlinedButton(
+                  onPressed: _busy ? null : _confirmAndDeleteAllFunds,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red.shade700,
+                    side: BorderSide(color: Colors.red.shade700),
+                  ),
+                  child: _isDeletingAll
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Delete All Funds'),
+                ),
+              ),
+          ],
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -958,7 +956,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
                 Card(
                   color: Colors.indigo.shade50,
                   child: ExpansionTile(
-                    initiallyExpanded: !_hasImportPreview,
+                    initiallyExpanded: false,
                     leading:
                         Icon(Icons.edit_note, color: Colors.indigo.shade700),
                     title: Text(
@@ -1023,7 +1021,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: _isImporting ? null : _pickAndImportICICIDirectFile,
+              onPressed: _busy ? null : _pickAndImportICICIDirectFile,
               icon: _isImporting
                   ? const SizedBox(
                       width: 16,
@@ -1063,7 +1061,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: _isImporting ? null : _pickAndImportHDFCSecFile,
+              onPressed: _busy ? null : _pickAndImportHDFCSecFile,
               icon: _isImporting
                   ? const SizedBox(
                       width: 16,
@@ -1137,7 +1135,7 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
             ),
             const SizedBox(height: 12),
             ElevatedButton.icon(
-              onPressed: _isImporting ? null : _pickAndImportBulkFile,
+              onPressed: _busy ? null : _pickAndImportBulkFile,
               icon: _isImporting
                   ? const SizedBox(
                       width: 16,
@@ -1151,93 +1149,6 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
                 foregroundColor: Colors.white,
               ),
             ),
-            if (_hasImportPreview) ...[
-              const SizedBox(height: 16),
-              const Divider(),
-              const SizedBox(height: 8),
-              Text(
-                'Imported ${_importedFunds.length} funds'
-                '${_importSource != null ? ' · $_importSource' : ''}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                constraints: const BoxConstraints(maxHeight: 200),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: _importedFunds.length,
-                  itemBuilder: (context, index) {
-                    final fund = _importedFunds[index];
-                    return ListTile(
-                      dense: true,
-                      leading: const Icon(Icons.chevron_right, size: 20),
-                      title: Text(
-                        fund.schemeName,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        [
-                          if (fund.isin.isNotEmpty) fund.isin,
-                          '${fund.quantity} @ ${formatInr(fund.nav)}',
-                        ].join(' · '),
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed:
-                          _isSavingImported ? null : _saveImportedFunds,
-                      icon: _isSavingImported
-                          ? const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Icon(Icons.save),
-                      label: Text(
-                        _isSavingImported
-                            ? 'Saving...'
-                            : 'Save All Mutual Funds',
-                      ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: Colors.green.shade300,
-                        disabledForegroundColor: Colors.white,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _isSavingImported
-                          ? null
-                          : () {
-                              setState(() {
-                                _importedFunds = [];
-                                _importSource = null;
-                              });
-                            },
-                      child: const Text('Clear'),
-                    ),
-                  ),
-                ],
-              ),
-            ],
           ],
         ),
       ),
@@ -1404,7 +1315,6 @@ class _AddMutualFundScreenState extends State<AddMutualFundScreen> {
       const SizedBox(height: 16),
       TextFormField(
         controller: _sourceController,
-        enabled: !_hasImportPreview,
         decoration: const InputDecoration(
           labelText: 'Account *',
           hintText: 'e.g., Manual Add, Zerodha, Groww',

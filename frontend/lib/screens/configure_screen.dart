@@ -18,6 +18,8 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
   bool _loading = true;
   bool _saving = false;
   bool _useAsStockWatchList = false;
+  bool _showZeroQuantityStocks = false;
+  bool _stockReviewEmailEnabled = true;
   final _rulesKey = GlobalKey<RecommendationRulesEditorState>();
   RecommendationRuleset? _rulesInitial;
   String? _error;
@@ -38,6 +40,8 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
     if (!mounted) return;
     setState(() {
       _useAsStockWatchList = auth.useAsStockWatchList;
+      _showZeroQuantityStocks = auth.showZeroQuantityStocks;
+      _stockReviewEmailEnabled = auth.stockReviewEmailEnabled;
       _rulesInitial = auth.effectiveRecommendationRules;
       _loading = false;
     });
@@ -86,6 +90,62 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
             value
                 ? 'Watch list mode enabled. Quantities set to 1.'
                 : 'Watch list mode disabled.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _onShowZeroQuantityChanged(bool? value) async {
+    if (value == null || _saving) return;
+    if (!mounted) return;
+    final auth = context.read<AuthProvider>();
+    setState(() => _saving = true);
+    try {
+      await auth.savePreferences(showZeroQuantityStocks: value);
+      if (!mounted) return;
+      setState(() => _showZeroQuantityStocks = value);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Stocks with zero quantity are now visible.'
+                : 'Stocks with zero quantity are now hidden.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _onStockReviewEmailChanged(bool? value) async {
+    if (value == null || _saving) return;
+    final auth = context.read<AuthProvider>();
+    if (!auth.stockReviewEmailAvailable) return;
+    setState(() => _saving = true);
+    try {
+      await auth.savePreferences(stockReviewEmailEnabled: value);
+      if (!mounted) return;
+      setState(() => _stockReviewEmailEnabled = value);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value
+                ? 'Weekday review emails enabled.'
+                : 'Weekday review emails disabled.',
           ),
         ),
       );
@@ -185,6 +245,31 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                     'Stocks instead.',
                   ),
                 ),
+                CheckboxListTile(
+                  value: _showZeroQuantityStocks,
+                  onChanged: _saving ? null : _onShowZeroQuantityChanged,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Show stocks with zero quantity'),
+                  subtitle: const Text(
+                    'Include fully sold holdings on the Stocks screen. Off by '
+                    'default.',
+                  ),
+                ),
+                CheckboxListTile(
+                  value: _stockReviewEmailEnabled,
+                  onChanged: _saving ||
+                          !context.watch<AuthProvider>().stockReviewEmailAvailable
+                      ? null
+                      : _onStockReviewEmailChanged,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text('Email stocks to review'),
+                  subtitle: Text(
+                    context.watch<AuthProvider>().stockReviewEmailAvailable
+                        ? 'Receive a weekday email at 12:30 PM IST with holdings '
+                            'that have Buy, Sell, or Book Profit signals.'
+                        : 'Add an email in Profile to enable review emails.',
+                  ),
+                ),
                 const SizedBox(height: 28),
                 const Text(
                   'Signal Rules',
@@ -202,6 +287,8 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                   initial: _rulesInitial!,
                   lockRecommendationText:
                       !context.watch<AuthProvider>().isAdmin,
+                  allowAddRule: context.watch<AuthProvider>().isAdmin,
+                  rulesHeading: 'Signal rules',
                 ),
                 const SizedBox(height: 12),
                 Row(
@@ -213,7 +300,7 @@ class _ConfigureScreenState extends State<ConfigureScreen> {
                     const SizedBox(width: 12),
                     TextButton(
                       onPressed: _saving ? null : _resetRules,
-                      child: const Text('Reset to admin default'),
+                      child: const Text('Reset rules to admin defaults'),
                     ),
                   ],
                 ),

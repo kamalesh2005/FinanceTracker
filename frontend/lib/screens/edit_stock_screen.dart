@@ -129,8 +129,11 @@ class _EditStockScreenState extends State<EditStockScreen> {
                     return 'Please enter quantity';
                   }
                   final qty = double.tryParse(value.trim());
-                  if (qty == null || qty <= 0) {
-                    return 'Quantity must be greater than 0';
+                  if (qty == null) {
+                    return 'Please enter a valid number';
+                  }
+                  if (qty < 0) {
+                    return 'Quantity cannot be negative';
                   }
                   return null;
                 },
@@ -148,7 +151,12 @@ class _EditStockScreenState extends State<EditStockScreen> {
                     return 'Please enter buy price';
                   }
                   final price = double.tryParse(value.trim());
-                  if (price == null || price <= 0) {
+                  if (price == null || price < 0) {
+                    return 'Please enter a valid number';
+                  }
+                  final qty =
+                      double.tryParse(_quantityController.text.trim()) ?? 0;
+                  if (qty > 0 && price <= 0) {
                     return 'Buy price must be greater than 0';
                   }
                   return null;

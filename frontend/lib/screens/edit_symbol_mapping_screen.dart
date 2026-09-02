@@ -11,6 +11,9 @@ class EditSymbolMappingScreen extends StatefulWidget {
   final String? initialYahooSymbol;
   final String? initialIsin;
   final String? initialSourceFormat;
+  final String? initialIndustry;
+  final String? initialIgnore;
+  final String? initialNotes;
 
   const EditSymbolMappingScreen({
     super.key,
@@ -19,6 +22,9 @@ class EditSymbolMappingScreen extends StatefulWidget {
     this.initialYahooSymbol,
     this.initialIsin,
     this.initialSourceFormat,
+    this.initialIndustry,
+    this.initialIgnore,
+    this.initialNotes,
   });
 
   @override
@@ -30,9 +36,11 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
   late TextEditingController _sourceController;
   late TextEditingController _yahooController;
   late TextEditingController _isinController;
+  late TextEditingController _industryController;
   late TextEditingController _notesController;
   final _yahooFocusNode = FocusNode();
   late String _sourceFormat;
+  late String _ignore;
   bool _saving = false;
 
   /// Catalog symbol confirmed via autocomplete selection or initial prefill.
@@ -56,9 +64,16 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
     _isinController = TextEditingController(
       text: m?.isin ?? widget.initialIsin ?? '',
     );
-    _notesController = TextEditingController(text: m?.notes ?? '');
+    _industryController = TextEditingController(
+      text: widget.initialIndustry ?? '',
+    );
+    final notes = (m?.notes ?? widget.initialNotes ?? '').trim();
+    _notesController = TextEditingController(text: notes);
     final format = m?.sourceFormat ?? widget.initialSourceFormat ?? 'Manual';
     _sourceFormat = _formats.contains(format) ? format : 'Other';
+    final ignoreRaw =
+        (m?.ignore ?? widget.initialIgnore ?? 'N').trim().toUpperCase();
+    _ignore = ignoreRaw == 'Y' ? 'Y' : 'N';
   }
 
   @override
@@ -66,6 +81,7 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
     _sourceController.dispose();
     _yahooController.dispose();
     _isinController.dispose();
+    _industryController.dispose();
     _notesController.dispose();
     _yahooFocusNode.dispose();
     super.dispose();
@@ -105,7 +121,9 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
         yahooSymbol: _yahooController.text.trim(),
         isin: _isinController.text.trim().toUpperCase(),
         sourceFormat: _sourceFormat,
+        ignore: _ignore,
         notes: _notesController.text.trim(),
+        industry: _industryController.text.trim(),
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
@@ -116,8 +134,14 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Mapping saved. Refresh stock prices to pull Yahoo data.'),
+        SnackBar(
+          content: Text(
+            _ignore == 'Y'
+                ? 'Saved (ignored — Yahoo fetch skipped).'
+                : (_yahooController.text.trim().isEmpty
+                    ? 'Saved Ignore/Note.'
+                    : 'Mapping saved. Yahoo data fetch requested.'),
+          ),
           backgroundColor: Colors.green,
         ),
       );
@@ -183,13 +207,13 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
                     focusNode: focusNode,
                     textCapitalization: TextCapitalization.characters,
                     decoration: InputDecoration(
-                      labelText: 'Yahoo / NSE Symbol *',
-                      hintText: 'Start typing to search catalog',
+                      labelText: 'Yahoo / NSE Symbol',
+                      hintText: 'Optional — search catalog to map',
                       border: const OutlineInputBorder(),
                       helperText: _confirmedYahooName != null &&
                               _confirmedYahooName!.isNotEmpty
                           ? _confirmedYahooName
-                          : 'Choose a symbol from the NSE catalog',
+                          : 'Leave empty to set Ignore/Note only',
                     ),
                     onChanged: (_) {
                       if (_confirmedYahooSymbol != null &&
@@ -202,10 +226,8 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
                       }
                     },
                     validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Required';
-                      }
-                      final sym = value.trim().toUpperCase();
+                      final sym = (value ?? '').trim().toUpperCase();
+                      if (sym.isEmpty) return null;
                       if (_confirmedYahooSymbol == null ||
                           _confirmedYahooSymbol != sym) {
                         return 'Select a symbol from the catalog suggestions';
@@ -264,6 +286,15 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
                 textCapitalization: TextCapitalization.characters,
               ),
               const SizedBox(height: 16),
+              TextFormField(
+                controller: _industryController,
+                decoration: const InputDecoration(
+                  labelText: 'Industry',
+                  hintText: 'Applied to Global Stocks for this symbol',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
               DropdownButtonFormField<String>(
                 value: _sourceFormat,
                 decoration: const InputDecoration(
@@ -278,13 +309,31 @@ class _EditSymbolMappingScreenState extends State<EditSymbolMappingScreen> {
                 },
               ),
               const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _ignore,
+                decoration: const InputDecoration(
+                  labelText: 'Ignore',
+                  helperText: 'Y hides this symbol from default unmapped search',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'N', child: Text('N')),
+                  DropdownMenuItem(value: 'Y', child: Text('Y')),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _ignore = v);
+                },
+              ),
+              const SizedBox(height: 16),
               TextFormField(
                 controller: _notesController,
                 decoration: const InputDecoration(
-                  labelText: 'Notes',
-                  hintText: 'Optional',
+                  labelText: 'Note',
+                  hintText: 'Optional (max 200 characters)',
                   border: OutlineInputBorder(),
+                  counterText: '',
                 ),
+                maxLength: 200,
                 maxLines: 2,
               ),
               const SizedBox(height: 24),

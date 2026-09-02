@@ -1,17 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:web/web.dart' as web;
 import '../providers/finance_provider.dart';
 import '../providers/auth_provider.dart';
 import '../models/stock.dart';
 import '../models/stock_trend.dart';
+import '../models/global_index.dart';
 import '../services/api_service.dart';
 import '../services/recommendation_engine.dart';
 import '../utils/currency_format.dart';
+import '../utils/screen_tracker.dart';
 import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
+import '../widgets/stock_actions.dart';
 import 'add_stock_screen.dart';
 import 'configure_screen.dart';
 import 'edit_stock_screen.dart';
+import 'review_thresholds_screen.dart';
 import 'stock_chart_screen.dart';
 
 class StocksScreen extends StatefulWidget {
@@ -24,9 +29,9 @@ class StocksScreen extends StatefulWidget {
 class _StocksScreenState extends State<StocksScreen> {
   bool _isTableView = true;
 
-  /// null = default multi-key sort (Industry → Market Cap → Symbol → Account).
-  /// Card layout always sorts by Symbol instead.
-  String? _sortColumn;
+  /// null = unsorted fallback (Industry → Market Cap → Symbol → Account).
+  /// Default table sort is Symbol ascending. Card layout always sorts by Symbol.
+  String? _sortColumn = 'Symbol';
   bool _sortAscending = true;
 
   static const String _unspecified = 'Unspecified';
@@ -57,20 +62,41 @@ class _StocksScreenState extends State<StocksScreen> {
     'AT SELL PRICE',
     'AT HOLD PRICE',
   ];
+  static const List<String> _trendOptions = [
+    'bullish',
+    'moderately bullish',
+    'bearish_st',
+    'moderately bearish_st',
+    'bearish_lt',
+    'moderately bearish_lt',
+    'neutral',
+  ];
 
   String? _selectedIndustry;
   String? _selectedMarketCap;
   String? _selectedSource;
   String? _selectedRecommendation;
+  String? _selectedTrend;
   bool _onlyStocksToAction = true;
 
-  static const double _headerHeight = 48;
+  static const double _headerHeight = 58;
   static const double _rowHeight = 90;
+
+  static int? _yearFromColumn(String column) {
+    if (column.startsWith('FY') && column.length >= 3) {
+      final two = int.tryParse(column.substring(2));
+      if (two != null) return 2000 + two;
+    }
+    return null;
+  }
   static const double _symbolColumnWidth = 120;
+
   /// Below this width, prefer card view (table is too dense for phones).
   static const double _cardViewBreakpoint = 700;
+
   /// Below this width, slim the AppBar (icon Add, hide display name).
   static const double _narrowAppBarBreakpoint = 600;
+
   /// Below this width, stack card metric rows into 2 columns.
   static const double _narrowCardBreakpoint = 400;
 
@@ -92,6 +118,13 @@ class _StocksScreenState extends State<StocksScreen> {
     'Current',
     'P/L',
     'P/L %',
+    'XIRR',
+    'FY21',
+    'FY22',
+    'FY23',
+    'FY24',
+    'FY25',
+    'FY26 YTD',
     'Last Actioned',
     'Price Range',
     'High',
@@ -100,6 +133,7 @@ class _StocksScreenState extends State<StocksScreen> {
     'Signal',
     'Actions',
     'News',
+    'Notes',
   ];
 
   /// Columns pinned on the left when selected (order matters).
@@ -111,26 +145,59 @@ class _StocksScreenState extends State<StocksScreen> {
   /// Sentinel stored in hidden_columns so the v2 default-hide migration runs once.
   static const String _columnDefaultsV2Sentinel = '__defaults_v2';
 
+  /// Ensures the XIRR column is visible after P/L % for existing saved prefs.
+  static const String _columnDefaultsV3Sentinel = '__defaults_v3';
+
+  /// Hides Industry, Account, FY21–FY25, YTD by default for existing prefs.
+  static const String _columnDefaultsV4Sentinel = '__defaults_v4';
+
   static const Set<String> _defaultHiddenColumns = {
+    'Industry',
+    'Account',
     'Buy Price',
     'Current',
     'P/L',
+    'FY21',
+    'FY22',
+    'FY23',
+    'FY24',
+    'FY25',
+    'FY26 YTD',
     'High',
     'Low',
   };
 
-  static const Set<String> _defaultSelectedColumns = {
+  static const Set<String> _v4HiddenColumns = {
     'Industry',
+    'Account',
+    'FY21',
+    'FY22',
+    'FY23',
+    'FY24',
+    'FY25',
+    'FY26 YTD',
+  };
+
+  static const Set<String> _defaultSelectedColumns = {
     'Symbol',
     'Qty',
     'Current Value',
     'P/L %',
+    'XIRR',
     'Price Range',
     'Trend',
     'Signal',
     'Actions',
     'News',
+    'Notes',
   };
+
+  bool get _showXirr => context.watch<AuthProvider>().showXirr;
+  bool get _showZeroQuantityStocks =>
+      context.watch<AuthProvider>().showZeroQuantityStocks;
+
+  List<String> get _catalogColumns =>
+      _showXirr ? _allColumns : _allColumns.where((c) => c != 'XIRR').toList();
 
   @override
   void initState() {
@@ -225,19 +292,28 @@ class _StocksScreenState extends State<StocksScreen> {
       case 'Last Actioned':
         return 120;
       case 'P/L %':
+      case 'XIRR':
+      case 'FY21':
+      case 'FY22':
+      case 'FY23':
+      case 'FY24':
+      case 'FY25':
+      case 'FY26 YTD':
         return 80;
       case 'Industry':
         return 160;
       case 'Signal':
-        return 160;
+        return 200;
       case 'Price Range':
         return 160;
       case 'Trend':
         return 170;
       case 'Actions':
-        return 250;
+        return 188;
       case 'News':
-        return 180;
+        return 260;
+      case 'Notes':
+        return 200;
       default:
         return 100;
     }
@@ -246,7 +322,7 @@ class _StocksScreenState extends State<StocksScreen> {
   Future<void> _openAddStock() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const AddStockScreen()),
+      appPageRoute(const AddStockScreen()),
     );
     if (!mounted) return;
     await context.read<FinanceProvider>().loadStocks();
@@ -255,7 +331,7 @@ class _StocksScreenState extends State<StocksScreen> {
   Future<void> _openConfigure() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const ConfigureScreen()),
+      appPageRoute(const ConfigureScreen()),
     );
     if (!mounted) return;
     await context.read<AuthProvider>().loadPreferences();
@@ -268,8 +344,7 @@ class _StocksScreenState extends State<StocksScreen> {
     final screenWidth = MediaQuery.sizeOf(context).width;
     final narrowAppBar = screenWidth < _narrowAppBarBreakpoint;
     // Force card view on phones; respect toggle on tablet/desktop.
-    final showTableView =
-        screenWidth >= _cardViewBreakpoint && _isTableView;
+    final showTableView = screenWidth >= _cardViewBreakpoint && _isTableView;
     final canToggleView = screenWidth >= _cardViewBreakpoint;
 
     return Consumer<FinanceProvider>(
@@ -295,8 +370,7 @@ class _StocksScreenState extends State<StocksScreen> {
                       icon: const Icon(Icons.add, size: 18),
                       label: const Text('Add Stock'),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor:
-                            Theme.of(context).colorScheme.primary,
+                        foregroundColor: Theme.of(context).colorScheme.primary,
                         side: BorderSide(
                           color: Theme.of(context).colorScheme.primary,
                         ),
@@ -367,18 +441,26 @@ class _StocksScreenState extends State<StocksScreen> {
                 sortBySymbol: !showTableView,
               );
               final hasFilters = _hasActiveFilters;
+              final showActionsHelp = _actionableStockCount(provider) > 5;
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _buildFilterBar(provider),
+                  if (showActionsHelp) _buildActionsHelpBanner(),
                   Expanded(
                     child: stocks.isEmpty
                         ? Center(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Text('No stocks match filters'),
+                                Text(
+                                  hasFilters
+                                      ? 'No stocks match filters'
+                                      : (_showZeroQuantityStocks
+                                          ? 'No stocks added yet'
+                                          : 'No stocks with quantity'),
+                                ),
                                 if (hasFilters) ...[
                                   const SizedBox(height: 12),
                                   TextButton(
@@ -423,6 +505,7 @@ class _StocksScreenState extends State<StocksScreen> {
       _selectedMarketCap != null ||
       _selectedSource != null ||
       _selectedRecommendation != null ||
+      _selectedTrend != null ||
       _onlyStocksToAction;
 
   void _clearFilters() {
@@ -431,6 +514,7 @@ class _StocksScreenState extends State<StocksScreen> {
       _selectedMarketCap = null;
       _selectedSource = null;
       _selectedRecommendation = null;
+      _selectedTrend = null;
       _onlyStocksToAction = false;
     });
   }
@@ -474,14 +558,16 @@ class _StocksScreenState extends State<StocksScreen> {
   }
 
   Widget _buildFilterBar(FinanceProvider provider) {
-    final industryOptions = _industryOptions(provider.stocks);
-    final sourceOptions = _sourceOptions(provider.stocks);
+    final listed = _quantityVisibleStocks(provider.stocks);
+    final industryOptions = _industryOptions(listed);
+    final sourceOptions = _sourceOptions(listed);
     final narrow = MediaQuery.sizeOf(context).width < _cardViewBreakpoint;
     final dropdownFilterCount = [
       _selectedIndustry,
       _selectedMarketCap,
       _selectedSource,
       _selectedRecommendation,
+      _selectedTrend,
     ].whereType<String>().length;
 
     final industryMenu = _buildFilterMenu(
@@ -508,11 +594,16 @@ class _StocksScreenState extends State<StocksScreen> {
       options: _recommendationOptions,
       onChanged: (next) => setState(() => _selectedRecommendation = next),
     );
+    final trendMenu = _buildFilterMenu(
+      label: 'Trend',
+      selected: _selectedTrend,
+      options: _trendOptions,
+      optionLabel: _trendDisplayLabel,
+      onChanged: (next) => setState(() => _selectedTrend = next),
+    );
     final actionChip = FilterChip(
       avatar: Icon(
-        _onlyStocksToAction
-            ? Icons.check_box
-            : Icons.check_box_outline_blank,
+        _onlyStocksToAction ? Icons.check_box : Icons.check_box_outline_blank,
         size: 18,
       ),
       showCheckmark: false,
@@ -528,6 +619,7 @@ class _StocksScreenState extends State<StocksScreen> {
             child: const Text('Clear'),
           )
         : null;
+    final reviewButton = _reviewThresholdsButton();
 
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLowest,
@@ -551,23 +643,58 @@ class _StocksScreenState extends State<StocksScreen> {
                     ),
                   ),
                   if (clearButton != null) clearButton,
+                  reviewButton,
                 ],
               )
-            : Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  industryMenu,
-                  marketCapMenu,
-                  accountMenu,
-                  recommendationMenu,
-                  actionChip,
-                  if (clearButton != null) clearButton,
+                  Expanded(
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        industryMenu,
+                        marketCapMenu,
+                        accountMenu,
+                        recommendationMenu,
+                        trendMenu,
+                        actionChip,
+                        if (clearButton != null) clearButton,
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  reviewButton,
                 ],
               ),
       ),
     );
+  }
+
+  Widget _reviewThresholdsButton() {
+    final colorScheme = Theme.of(context).colorScheme;
+    return OutlinedButton.icon(
+      onPressed: _openReviewThresholds,
+      icon: const Icon(Icons.visibility_outlined, size: 18),
+      label: const Text('Review Thresholds'),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: colorScheme.primary,
+        side: BorderSide(color: colorScheme.primary),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
+  Future<void> _openReviewThresholds() async {
+    await Navigator.push(
+      context,
+      appPageRoute(const ReviewThresholdsScreen()),
+    );
+    if (!mounted) return;
+    await context.read<FinanceProvider>().loadStocks();
   }
 
   Widget _buildCollapsedFiltersButton({
@@ -622,9 +749,10 @@ class _StocksScreenState extends State<StocksScreen> {
                     children: [
                       Text(
                         'Filters',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
                       ),
                       const SizedBox(height: 12),
                       _buildFilterMenu(
@@ -658,6 +786,14 @@ class _StocksScreenState extends State<StocksScreen> {
                         onChanged: (next) =>
                             apply(() => _selectedRecommendation = next),
                       ),
+                      const SizedBox(height: 8),
+                      _buildFilterMenu(
+                        label: 'Trend',
+                        selected: _selectedTrend,
+                        options: _trendOptions,
+                        optionLabel: _trendDisplayLabel,
+                        onChanged: (next) => apply(() => _selectedTrend = next),
+                      ),
                       const SizedBox(height: 16),
                       Align(
                         alignment: Alignment.centerRight,
@@ -682,9 +818,12 @@ class _StocksScreenState extends State<StocksScreen> {
     required String? selected,
     required List<String> options,
     required ValueChanged<String?> onChanged,
+    String Function(String)? optionLabel,
   }) {
     final active = selected != null;
-    final buttonLabel = active ? '$label: $selected' : label;
+    final selectedText =
+        selected == null ? '' : (optionLabel?.call(selected) ?? selected);
+    final buttonLabel = active ? '$label: $selectedText' : label;
     final colorScheme = Theme.of(context).colorScheme;
     return PopupMenuButton<String>(
       tooltip: 'Filter by $label',
@@ -705,7 +844,7 @@ class _StocksScreenState extends State<StocksScreen> {
               (option) => CheckedPopupMenuItem<String>(
                 value: option,
                 checked: selected == option,
-                child: Text(option),
+                child: Text(optionLabel?.call(option) ?? option),
               ),
             )
             .toList();
@@ -747,11 +886,48 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
+  List<Stock> _quantityVisibleStocks(List<Stock> stocks) {
+    if (_showZeroQuantityStocks) return stocks;
+    return stocks.where((stock) => stock.quantity > 0).toList();
+  }
+
+  int _actionableStockCount(FinanceProvider provider) {
+    return _quantityVisibleStocks(provider.stocks).where((stock) {
+      final recommendation =
+          _getRecommendation(stock, _trendFor(stock, provider));
+      if (_nonActionRecommendations.contains(recommendation)) return false;
+      return _actionableRecommendations.any(recommendation.contains);
+    }).length;
+  }
+
+  Widget _buildActionsHelpBanner() {
+    return Material(
+      color: Colors.amber.shade50,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.info_outline, size: 18, color: Colors.amber.shade900),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Please record your actions by clicking B/S/H/T. '
+                'Once recorded, next action will be shown only when price fluctuates.',
+                style: TextStyle(fontSize: 13, color: Colors.amber.shade900),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   List<Stock> _filteredAndSortedStocks(
     FinanceProvider provider, {
     bool sortBySymbol = false,
   }) {
-    final filtered = provider.stocks.where((stock) {
+    final filtered = _quantityVisibleStocks(provider.stocks).where((stock) {
       if (_selectedIndustry != null &&
           _industryKey(stock) != _selectedIndustry) {
         return false;
@@ -774,6 +950,10 @@ class _StocksScreenState extends State<StocksScreen> {
             ? recommendation == label
             : recommendation.contains(label);
         if (!matches) return false;
+      }
+      if (_selectedTrend != null) {
+        final trendKey = _trendFilterKey(_trendFor(stock, provider)?.trend);
+        if (trendKey != _selectedTrend) return false;
       }
       if (_onlyStocksToAction) {
         if (_nonActionRecommendations.contains(recommendation)) {
@@ -829,7 +1009,7 @@ class _StocksScreenState extends State<StocksScreen> {
         ),
       ),
     );
-    if (!showDetails || isDefault || trend == null) {
+    if (!showDetails || trend == null) {
       return badge;
     }
     return Column(
@@ -846,13 +1026,28 @@ class _StocksScreenState extends State<StocksScreen> {
             height: 1.2,
           ),
         ),
-        Text(
-          'Adj ST Δ: ${trend.adjustedSTDelta.toStringAsFixed(2)}%  Adj MT Δ: ${trend.adjustedMTDelta.toStringAsFixed(2)}%',
-          style: TextStyle(
-            fontSize: 10,
-            color: trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
-            height: 1.2,
-            fontWeight: FontWeight.w500,
+        Text.rich(
+          TextSpan(
+            style: const TextStyle(
+              fontSize: 10,
+              height: 1.2,
+              fontWeight: FontWeight.w500,
+            ),
+            children: [
+              TextSpan(
+                text: 'Adj ST Δ: ${trend.adjustedSTDelta.toStringAsFixed(2)}%',
+                style: TextStyle(
+                  color: trend.adjustedSTDelta >= 0 ? Colors.green : Colors.red,
+                ),
+              ),
+              const TextSpan(text: '  '),
+              TextSpan(
+                text: 'Adj MT Δ: ${trend.adjustedMTDelta.toStringAsFixed(2)}%',
+                style: TextStyle(
+                  color: trend.adjustedMTDelta >= 0 ? Colors.green : Colors.red,
+                ),
+              ),
+            ],
           ),
         ),
       ],
@@ -866,8 +1061,7 @@ class _StocksScreenState extends State<StocksScreen> {
     final profitLoss = current - invested;
     final profitLossPercentage =
         invested > 0 ? (profitLoss / invested) * 100 : 0.0;
-    final narrowCard =
-        MediaQuery.sizeOf(context).width < _narrowCardBreakpoint;
+    final narrowCard = MediaQuery.sizeOf(context).width < _narrowCardBreakpoint;
 
     StockTrend? trend;
     try {
@@ -894,10 +1088,12 @@ class _StocksScreenState extends State<StocksScreen> {
                     onTap: () {
                       Navigator.push(
                         context,
-                        MaterialPageRoute(
-                          builder: (context) => StockChartScreen(
+                        appPageRoute(
+                          StockChartScreen(
                             symbol: stock.symbol,
                             name: stock.name.isNotEmpty ? stock.name : null,
+                            stockId: stock.id,
+                            source: stock.source,
                           ),
                         ),
                       );
@@ -946,7 +1142,11 @@ class _StocksScreenState extends State<StocksScreen> {
                     child: FittedBox(
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerRight,
-                      child: _buildCardActionButtons(stock, provider),
+                      child: StockActions.cardBar(
+                        context: context,
+                        stock: stock,
+                        provider: provider,
+                      ),
                     ),
                   ),
                 ),
@@ -991,6 +1191,16 @@ class _StocksScreenState extends State<StocksScreen> {
                   '${profitLossPercentage.toStringAsFixed(2)}%',
                   profitLoss >= 0 ? Colors.green : Colors.red,
                 ),
+                if (_showXirr)
+                  _buildCompactInfoColumn(
+                    'XIRR',
+                    stock.xirr == null
+                        ? '-'
+                        : '${(stock.xirr! * 100).toStringAsFixed(2)}%',
+                    stock.xirr == null
+                        ? null
+                        : (stock.xirr! >= 0 ? Colors.green : Colors.red),
+                  ),
               ],
             ),
             if (trend != null &&
@@ -1005,8 +1215,7 @@ class _StocksScreenState extends State<StocksScreen> {
                         formatInr(trend.ma7),
                       ),
                     ),
-                  if (trend.ma7 > 0 && trend.ma20 > 0)
-                    const SizedBox(width: 8),
+                  if (trend.ma7 > 0 && trend.ma20 > 0) const SizedBox(width: 8),
                   if (trend.ma20 > 0)
                     Expanded(
                       child: _buildCompactInfoColumn(
@@ -1093,71 +1302,18 @@ class _StocksScreenState extends State<StocksScreen> {
             ],
             const Divider(height: 20),
             _buildInfoColumnWidget('News', _buildNewsTeaser(stock)),
+            const Divider(height: 20),
+            _buildInfoColumnWidget(
+              'Notes',
+              StockActions.notesCell(
+                context: context,
+                stock: stock,
+                provider: provider,
+              ),
+            ),
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildCardActionButtons(Stock stock, FinanceProvider provider) {
-    ButtonStyle letterStyle(Color color) => TextButton.styleFrom(
-          foregroundColor: color,
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          minimumSize: const Size(32, 32),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          visualDensity: VisualDensity.compact,
-          textStyle: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.bold,
-          ),
-        );
-
-    final iconStyle = IconButton.styleFrom(
-      padding: EdgeInsets.zero,
-      minimumSize: const Size(32, 32),
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
-    );
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        TextButton(
-          onPressed: () => _showBuySellDialog(stock, provider, isBuy: true),
-          style: letterStyle(Colors.green.shade700),
-          child: const Text('B'),
-        ),
-        TextButton(
-          onPressed: stock.quantity > 0
-              ? () => _showBuySellDialog(stock, provider, isBuy: false)
-              : null,
-          style: letterStyle(Colors.orange.shade800),
-          child: const Text('S'),
-        ),
-        TextButton(
-          onPressed: stock.currentPrice > 0
-              ? () => _showHoldDialog(stock, provider)
-              : null,
-          style: letterStyle(Colors.indigo.shade700),
-          child: const Text('H'),
-        ),
-        TextButton(
-          onPressed: () => _showThresholdsDialog(stock, provider),
-          style: letterStyle(Colors.teal.shade800),
-          child: const Text('T'),
-        ),
-        if (_isManualAddSource(stock))
-          IconButton(
-            icon: const Icon(Icons.edit, size: 18),
-            onPressed: () => _openEditStock(stock),
-            style: iconStyle,
-          ),
-        IconButton(
-          icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-          onPressed: () => _showDeleteDialog(context, stock, provider),
-          style: iconStyle,
-        ),
-      ],
     );
   }
 
@@ -1195,7 +1351,8 @@ class _StocksScreenState extends State<StocksScreen> {
         if (trend != null)
           _buildTrendBadge(trend.trend)
         else
-          Text('-', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+          Text('-',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
       ],
     );
   }
@@ -1267,7 +1424,7 @@ class _StocksScreenState extends State<StocksScreen> {
     final frozenColumns = _frozenColumnNames
         .where((column) => _selectedColumns.contains(column))
         .toList();
-    final scrollableColumns = _allColumns
+    final scrollableColumns = _catalogColumns
         .where((column) =>
             _selectedColumns.contains(column) &&
             !_frozenColumnNames.contains(column))
@@ -1282,6 +1439,9 @@ class _StocksScreenState extends State<StocksScreen> {
       0,
       (sum, column) => sum + _columnWidth(column),
     );
+    final actionsWidth =
+        scrollableColumns.contains('Actions') ? _columnWidth('Actions') : 0.0;
+    final flexMinWidth = minScrollableWidth - actionsWidth;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1292,11 +1452,13 @@ class _StocksScreenState extends State<StocksScreen> {
         final contentWidth = needsHorizontalScroll
             ? minScrollableWidth
             : availableScrollableWidth;
-        final stretchFactor = minScrollableWidth > 0 && !needsHorizontalScroll
-            ? availableScrollableWidth / minScrollableWidth
+        final stretchFactor = flexMinWidth > 0 && !needsHorizontalScroll
+            ? (availableScrollableWidth - actionsWidth) / flexMinWidth
             : 1.0;
 
-        double widthFor(String column) => _columnWidth(column) * stretchFactor;
+        double widthFor(String column) => column == 'Actions'
+            ? _columnWidth(column)
+            : _columnWidth(column) * stretchFactor;
 
         final horizontalPhysics = needsHorizontalScroll
             ? const ClampingScrollPhysics()
@@ -1334,11 +1496,18 @@ class _StocksScreenState extends State<StocksScreen> {
                           width: contentWidth,
                           child: Row(
                             children: scrollableColumns
-                                .map((column) => _buildHeaderCell(
-                                      column,
-                                      width: widthFor(column),
-                                      borderColor: borderColor,
-                                    ))
+                                .map((column) {
+                                  final bench = _benchmarkFor(
+                                      column, provider.nifty50);
+                                  return _buildHeaderCell(
+                                    column,
+                                    width: widthFor(column),
+                                    borderColor: borderColor,
+                                    subtitle: bench == null
+                                        ? null
+                                        : _formatReturn(bench),
+                                  );
+                                })
                                 .toList(),
                           ),
                         ),
@@ -1479,12 +1648,39 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
+  String _formatReturn(double? v) {
+    if (v == null) return '—';
+    return '${v.toStringAsFixed(1)}%';
+  }
+
+  double? _benchmarkFor(String column, GlobalIndex? idx) {
+    if (idx == null) return null;
+    if (column == 'FY26 YTD') return idx.returnYtd;
+    final year = _yearFromColumn(column);
+    if (year != null) return idx.returnForYear(year);
+    return null;
+  }
+
+  Color? _returnColor(double? v) {
+    if (v == null) return null;
+    return v >= 0 ? Colors.green : Colors.red;
+  }
+
+  Color? _vsBenchmarkColor(double? scheme, double? bench) {
+    if (scheme == null) return null;
+    if (bench == null) return _returnColor(scheme);
+    if (scheme > bench) return Colors.green;
+    if (scheme < bench) return Colors.red;
+    return null;
+  }
+
   Widget _buildHeaderCell(
     String column, {
     required double width,
     bool frozen = false,
     Color? headerColor,
     required Color borderColor,
+    String? subtitle,
   }) {
     final isSorted = _sortColumn == column;
     final canSort = column != 'Actions';
@@ -1517,14 +1713,31 @@ class _StocksScreenState extends State<StocksScreen> {
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  column,
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color:
-                        isSorted ? Theme.of(context).colorScheme.primary : null,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      column,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                        color: isSorted
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (subtitle != null)
+                      Text(
+                        subtitle,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.grey.shade600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
                 ),
               ),
               if (canSort)
@@ -1604,10 +1817,12 @@ class _StocksScreenState extends State<StocksScreen> {
           onTap: () {
             Navigator.push(
               context,
-              MaterialPageRoute(
-                builder: (context) => StockChartScreen(
+              appPageRoute(
+                StockChartScreen(
                   symbol: stock.symbol,
                   name: stock.name.isNotEmpty ? stock.name : null,
+                  stockId: stock.id,
+                  source: stock.source,
                 ),
               ),
             );
@@ -1703,6 +1918,38 @@ class _StocksScreenState extends State<StocksScreen> {
             color: profitLoss >= 0 ? Colors.green : Colors.red,
           ),
         );
+      case 'XIRR':
+        if (stock.xirr == null) {
+          return const Text('-');
+        }
+        return Text(
+          '${(stock.xirr! * 100).toStringAsFixed(2)}%',
+          style: TextStyle(
+            color: stock.xirr! >= 0 ? Colors.green : Colors.red,
+          ),
+        );
+      case 'FY26 YTD':
+        return Text(
+          _formatReturn(stock.returnYtd),
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: _vsBenchmarkColor(
+                stock.returnYtd, provider.nifty50?.returnYtd),
+          ),
+        );
+      case 'FY21':
+      case 'FY22':
+      case 'FY23':
+      case 'FY24':
+      case 'FY25':
+        final year = _yearFromColumn(column)!;
+        final v = stock.returnForYear(year);
+        return Text(
+          _formatReturn(v),
+          style: TextStyle(
+            color: _vsBenchmarkColor(v, provider.nifty50?.returnForYear(year)),
+          ),
+        );
       case 'Industry':
         return _buildIndustryWithMarketCap(stock);
       case 'Trend':
@@ -1723,7 +1970,7 @@ class _StocksScreenState extends State<StocksScreen> {
         return stock.sixthHighestPrice > 0 && stock.sixthLowestPrice > 0
             ? SizedBox(
                 width: 144,
-                height: 54,
+                height: 66,
                 child: _buildCompactPriceRangeBar(stock),
               )
             : const Text('-');
@@ -1740,34 +1987,152 @@ class _StocksScreenState extends State<StocksScreen> {
           style: const TextStyle(color: Colors.purple),
         );
       case 'Actions':
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildBuySellActionButtons(stock, provider),
-            if (_isManualAddSource(stock))
-              IconButton(
-                icon: const Icon(Icons.edit, size: 18),
-                onPressed: () => _openEditStock(stock),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-              ),
-            IconButton(
-              icon: const Icon(Icons.delete, size: 18, color: Colors.red),
-              onPressed: () => _showDeleteDialog(context, stock, provider),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
-            ),
-          ],
+        return StockActions.compactBar(
+          context: context,
+          stock: stock,
+          provider: provider,
         );
       case 'News':
         return _buildNewsTeaser(stock);
+      case 'Notes':
+        return StockActions.notesCell(
+          context: context,
+          stock: stock,
+          provider: provider,
+        );
       default:
         return const SizedBox.shrink();
     }
   }
 
+  static const int _maxStockNotesChars = 200;
+
+  Widget _buildNotesCell(Stock stock, FinanceProvider provider) {
+    final note = stock.notes.trim();
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: note.isEmpty
+              ? Text(
+                  '-',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                )
+              : Text(
+                  note,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, height: 1.2),
+                ),
+        ),
+        IconButton(
+          icon: const Icon(Icons.edit_note, size: 18),
+          tooltip: note.isEmpty ? 'Add note' : 'Edit note',
+          onPressed: () => _showNotesDialog(stock, provider),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+        if (note.isNotEmpty)
+          IconButton(
+            icon: const Icon(Icons.delete_outline, size: 18, color: Colors.red),
+            tooltip: 'Delete note',
+            onPressed: () => _deleteStockNote(stock, provider),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _showNotesDialog(Stock stock, FinanceProvider provider) async {
+    final controller = TextEditingController(text: stock.notes);
+    try {
+      final saved = await showDialog<String>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: Text(
+              stock.notes.trim().isEmpty
+                  ? 'Add note — ${stock.symbol}'
+                  : 'Edit note — ${stock.symbol}',
+            ),
+            content: SizedBox(
+              width: 420,
+              child: TextField(
+                controller: controller,
+                maxLength: _maxStockNotesChars,
+                maxLines: 4,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: 'Up to 200 characters',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, controller.text),
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      );
+      if (saved == null || !mounted) return;
+      final ok = await provider.setStockNotes(
+        stockId: stock.id,
+        source: stock.source,
+        notes: saved.trim(),
+      );
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(provider.error ?? 'Failed to save note')),
+        );
+      }
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _deleteStockNote(Stock stock, FinanceProvider provider) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text('Delete note — ${stock.symbol}'),
+          content: const Text('Remove the note for this stock?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+    final ok = await provider.setStockNotes(
+      stockId: stock.id,
+      source: stock.source,
+      notes: '',
+    );
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(provider.error ?? 'Failed to delete note')),
+      );
+    }
+  }
+
   Widget _buildNewsTeaser(Stock stock) {
-    if (!stock.hasConsensus) {
+    if (!stock.hasNewsContent) {
       return InkWell(
         onTap: () => _showNewsDialog(stock),
         borderRadius: BorderRadius.circular(6),
@@ -1783,60 +2148,91 @@ class _StocksScreenState extends State<StocksScreen> {
       );
     }
 
-    final type = stock.consensusType.trim().isEmpty
-        ? '—'
-        : stock.consensusType.trim().toUpperCase();
+    final typeColor = _yahooRecommendationColor(stock.consensusType);
+    final typeLine = stock.consensusType.trim().isEmpty
+        ? ''
+        : _formatYahooRecommendation(stock.consensusType);
     final targetLine = stock.consensusTarget > 0
-        ? '$type @ ${formatInr(stock.consensusTarget)}'
-        : type;
+        ? '1Y @ ${formatInr(stock.consensusTarget)}'
+        : '';
     final upsideSign = stock.consensusUpside >= 0 ? '+' : '';
-    final detailLine = [
-      if (stock.consensusUpside != 0 || stock.consensusTarget > 0)
-        '$upsideSign${stock.consensusUpside.toStringAsFixed(2)}%',
-      if (stock.consensusDate != null) _formatTradeDate(stock.consensusDate),
-    ].join(' · ');
+    final showUpside = stock.consensusUpside != 0 || stock.consensusTarget > 0;
+    final upsideLine = showUpside
+        ? '$upsideSign${stock.consensusUpside.toStringAsFixed(2)}%'
+        : '';
+    final upsideColor = stock.consensusUpside >= 0 ? Colors.green : Colors.red;
+    final hasTargetOrUpside = targetLine.isNotEmpty || upsideLine.isNotEmpty;
+    final hasConsensusLine = hasTargetOrUpside || typeLine.isNotEmpty;
+    const teaserStyle = TextStyle(fontSize: 11, fontWeight: FontWeight.w600);
 
-    final typeColor = switch (stock.consensusType.trim().toLowerCase()) {
-      'buy' || 'accumulate' => Colors.green.shade700,
-      'sell' => Colors.red.shade700,
-      'hold' => Colors.orange.shade800,
-      _ => Colors.teal.shade800,
-    };
-
-    return InkWell(
-      onTap: () => _showNewsDialog(stock),
-      borderRadius: BorderRadius.circular(6),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              targetLine,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: typeColor,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (hasConsensusLine)
+            InkWell(
+              onTap: () => _showNewsDialog(stock),
+              borderRadius: BorderRadius.circular(4),
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    if (targetLine.isNotEmpty)
+                      TextSpan(
+                        text: targetLine,
+                        style: teaserStyle.copyWith(color: typeColor),
+                      ),
+                    if (upsideLine.isNotEmpty)
+                      TextSpan(
+                        text: targetLine.isNotEmpty
+                            ? ' ($upsideLine)'
+                            : upsideLine,
+                        style: teaserStyle.copyWith(color: upsideColor),
+                      ),
+                    if (typeLine.isNotEmpty) ...[
+                      if (hasTargetOrUpside)
+                        TextSpan(
+                          text: ' - ',
+                          style: teaserStyle.copyWith(
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      TextSpan(
+                        text: typeLine,
+                        style: teaserStyle.copyWith(color: typeColor),
+                      ),
+                    ],
+                  ],
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (detailLine.isNotEmpty) ...[
-              const SizedBox(height: 2),
-              Text(
-                detailLine,
+          if (stock.hasNewsHeadline) ...[
+            if (hasConsensusLine) const SizedBox(height: 4),
+            InkWell(
+              onTap: () {
+                if (!_openExternalUrl(stock.newsUrl)) {
+                  _showNewsDialog(stock);
+                }
+              },
+              borderRadius: BorderRadius.circular(4),
+              child: Text(
+                stock.newsHeadline.trim(),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontSize: 10,
-                  color: Colors.grey.shade700,
+                  color: Colors.blue.shade800,
                   height: 1.2,
+                  decoration: TextDecoration.underline,
+                  decorationColor: Colors.blue.shade200,
                 ),
               ),
-            ],
+            ),
           ],
-        ),
+        ],
       ),
     );
   }
@@ -1855,7 +2251,7 @@ class _StocksScreenState extends State<StocksScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'Trendlyne Consensus Share Price Target',
+                    'Yahoo 1-Year Target Estimate',
                     style: Theme.of(ctx).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.bold,
                         ),
@@ -1863,7 +2259,7 @@ class _StocksScreenState extends State<StocksScreen> {
                   const SizedBox(height: 12),
                   if (!stock.hasConsensus)
                     Text(
-                      'No consensus data available.',
+                      'No 1-year target available.',
                       style: TextStyle(color: Colors.grey.shade700),
                     )
                   else ...[
@@ -1891,9 +2287,7 @@ class _StocksScreenState extends State<StocksScreen> {
                     ),
                     _consensusDetailRow(
                       'Type',
-                      stock.consensusType.trim().isEmpty
-                          ? '—'
-                          : stock.consensusType.trim().toUpperCase(),
+                      _formatYahooRecommendation(stock.consensusType),
                     ),
                   ],
                   if (stock.lastConsensusFetchedDate != null) ...[
@@ -1906,25 +2300,38 @@ class _StocksScreenState extends State<StocksScreen> {
                       ),
                     ),
                   ],
-                  if (stock.trendlyneUrl.trim().isNotEmpty) ...[
-                    const SizedBox(height: 12),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Latest headline',
+                    style: Theme.of(ctx).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (!stock.hasNewsHeadline)
                     Text(
-                      'Source',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.grey.shade800,
+                      'No headline available.',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    )
+                  else
+                    InkWell(
+                      onTap: stock.newsUrl.trim().isEmpty
+                          ? null
+                          : () => _openExternalUrl(stock.newsUrl),
+                      child: Text(
+                        stock.newsHeadline.trim(),
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.35,
+                          color: stock.newsUrl.trim().isEmpty
+                              ? Colors.grey.shade900
+                              : Colors.blue.shade800,
+                          decoration: stock.newsUrl.trim().isEmpty
+                              ? TextDecoration.none
+                              : TextDecoration.underline,
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    SelectableText(
-                      stock.trendlyneUrl.trim(),
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.blue.shade700,
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -1938,6 +2345,36 @@ class _StocksScreenState extends State<StocksScreen> {
         );
       },
     );
+  }
+
+  String _formatYahooRecommendation(String raw) {
+    final label = raw.trim().replaceAll('_', ' ');
+    if (label.isEmpty) return '—';
+    return label.toUpperCase();
+  }
+
+  Color _yahooRecommendationColor(String raw) {
+    return switch (raw.trim().toLowerCase().replaceAll(' ', '_')) {
+      'buy' ||
+      'strong_buy' ||
+      'accumulate' ||
+      'outperform' =>
+        Colors.green.shade700,
+      'sell' || 'strong_sell' || 'underperform' => Colors.red.shade700,
+      'hold' || 'neutral' => Colors.orange.shade800,
+      _ => Colors.teal.shade800,
+    };
+  }
+
+  bool _openExternalUrl(String raw) {
+    final url = raw.trim();
+    if (url.isEmpty) return false;
+    final uri = Uri.tryParse(url);
+    if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
+      return false;
+    }
+    web.window.open(url, '_blank');
+    return true;
   }
 
   Widget _consensusDetailRow(String label, String value) {
@@ -1977,46 +2414,71 @@ class _StocksScreenState extends State<StocksScreen> {
     return '$y-$m-$d';
   }
 
+  String _trendFilterKey(String? trend) {
+    switch (trend) {
+      case 'bullish':
+      case 'moderately bullish':
+      case 'bearish_st':
+      case 'moderately bearish_st':
+      case 'bearish_lt':
+      case 'moderately bearish_lt':
+        return trend!;
+      default:
+        return 'neutral';
+    }
+  }
+
+  String _trendDisplayLabel(String trend) {
+    switch (trend) {
+      case 'bullish':
+        return 'Bullish';
+      case 'moderately bullish':
+        return 'Mod. Bullish';
+      case 'bearish_st':
+        return 'Bearish ST';
+      case 'moderately bearish_st':
+        return 'Mod. Bearish ST';
+      case 'bearish_lt':
+        return 'Bearish LT';
+      case 'moderately bearish_lt':
+        return 'Mod. Bearish LT';
+      default:
+        return 'Neutral';
+    }
+  }
+
   Widget _buildTrendBadge(String trend) {
     Color color;
     IconData icon;
-    String label;
 
     switch (trend) {
       case 'bullish':
         color = Colors.green;
         icon = Icons.trending_up;
-        label = 'Bullish';
         break;
       case 'moderately bullish':
         color = Colors.lightGreen;
         icon = Icons.trending_up;
-        label = 'Mod. Bullish';
         break;
       case 'bearish_st':
         color = Colors.red;
         icon = Icons.trending_down;
-        label = 'Bearish ST';
         break;
       case 'moderately bearish_st':
         color = Colors.orange;
         icon = Icons.trending_down;
-        label = 'Mod. Bearish ST';
         break;
       case 'bearish_lt':
         color = Colors.red;
         icon = Icons.trending_down;
-        label = 'Bearish LT';
         break;
       case 'moderately bearish_lt':
         color = Colors.deepOrange;
         icon = Icons.trending_down;
-        label = 'Mod. Bearish LT';
         break;
       default:
         color = Colors.grey;
         icon = Icons.trending_flat;
-        label = 'Neutral';
     }
 
     return Container(
@@ -2032,7 +2494,7 @@ class _StocksScreenState extends State<StocksScreen> {
           Icon(icon, size: 14, color: color),
           const SizedBox(width: 4),
           Text(
-            label,
+            _trendDisplayLabel(trend),
             maxLines: 1,
             softWrap: false,
             overflow: TextOverflow.fade,
@@ -2216,18 +2678,26 @@ class _StocksScreenState extends State<StocksScreen> {
         final buyLabelWidth = labelWidthFor(buyLabel);
         final currentLabelLeft = labelLeftFor(currentCenter, currentLabelWidth);
         final buyLabelLeft = labelLeftFor(buyCenter, buyLabelWidth);
+        final labelsOverlap = currentLabelLeft < buyLabelLeft + buyLabelWidth &&
+            buyLabelLeft < currentLabelLeft + currentLabelWidth;
+        const stackedLabelHeight = 26.0;
+        const singleLabelHeight = 14.0;
+        final labelBandHeight =
+            labelsOverlap ? stackedLabelHeight : singleLabelHeight;
+        const currentLabelTop = 0.0;
+        final buyLabelTop = labelsOverlap ? 12.0 : 0.0;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             SizedBox(
-              height: 14,
+              height: labelBandHeight,
               child: Stack(
                 clipBehavior: Clip.none,
                 children: [
                   Positioned(
                     left: buyLabelLeft,
-                    top: 0,
+                    top: buyLabelTop,
                     child: SizedBox(
                       width: buyLabelWidth,
                       child: Text(
@@ -2241,7 +2711,7 @@ class _StocksScreenState extends State<StocksScreen> {
                   ),
                   Positioned(
                     left: currentLabelLeft,
-                    top: 0,
+                    top: currentLabelTop,
                     child: SizedBox(
                       width: currentLabelWidth,
                       child: Text(
@@ -2332,9 +2802,7 @@ class _StocksScreenState extends State<StocksScreen> {
   Future<void> _openEditStock(Stock stock) async {
     await Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => EditStockScreen(stock: stock),
-      ),
+      appPageRoute(EditStockScreen(stock: stock)),
     );
     if (!mounted) return;
     await context.read<FinanceProvider>().loadStocks();
@@ -2348,7 +2816,7 @@ class _StocksScreenState extends State<StocksScreen> {
           onPressed: () => _showBuySellDialog(stock, provider, isBuy: true),
           style: TextButton.styleFrom(
             foregroundColor: Colors.green.shade700,
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             visualDensity: VisualDensity.compact,
@@ -2361,7 +2829,7 @@ class _StocksScreenState extends State<StocksScreen> {
               : null,
           style: TextButton.styleFrom(
             foregroundColor: Colors.orange.shade800,
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             visualDensity: VisualDensity.compact,
@@ -2374,7 +2842,7 @@ class _StocksScreenState extends State<StocksScreen> {
               : null,
           style: TextButton.styleFrom(
             foregroundColor: Colors.indigo.shade700,
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             visualDensity: VisualDensity.compact,
@@ -2385,7 +2853,7 @@ class _StocksScreenState extends State<StocksScreen> {
           onPressed: () => _showThresholdsDialog(stock, provider),
           style: TextButton.styleFrom(
             foregroundColor: Colors.teal.shade800,
-            padding: const EdgeInsets.symmetric(horizontal: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
             visualDensity: VisualDensity.compact,
@@ -2813,10 +3281,16 @@ class _StocksScreenState extends State<StocksScreen> {
     try {
       final raw = await ApiService.getHiddenStockColumns();
       final hasV2 = raw.contains(_columnDefaultsV2Sentinel);
+      final hasV3 = raw.contains(_columnDefaultsV3Sentinel);
+      final hasV4 = raw.contains(_columnDefaultsV4Sentinel);
       final hidden = <String>{
         ..._normalizeHiddenColumns(raw),
         if (!hasV2) ..._defaultHiddenColumns,
-      }.toList();
+        if (!hasV4) ..._v4HiddenColumns,
+      };
+      if (!hasV3) {
+        hidden.remove('XIRR');
+      }
       if (!mounted) return;
       setState(() {
         _selectedColumns
@@ -2826,8 +3300,8 @@ class _StocksScreenState extends State<StocksScreen> {
           _selectedColumns.addAll(_defaultSelectedColumns);
         }
       });
-      if (!hasV2) {
-        // Persist migrated hide-set + sentinel so this does not re-run.
+      if (!hasV2 || !hasV3 || !hasV4) {
+        // Persist migrated hide-set + sentinels so this does not re-run.
         await _saveColumnPreferences();
       }
     } catch (_) {
@@ -2854,6 +3328,9 @@ class _StocksScreenState extends State<StocksScreen> {
         case 'Source':
           // Renamed to Account; preserve hidden preference.
           out.add('Account');
+          break;
+        case 'YTD':
+          out.add('FY26 YTD');
           break;
         case 'Sector':
           // Renamed to Industry; preserve hidden preference.
@@ -2884,8 +3361,10 @@ class _StocksScreenState extends State<StocksScreen> {
 
   Future<void> _saveColumnPreferences() async {
     final hidden = [
-      ..._allColumns.where((c) => !_selectedColumns.contains(c)),
+      ..._catalogColumns.where((c) => !_selectedColumns.contains(c)),
       _columnDefaultsV2Sentinel,
+      _columnDefaultsV3Sentinel,
+      _columnDefaultsV4Sentinel,
     ];
     try {
       await ApiService.saveHiddenStockColumns(hidden);
@@ -2908,9 +3387,9 @@ class _StocksScreenState extends State<StocksScreen> {
             width: double.maxFinite,
             child: ListView.builder(
               shrinkWrap: true,
-              itemCount: _allColumns.length,
+              itemCount: _catalogColumns.length,
               itemBuilder: (context, index) {
-                final column = _allColumns[index];
+                final column = _catalogColumns[index];
                 return CheckboxListTile(
                   title: Text(column),
                   value: _selectedColumns.contains(column),
@@ -3029,6 +3508,20 @@ class _StocksScreenState extends State<StocksScreen> {
         return _profitLoss(a).compareTo(_profitLoss(b));
       case 'P/L %':
         return _profitLossPct(a).compareTo(_profitLossPct(b));
+      case 'XIRR':
+        return (a.xirr ?? double.negativeInfinity)
+            .compareTo(b.xirr ?? double.negativeInfinity);
+      case 'FY26 YTD':
+        return (a.returnYtd ?? double.negativeInfinity)
+            .compareTo(b.returnYtd ?? double.negativeInfinity);
+      case 'FY21':
+      case 'FY22':
+      case 'FY23':
+      case 'FY24':
+      case 'FY25':
+        final year = _yearFromColumn(column)!;
+        return (a.returnForYear(year) ?? double.negativeInfinity)
+            .compareTo(b.returnForYear(year) ?? double.negativeInfinity);
       case 'Industry':
         return _compareEmptyLast(a.industry, b.industry);
       case 'Signal':

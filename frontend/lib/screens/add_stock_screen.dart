@@ -18,6 +18,35 @@ import '../utils/currency_format.dart';
 import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
+enum _StockImportKind {
+  iciciSummary,
+  iciciTransactions,
+  hdfc,
+  hdfcTransactions,
+  zerodha,
+  zerodhaTransactions,
+  bulk,
+  bulkTransactions,
+}
+
+typedef _TradeTxnRow = ({
+  String symbol,
+  String name,
+  String isin,
+  String action,
+  double quantity,
+  double price,
+  DateTime transactionDate,
+  double brokerage,
+  double transactionCharges,
+  double stampDuty,
+  String segment,
+  String stt,
+  String exchange,
+});
+
+typedef _ICICITxnRow = _TradeTxnRow;
+
 class AddStockScreen extends StatefulWidget {
   final Stock? stock;
 
@@ -34,13 +63,13 @@ class _AddStockScreenState extends State<AddStockScreen> {
   late TextEditingController _buyPriceController;
   final _symbolFocusNode = FocusNode();
   late DateTime _transactionDate;
-  List<Stock> _importedStocks = [];
-  bool _isImporting = false;
-  bool _isSavingImported = false;
-  String? _importSource;
+  _StockImportKind? _importingKind;
+  bool _isDeletingAll = false;
+
   /// True when Buy Price was last set from a Global_Stocks LTP lookup.
   bool _buyPriceFromLtp = false;
   String? _ltpLookupSymbol;
+
   /// Catalog symbol confirmed via autocomplete selection or exact lookup.
   String? _confirmedCatalogSymbol;
   String? _confirmedCatalogName;
@@ -50,10 +79,15 @@ class _AddStockScreenState extends State<AddStockScreen> {
     super.initState();
     _symbolController = TextEditingController(text: widget.stock?.symbol ?? '');
     _quantityController = TextEditingController(
-      text: widget.stock?.quantity.toString() ?? '',
+      text: (widget.stock == null || widget.stock!.quantity <= 0)
+          ? ''
+          : widget.stock!.quantity.toString(),
     );
-    _buyPriceController =
-        TextEditingController(text: widget.stock?.buyPrice.toString() ?? '');
+    _buyPriceController = TextEditingController(
+      text: (widget.stock == null || widget.stock!.buyPrice <= 0)
+          ? ''
+          : widget.stock!.buyPrice.toString(),
+    );
     _transactionDate = DateTime.now();
     if (widget.stock != null) {
       _confirmedCatalogSymbol = widget.stock!.symbol.toUpperCase();
@@ -85,6 +119,15 @@ class _AddStockScreenState extends State<AddStockScreen> {
     _quantityController.dispose();
     _buyPriceController.dispose();
     super.dispose();
+  }
+
+  bool get _isImporting => _importingKind != null || _isDeletingAll;
+
+  bool _isBusy(_StockImportKind kind) => _importingKind == kind;
+
+  void _setImporting(_StockImportKind? kind) {
+    if (!mounted) return;
+    setState(() => _importingKind = kind);
   }
 
   String _formatPrice(double value) {
@@ -144,7 +187,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
     final symbol = hit.symbol.toUpperCase();
     setState(() {
       _symbolController.text = symbol;
-      _symbolController.selection = TextSelection.collapsed(offset: symbol.length);
+      _symbolController.selection =
+          TextSelection.collapsed(offset: symbol.length);
       _confirmedCatalogSymbol = symbol;
       _confirmedCatalogName = hit.name;
     });
@@ -196,6 +240,88 @@ class _AddStockScreenState extends State<AddStockScreen> {
     return null;
   }
 
+  void _showImportError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        duration: const Duration(days: 1),
+        action: SnackBarAction(
+          label: 'Close',
+          textColor: Colors.white,
+          onPressed: () {},
+        ),
+      ),
+    );
+  }
+
+  void _showImportWarning(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.orange,
+        duration: const Duration(days: 1),
+        action: SnackBarAction(
+          label: 'Close',
+          textColor: Colors.white,
+          onPressed: () {},
+        ),
+      ),
+    );
+  }
+
+  List<Stock> _watchListStocks(List<Stock> stocks) {
+    return stocks
+        .map(
+          (s) => Stock(
+            id: s.id,
+            symbol: s.symbol,
+            name: s.name,
+            sector: s.sector,
+            industry: s.industry,
+            marketCap: s.marketCap,
+            source: s.source,
+            quantity: 1,
+            buyPrice: s.buyPrice,
+            currentPrice: s.currentPrice,
+            sixthHighestPrice: s.sixthHighestPrice,
+            sixthLowestPrice: s.sixthLowestPrice,
+            lastFetchedDate: s.lastFetchedDate,
+            lastPriceFetchedDate: s.lastPriceFetchedDate,
+            createdAt: s.createdAt,
+            updatedAt: s.updatedAt,
+            isin: s.isin,
+            lastBuyPrice: s.lastBuyPrice,
+            lastBuyDate: s.lastBuyDate,
+            lastSalePrice: s.lastSalePrice,
+            lastSaleDate: s.lastSaleDate,
+          ),
+        )
+        .toList();
+  }
+
+  Future<void> _persistImportedStocks(List<Stock> stocks, String source) async {
+    final provider = context.read<FinanceProvider>();
+    final watchList = context.read<AuthProvider>().useAsStockWatchList;
+    final toSave = watchList ? _watchListStocks(stocks) : stocks;
+    await provider.addStocksBulk(toSave, source: source);
+    if (!mounted) return;
+    _setImporting(null);
+    if (provider.error != null) {
+      _showImportError('Error: ${provider.error}');
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Stocks imported successfully'),
+        backgroundColor: Colors.green,
+      ),
+    );
+    Navigator.pop(context);
+  }
+
   Future<void> _pickAndImportFile() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -205,61 +331,35 @@ class _AddStockScreenState extends State<AddStockScreen> {
         withData: true,
       );
 
-      if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          _isImporting = true;
-        });
+      if (result == null || result.files.isEmpty) return;
 
-        final picked = result.files.single;
-        final bytes = await _readPickedFileBytes(picked);
-        if (bytes == null) {
-          throw Exception('Could not read file contents');
-        }
+      _setImporting(_StockImportKind.bulk);
 
-        final extension = picked.extension?.toLowerCase();
-        List<Stock> stocks = [];
-
-        if (extension == 'csv') {
-          stocks = _parseCSV(bytes);
-        } else if (extension == 'xlsx' || extension == 'xls') {
-          stocks = _parseExcel(bytes);
-        }
-
-        setState(() {
-          _importedStocks = stocks;
-          _importSource = 'Manual Bulk Upload';
-          _isImporting = false;
-        });
-
-        if (stocks.isNotEmpty) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Successfully imported ${stocks.length} stocks'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        }
+      final picked = result.files.single;
+      final bytes = await _readPickedFileBytes(picked);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
       }
+
+      final extension = picked.extension?.toLowerCase();
+      List<Stock> stocks = [];
+
+      if (extension == 'csv') {
+        stocks = _parseCSV(bytes);
+      } else if (extension == 'xlsx' || extension == 'xls') {
+        stocks = _parseExcel(bytes);
+      }
+
+      if (stocks.isEmpty) {
+        _setImporting(null);
+        _showImportWarning(
+            'No stocks found. Expected columns: symbol, quantity, buyPrice');
+        return;
+      }
+      await _persistImportedStocks(stocks, 'Manual Bulk Upload');
     } catch (e) {
-      setState(() {
-        _isImporting = false;
-      });
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error importing file: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(days: 1),
-            action: SnackBarAction(
-              label: 'Close',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
-          ),
-        );
-      }
+      _setImporting(null);
+      _showImportError('Error importing file: $e');
     }
   }
 
@@ -272,66 +372,161 @@ class _AddStockScreenState extends State<AddStockScreen> {
         withData: true,
       );
 
-      if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          _isImporting = true;
-        });
+      if (result == null || result.files.isEmpty) return;
 
-        final bytes = await _readPickedFileBytes(result.files.single);
-        if (bytes == null) {
-          throw Exception('Could not read file contents');
-        }
+      _setImporting(_StockImportKind.iciciSummary);
 
-        final stocks = _parseICICIDirectExcel(bytes);
-
-        setState(() {
-          _importedStocks = stocks;
-          _importSource = 'ICICIDirect';
-          _isImporting = false;
-        });
-
-        if (stocks.isNotEmpty) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Successfully imported ${stocks.length} stocks from ICICIDirect'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        } else if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('No stocks found. Ensure this is an ICICIDirect portfolio Excel export.'),
-              backgroundColor: Colors.orange,
-              duration: const Duration(days: 1),
-              action: SnackBarAction(
-                label: 'Close',
-                textColor: Colors.white,
-                onPressed: () {},
-              ),
-            ),
-          );
-        }
+      final bytes = await _readPickedFileBytes(result.files.single);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
       }
-    } catch (e) {
-      setState(() {
-        _isImporting = false;
-      });
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error importing ICICIDirect file: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(days: 1),
-            action: SnackBarAction(
-              label: 'Close',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
-          ),
+
+      final stocks = _parseICICIDirectExcel(bytes);
+      if (stocks.isEmpty) {
+        _setImporting(null);
+        _showImportWarning(
+          'No stocks found. Ensure this is an ICICIDirect portfolio Excel export.',
         );
+        return;
       }
+      await _persistImportedStocks(stocks, 'ICICIDirect');
+    } catch (e) {
+      _setImporting(null);
+      _showImportError('Error importing ICICIDirect file: $e');
+    }
+  }
+
+  Future<void> _confirmAndImportICICIDirectTransactions() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Import ICICIDirect transactions'),
+        content: const Text(
+          'All previous transactions will be erased and newly created',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Upload'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _pickAndImportICICIDirectTransactionsFile();
+  }
+
+  Future<void> _confirmAndDeleteAllHoldings() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete All Stocks'),
+        content: const Text(
+          'This deletes every holding and transaction for your account. The stock catalog is not removed. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingAll = true);
+    final provider = context.read<FinanceProvider>();
+    final ok = await provider.deleteAllHoldings();
+    if (!mounted) return;
+    setState(() => _isDeletingAll = false);
+    if (!ok) {
+      _showImportError('Error: ${provider.error}');
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('All stocks deleted'),
+        backgroundColor: Colors.green,
+      ),
+    );
+    Navigator.pop(context);
+  }
+
+  Future<void> _pickAndImportICICIDirectTransactionsFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls'],
+        allowMultiple: false,
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      _setImporting(_StockImportKind.iciciTransactions);
+
+      final bytes = await _readPickedFileBytes(result.files.single);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
+      }
+
+      final rows = _parseICICIDirectTransactions(bytes);
+      if (rows.isEmpty) {
+        _setImporting(null);
+        _showImportWarning(
+          'No transactions found. Ensure this is an ICICIDirect transactions Excel export (Action, Transaction Date, Transaction Price).',
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      final provider = context.read<FinanceProvider>();
+      await provider.rebuildLedgerFromTransactions(
+        source: 'ICICIDirect',
+        items: rows
+            .map(
+              (r) => {
+                'symbol': r.symbol,
+                'name': r.name,
+                'isin': r.isin,
+                'action': r.action,
+                'quantity': r.quantity,
+                'price': r.price,
+                'transaction_date': r.transactionDate.toUtc().toIso8601String(),
+                'brokerage': r.brokerage,
+                'transaction_charges': r.transactionCharges,
+                'stamp_duty': r.stampDuty,
+                'segment': r.segment,
+                'stt': r.stt,
+                'exchange': r.exchange,
+              },
+            )
+            .toList(),
+      );
+      if (!mounted) return;
+      _setImporting(null);
+      if (provider.error != null) {
+        _showImportError('Error: ${provider.error}');
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Imported ${rows.length} ICICIDirect transactions'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      _setImporting(null);
+      _showImportError('Error importing ICICIDirect transactions file: $e');
     }
   }
 
@@ -344,69 +539,233 @@ class _AddStockScreenState extends State<AddStockScreen> {
         withData: true,
       );
 
-      if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          _isImporting = true;
-        });
+      if (result == null || result.files.isEmpty) return;
 
-        final bytes = await _readPickedFileBytes(result.files.single);
-        if (bytes == null) {
-          throw Exception('Could not read file contents');
-        }
+      _setImporting(_StockImportKind.hdfc);
 
-        final stocks = _parseHDFCSecCSV(bytes);
-
-        setState(() {
-          _importedStocks = stocks;
-          _importSource = 'HDFCSec';
-          _isImporting = false;
-        });
-
-        if (stocks.isNotEmpty) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Successfully imported ${stocks.length} stocks from HDFCSec'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        } else if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text(
-                'No stocks found. Ensure this is an HDFC Securities portfolio CSV export.',
-              ),
-              backgroundColor: Colors.orange,
-              duration: const Duration(days: 1),
-              action: SnackBarAction(
-                label: 'Close',
-                textColor: Colors.white,
-                onPressed: () {},
-              ),
-            ),
-          );
-        }
+      final bytes = await _readPickedFileBytes(result.files.single);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
       }
-    } catch (e) {
-      setState(() {
-        _isImporting = false;
-      });
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error importing HDFCSec file: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(days: 1),
-            action: SnackBarAction(
-              label: 'Close',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
-          ),
+
+      final stocks = _parseHDFCSecCSV(bytes);
+      if (stocks.isEmpty) {
+        _setImporting(null);
+        _showImportWarning(
+          'No stocks found. Ensure this is an HDFC Securities portfolio CSV export.',
         );
+        return;
       }
+      await _persistImportedStocks(stocks, 'HDFCSec');
+    } catch (e) {
+      _setImporting(null);
+      _showImportError('Error importing HDFCSec file: $e');
     }
+  }
+
+  Future<void> _confirmAndImportPartialTransactions({
+    required String title,
+    required String body,
+    required Future<void> Function() onConfirm,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await onConfirm();
+    }
+  }
+
+  List<Map<String, dynamic>> _tradeTxnApiItems(List<_TradeTxnRow> rows) {
+    return rows
+        .map(
+          (r) => {
+            'symbol': r.symbol,
+            'name': r.name,
+            'isin': r.isin,
+            'action': r.action,
+            'quantity': r.quantity,
+            'price': r.price,
+            'transaction_date': r.transactionDate.toUtc().toIso8601String(),
+            'brokerage': r.brokerage,
+            'transaction_charges': r.transactionCharges,
+            'stamp_duty': r.stampDuty,
+            'segment': r.segment,
+            'stt': r.stt,
+            'exchange': r.exchange,
+          },
+        )
+        .toList();
+  }
+
+  Future<void> _importPartialTransactions({
+    required _StockImportKind kind,
+    required String source,
+    required String label,
+    required List<_TradeTxnRow> Function(Uint8List bytes) parse,
+    required String emptyMessage,
+    List<String> extensions = const ['xlsx', 'xls'],
+  }) async {
+    try {
+      final FilePickerResult? picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: extensions,
+        allowMultiple: false,
+        withData: true,
+      );
+
+      if (picked == null || picked.files.isEmpty) return;
+
+      _setImporting(kind);
+
+      final bytes = await _readPickedFileBytes(picked.files.single);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
+      }
+
+      final rows = parse(bytes);
+      if (rows.isEmpty) {
+        _setImporting(null);
+        _showImportWarning(emptyMessage);
+        return;
+      }
+
+      if (!mounted) return;
+      final provider = context.read<FinanceProvider>();
+      final resultMerge = await provider.mergeLedgerFromTransactions(
+        source: source,
+        items: _tradeTxnApiItems(rows),
+      );
+      if (!mounted) return;
+      _setImporting(null);
+      if (provider.error != null || resultMerge == null) {
+        _showImportError('Error: ${provider.error ?? 'import failed'}');
+        return;
+      }
+      final unmapped = resultMerge.unmapped;
+      final msg = unmapped.isEmpty
+          ? 'Imported ${resultMerge.count} $label transactions'
+          : 'Imported ${resultMerge.count} $label transactions; '
+              '${unmapped.length} unmapped: ${unmapped.take(5).join(', ')}'
+              '${unmapped.length > 5 ? '…' : ''}';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: unmapped.isEmpty ? Colors.green : Colors.orange,
+        ),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      _setImporting(null);
+      _showImportError('Error importing $label transactions file: $e');
+    }
+  }
+
+  Future<void> _confirmAndImportHDFCTransactions() async {
+    await _confirmAndImportPartialTransactions(
+      title: 'Import HDFC transactions',
+      body:
+          'For each stock in the file, transactions in the file date range (and any undated rows) will be replaced. Other stocks and out-of-range history are kept.',
+      onConfirm: () => _importPartialTransactions(
+        kind: _StockImportKind.hdfcTransactions,
+        source: 'HDFCSec',
+        label: 'HDFCSec',
+        parse: _parseHDFCTransactions,
+        emptyMessage:
+            'No transactions found. Ensure this is an HDFC Equity Trade Details export (Scrip Name, Trade Date, Buy/Sell).',
+      ),
+    );
+  }
+
+  Future<void> _confirmAndImportZerodhaTransactions() async {
+    await _confirmAndImportPartialTransactions(
+      title: 'Import Zerodha transactions',
+      body:
+          'For each stock in the file, transactions in the file date range (and any undated rows) will be replaced. Other stocks and out-of-range history are kept.',
+      onConfirm: () => _importPartialTransactions(
+        kind: _StockImportKind.zerodhaTransactions,
+        source: 'Zerodha',
+        label: 'Zerodha',
+        parse: _parseZerodhaTransactions,
+        emptyMessage:
+            'No transactions found. Ensure this is a Zerodha tradebook export (Symbol, Trade Date, Trade Type).',
+      ),
+    );
+  }
+
+  Future<void> _confirmAndImportBulkTransactions() async {
+    await _confirmAndImportPartialTransactions(
+      title: 'Import bulk transactions',
+      body:
+          'For each stock in the file, transactions in the file date range (and any undated rows) will be replaced. Other stocks and out-of-range history are kept.',
+      onConfirm: () => _importPartialTransactions(
+        kind: _StockImportKind.bulkTransactions,
+        source: 'Manual Bulk Upload',
+        label: 'Bulk',
+        parse: _parseBulkTransactions,
+        emptyMessage:
+            'No transactions found. Use columns: Symbol, Trade Date, Trade Type, Quantity, Price.',
+        extensions: const ['csv', 'xlsx', 'xls'],
+      ),
+    );
+  }
+
+  Future<void> _downloadSampleCsv({
+    required String fileName,
+    required String content,
+  }) async {
+    final bytes = Uint8List.fromList(utf8.encode(content));
+    final path = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save sample file',
+      fileName: fileName,
+      type: FileType.custom,
+      allowedExtensions: const ['csv'],
+      bytes: bytes,
+    );
+    if (!mounted) return;
+    if (path == null && !kIsWeb) {
+      _showImportWarning('Sample download cancelled');
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Saved $fileName'),
+        backgroundColor: Colors.green,
+      ),
+    );
+  }
+
+  Future<void> _downloadBulkSummarySample() async {
+    await _downloadSampleCsv(
+      fileName: 'bulk_holdings_sample.csv',
+      content: 'symbol,quantity,buyPrice\n'
+          'RELIANCE,10,2500.00\n'
+          'TCS,5,3500.50\n',
+    );
+  }
+
+  Future<void> _downloadBulkTransactionsSample() async {
+    await _downloadSampleCsv(
+      fileName: 'bulk_transactions_sample.csv',
+      content: 'Symbol,Trade Date,Trade Type,Quantity,Price\n'
+          'RELIANCE,01-Jan-2024,Buy,10,2500.00\n'
+          'RELIANCE,15-Jun-2024,Sell,2,2800.00\n'
+          'TCS,2024-03-01,buy,5,3500.50\n',
+    );
   }
 
   Future<void> _pickAndImportZerodhaFile() async {
@@ -418,68 +777,27 @@ class _AddStockScreenState extends State<AddStockScreen> {
         withData: true,
       );
 
-      if (result != null && result.files.isNotEmpty) {
-        setState(() {
-          _isImporting = true;
-        });
+      if (result == null || result.files.isEmpty) return;
 
-        final bytes = await _readPickedFileBytes(result.files.single);
-        if (bytes == null) {
-          throw Exception('Could not read file contents');
-        }
+      _setImporting(_StockImportKind.zerodha);
 
-        final stocks = _parseZerodhaExcel(bytes);
-
-        setState(() {
-          _importedStocks = stocks;
-          _importSource = 'Zerodha';
-          _isImporting = false;
-        });
-
-        if (stocks.isNotEmpty) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Successfully imported ${stocks.length} stocks from Zerodha'),
-                backgroundColor: Colors.green,
-              ),
-            );
-          }
-        } else if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text(
-                'No stocks found. Ensure this is a Zerodha holdings Excel export.',
-              ),
-              backgroundColor: Colors.orange,
-              duration: const Duration(days: 1),
-              action: SnackBarAction(
-                label: 'Close',
-                textColor: Colors.white,
-                onPressed: () {},
-              ),
-            ),
-          );
-        }
+      final bytes = await _readPickedFileBytes(result.files.single);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
       }
-    } catch (e) {
-      setState(() {
-        _isImporting = false;
-      });
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error importing Zerodha file: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(days: 1),
-            action: SnackBarAction(
-              label: 'Close',
-              textColor: Colors.white,
-              onPressed: () {},
-            ),
-          ),
+
+      final stocks = _parseZerodhaExcel(bytes);
+      if (stocks.isEmpty) {
+        _setImporting(null);
+        _showImportWarning(
+          'No stocks found. Ensure this is a Zerodha holdings Excel export.',
         );
+        return;
       }
+      await _persistImportedStocks(stocks, 'Zerodha');
+    } catch (e) {
+      _setImporting(null);
+      _showImportError('Error importing Zerodha file: $e');
     }
   }
 
@@ -582,6 +900,64 @@ class _AddStockScreenState extends State<AddStockScreen> {
     return double.tryParse(cleaned) ?? 0.0;
   }
 
+  double _parseOptionalNumber(String value) {
+    final t = value.trim();
+    if (t.isEmpty || t.toUpperCase() == 'NA') return 0.0;
+    return _parseNumber(t);
+  }
+
+  String _cellAt(List<String> row, int col) {
+    if (col < 0 || col >= row.length) return '';
+    return row[col].trim();
+  }
+
+  DateTime? _parseICICITransactionDate(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return null;
+    final iso = DateTime.tryParse(t);
+    if (iso != null) return iso;
+    final match = RegExp(r'^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$').firstMatch(t);
+    if (match != null) {
+      const months = {
+        'jan': 1,
+        'feb': 2,
+        'mar': 3,
+        'apr': 4,
+        'may': 5,
+        'jun': 6,
+        'jul': 7,
+        'aug': 8,
+        'sep': 9,
+        'oct': 10,
+        'nov': 11,
+        'dec': 12,
+      };
+      final day = int.tryParse(match.group(1)!);
+      final month = months[match.group(2)!.toLowerCase()];
+      var year = int.tryParse(match.group(3)!);
+      if (day == null || month == null || year == null) return null;
+      if (year < 100) year += 2000;
+      return DateTime(year, month, day);
+    }
+    final slash = RegExp(r'^(\d{1,2})/(\d{1,2})/(\d{2,4})$').firstMatch(t);
+    if (slash != null) {
+      final day = int.tryParse(slash.group(1)!);
+      final month = int.tryParse(slash.group(2)!);
+      var year = int.tryParse(slash.group(3)!);
+      if (day == null || month == null || year == null) return null;
+      if (year < 100) year += 2000;
+      return DateTime(year, month, day);
+    }
+    return null;
+  }
+
+  int _headerCol(Map<String, int> headers, bool Function(String) test) {
+    for (final entry in headers.entries) {
+      if (test(entry.key)) return entry.value;
+    }
+    return -1;
+  }
+
   String _normalizeImportHeader(String raw) {
     return raw
         .toLowerCase()
@@ -632,19 +1008,23 @@ class _AddStockScreenState extends State<AddStockScreen> {
         : (lines.first.contains(',') ? ',' : '\t');
 
     return lines
-        .map((line) => line.split(delimiter).map((cell) => cell.trim()).toList())
+        .map(
+            (line) => line.split(delimiter).map((cell) => cell.trim()).toList())
         .toList();
   }
 
   List<List<String>> _parseHtmlTableRows(String html) {
     final rows = <List<String>>[];
-    final rowRegex = RegExp(r'<tr[^>]*>(.*?)</tr>', caseSensitive: false, dotAll: true);
-    final cellRegex = RegExp(r'<t[dh][^>]*>(.*?)</t[dh]>', caseSensitive: false, dotAll: true);
+    final rowRegex =
+        RegExp(r'<tr[^>]*>(.*?)</tr>', caseSensitive: false, dotAll: true);
+    final cellRegex = RegExp(r'<t[dh][^>]*>(.*?)</t[dh]>',
+        caseSensitive: false, dotAll: true);
 
     for (final rowMatch in rowRegex.allMatches(html)) {
       final cells = <String>[];
       for (final cellMatch in cellRegex.allMatches(rowMatch.group(1)!)) {
-        final raw = cellMatch.group(1)!
+        final raw = cellMatch
+            .group(1)!
             .replaceAll(RegExp(r'<[^>]+>'), ' ')
             .replaceAll('&nbsp;', ' ')
             .replaceAll('&amp;', '&')
@@ -695,7 +1075,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
         }
       }
 
-      final hasStockSymbol = headers.keys.any((h) => h.contains('stock symbol'));
+      final hasStockSymbol =
+          headers.keys.any((h) => h.contains('stock symbol'));
       final hasQty = headers.keys.any((h) => h == 'qty' || h.contains('qty'));
       final hasAvgCost = headers.keys.any(
         (h) => h.contains('average cost price') || h.contains('avg cost'),
@@ -740,7 +1121,10 @@ class _AddStockScreenState extends State<AddStockScreen> {
       }
     }
 
-    if (headerRowIndex == null || symbolCol < 0 || qtyCol < 0 || buyPriceCol < 0) {
+    if (headerRowIndex == null ||
+        symbolCol < 0 ||
+        qtyCol < 0 ||
+        buyPriceCol < 0) {
       return [];
     }
 
@@ -756,16 +1140,17 @@ class _AddStockScreenState extends State<AddStockScreen> {
           continue;
         }
 
-        final name = nameCol >= 0 && nameCol < row.length ? row[nameCol].trim() : '';
-        final quantity =
-            qtyCol < row.length ? _parseNumber(row[qtyCol]) : 0.0;
-        final buyPrice = buyPriceCol < row.length
-            ? _parseNumber(row[buyPriceCol])
-            : 0.0;
-        final currentPrice = currentPriceCol >= 0 && currentPriceCol < row.length
-            ? _parseNumber(row[currentPriceCol])
-            : 0.0;
-        final isinRaw = isinCol >= 0 && isinCol < row.length ? row[isinCol].trim() : '';
+        final name =
+            nameCol >= 0 && nameCol < row.length ? row[nameCol].trim() : '';
+        final quantity = qtyCol < row.length ? _parseNumber(row[qtyCol]) : 0.0;
+        final buyPrice =
+            buyPriceCol < row.length ? _parseNumber(row[buyPriceCol]) : 0.0;
+        final currentPrice =
+            currentPriceCol >= 0 && currentPriceCol < row.length
+                ? _parseNumber(row[currentPriceCol])
+                : 0.0;
+        final isinRaw =
+            isinCol >= 0 && isinCol < row.length ? row[isinCol].trim() : '';
         final isin = isinRaw.isEmpty ? null : isinRaw.toUpperCase();
 
         if (quantity == 0) continue;
@@ -791,26 +1176,24 @@ class _AddStockScreenState extends State<AddStockScreen> {
     return stocks;
   }
 
-  List<Stock> _parseICICIDirectExcel(Uint8List bytes) {
-    List<List<String>> rows;
-
+  List<List<String>> _rowsFromICICIDirectBytes(Uint8List bytes) {
     if (_isOleOrZipExcel(bytes)) {
-      rows = _rowsFromExcelBytes(bytes);
-    } else {
-      final text = _decodeSpreadsheetText(bytes);
-      final lower = text.toLowerCase();
-      if (lower.contains('<table') || lower.contains('<html')) {
-        rows = _parseHtmlTableRows(text);
-      } else {
-        // ICICIDirect often exports tab-separated text with a .xls extension
-        rows = _parseDelimitedRows(text);
-      }
+      return _rowsFromExcelBytes(bytes);
     }
+    final text = _decodeSpreadsheetText(bytes);
+    final lower = text.toLowerCase();
+    if (lower.contains('<table') || lower.contains('<html')) {
+      return _parseHtmlTableRows(text);
+    }
+    // ICICIDirect often exports tab-separated text with a .xls extension
+    return _parseDelimitedRows(text);
+  }
 
+  List<Stock> _parseICICIDirectExcel(Uint8List bytes) {
+    final rows = _rowsFromICICIDirectBytes(bytes);
     final stocks = _stocksFromICICIDirectRows(rows);
     if (stocks.isNotEmpty) return stocks;
 
-    // Fallback: try the other strategies if header mapping failed
     if (_isOleOrZipExcel(bytes)) {
       final text = _decodeSpreadsheetText(bytes);
       return _stocksFromICICIDirectRows(_parseDelimitedRows(text));
@@ -821,6 +1204,420 @@ class _AddStockScreenState extends State<AddStockScreen> {
     } catch (_) {
       return stocks;
     }
+  }
+
+  List<_ICICITxnRow> _parseICICIDirectTransactions(Uint8List bytes) {
+    var rows = _txnsFromICICIDirectRows(_rowsFromICICIDirectBytes(bytes));
+    if (rows.isNotEmpty) return rows;
+    if (_isOleOrZipExcel(bytes)) {
+      final text = _decodeSpreadsheetText(bytes);
+      rows = _txnsFromICICIDirectRows(_parseDelimitedRows(text));
+      if (rows.isNotEmpty) return rows;
+    }
+    try {
+      return _txnsFromICICIDirectRows(_rowsFromExcelBytes(bytes));
+    } catch (_) {
+      return rows;
+    }
+  }
+
+  List<_ICICITxnRow> _txnsFromICICIDirectRows(List<List<String>> rows) {
+    if (rows.isEmpty) return [];
+
+    int? headerRowIndex;
+    var symbolCol = -1;
+    var nameCol = -1;
+    var isinCol = -1;
+    var actionCol = -1;
+    var qtyCol = -1;
+    var priceCol = -1;
+    var brokerageCol = -1;
+    var chargesCol = -1;
+    var stampCol = -1;
+    var segmentCol = -1;
+    var sttCol = -1;
+    var dateCol = -1;
+    var exchangeCol = -1;
+
+    for (var i = 0; i < rows.length; i++) {
+      final headers = <String, int>{};
+      for (var j = 0; j < rows[i].length; j++) {
+        final header = _normalizeImportHeader(rows[i][j]);
+        if (header.isNotEmpty) headers[header] = j;
+      }
+      final hasAction = headers.keys.any((h) => h == 'action');
+      final hasTxnDate =
+          headers.keys.any((h) => h.contains('transaction date'));
+      final hasTxnPrice =
+          headers.keys.any((h) => h.contains('transaction price'));
+      if (!hasAction || !hasTxnDate || !hasTxnPrice) continue;
+
+      headerRowIndex = i;
+      symbolCol = _headerCol(headers, (h) => h.contains('stock symbol'));
+      nameCol = _headerCol(headers, (h) => h.contains('company name'));
+      isinCol = _headerCol(headers, (h) => h.contains('isin'));
+      actionCol = _headerCol(headers, (h) => h == 'action');
+      qtyCol = _headerCol(headers, (h) => h == 'quantity' || h == 'qty');
+      priceCol = _headerCol(headers, (h) => h.contains('transaction price'));
+      brokerageCol = _headerCol(headers, (h) => h.contains('brokerage'));
+      chargesCol =
+          _headerCol(headers, (h) => h.contains('transaction charges'));
+      stampCol = _headerCol(headers, (h) => h.contains('stamp'));
+      segmentCol = _headerCol(headers, (h) => h == 'segment');
+      sttCol = _headerCol(headers, (h) => h.contains('stt'));
+      dateCol = _headerCol(headers, (h) => h.contains('transaction date'));
+      exchangeCol = _headerCol(headers, (h) => h == 'exchange');
+      break;
+    }
+
+    if (headerRowIndex == null ||
+        symbolCol < 0 ||
+        actionCol < 0 ||
+        qtyCol < 0 ||
+        priceCol < 0 ||
+        dateCol < 0) {
+      return [];
+    }
+
+    final txns = <_ICICITxnRow>[];
+    for (var i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final symbol = _cellAt(row, symbolCol).toUpperCase();
+      if (symbol.isEmpty ||
+          symbol.contains('TOTAL') ||
+          symbol == 'STOCK SYMBOL') {
+        continue;
+      }
+      final action = _cellAt(row, actionCol);
+      if (action.isEmpty) continue;
+      final quantity = _parseOptionalNumber(_cellAt(row, qtyCol));
+      if (quantity <= 0) continue;
+      final date = _parseICICITransactionDate(_cellAt(row, dateCol));
+      if (date == null) continue;
+      txns.add((
+        symbol: symbol,
+        name: _cellAt(row, nameCol),
+        isin: _parseIsinFromCell(_cellAt(row, isinCol)) ?? '',
+        action: action,
+        quantity: quantity,
+        price: _parseOptionalNumber(_cellAt(row, priceCol)),
+        transactionDate: date,
+        brokerage: _parseOptionalNumber(_cellAt(row, brokerageCol)),
+        transactionCharges: _parseOptionalNumber(_cellAt(row, chargesCol)),
+        stampDuty: _parseOptionalNumber(_cellAt(row, stampCol)),
+        segment: _cellAt(row, segmentCol),
+        stt: _cellAt(row, sttCol),
+        exchange: _cellAt(row, exchangeCol),
+      ));
+    }
+    return txns;
+  }
+
+  List<_TradeTxnRow> _parseExcelOrDelimitedTxns(
+    Uint8List bytes,
+    List<_TradeTxnRow> Function(List<List<String>> rows) fromRows,
+  ) {
+    try {
+      final rows = fromRows(_rowsFromExcelBytes(bytes));
+      if (rows.isNotEmpty) return rows;
+    } catch (_) {}
+    if (_isOleOrZipExcel(bytes)) {
+      final text = _decodeSpreadsheetText(bytes);
+      final rows = fromRows(_parseDelimitedRows(text));
+      if (rows.isNotEmpty) return rows;
+    }
+    try {
+      final text = utf8.decode(bytes);
+      return fromRows(_parseDelimitedRows(text));
+    } catch (_) {
+      return [];
+    }
+  }
+
+  List<_TradeTxnRow> _parseHDFCTransactions(Uint8List bytes) {
+    return _parseExcelOrDelimitedTxns(bytes, _txnsFromHDFCTradeRows);
+  }
+
+  List<_TradeTxnRow> _txnsFromHDFCTradeRows(List<List<String>> rows) {
+    if (rows.isEmpty) return [];
+
+    int? headerRowIndex;
+    var nameCol = -1;
+    var actionCol = -1;
+    var qtyCol = -1;
+    var priceCol = -1;
+    var dateCol = -1;
+    var brokerageCol = -1;
+    var chargesCol = -1;
+    var stampCol = -1;
+    var sttCol = -1;
+    var exchangeCol = -1;
+
+    for (var i = 0; i < rows.length; i++) {
+      final headers = <String, int>{};
+      for (var j = 0; j < rows[i].length; j++) {
+        final header = _normalizeImportHeader(rows[i][j]);
+        if (header.isNotEmpty) headers[header] = j;
+      }
+      final hasScrip = headers.keys.any((h) => h.contains('scrip name'));
+      final hasTradeDate = headers.keys.any((h) => h.contains('trade date'));
+      final hasBuySell = headers.keys.any(
+        (h) => h == 'buy/sell' || h == 'buy sell' || h.contains('buy/sell'),
+      );
+      if (!hasScrip || !hasTradeDate || !hasBuySell) continue;
+
+      headerRowIndex = i;
+      nameCol = _headerCol(headers, (h) => h.contains('scrip name'));
+      actionCol = _headerCol(
+        headers,
+        (h) => h == 'buy/sell' || h == 'buy sell' || h.contains('buy/sell'),
+      );
+      qtyCol = _headerCol(headers, (h) => h == 'qty' || h == 'quantity');
+      priceCol = _headerCol(
+        headers,
+        (h) => h.contains('market price') || h == 'price',
+      );
+      dateCol = _headerCol(headers, (h) => h.contains('trade date'));
+      brokerageCol = _headerCol(
+        headers,
+        (h) => h.contains('brok') || h.contains('brokerage'),
+      );
+      chargesCol = _headerCol(headers, (h) => h.contains('transaction charges'));
+      stampCol = _headerCol(headers, (h) => h.contains('stamp'));
+      sttCol = _headerCol(headers, (h) => h == 'stt' || h.startsWith('stt '));
+      exchangeCol = _headerCol(headers, (h) => h == 'exchange');
+      break;
+    }
+
+    if (headerRowIndex == null ||
+        nameCol < 0 ||
+        actionCol < 0 ||
+        qtyCol < 0 ||
+        priceCol < 0 ||
+        dateCol < 0) {
+      return [];
+    }
+
+    final txns = <_TradeTxnRow>[];
+    for (var i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final name = _cellAt(row, nameCol);
+      if (name.isEmpty ||
+          name.toUpperCase().contains('TOTAL') ||
+          name.toUpperCase() == 'SCRIP NAME') {
+        continue;
+      }
+      final action = _cellAt(row, actionCol);
+      if (action.isEmpty) continue;
+      final quantity = _parseOptionalNumber(_cellAt(row, qtyCol));
+      if (quantity <= 0) continue;
+      final date = _parseICICITransactionDate(_cellAt(row, dateCol));
+      if (date == null) continue;
+      txns.add((
+        symbol: '',
+        name: name,
+        isin: '',
+        action: action,
+        quantity: quantity,
+        price: _parseOptionalNumber(_cellAt(row, priceCol)),
+        transactionDate: date,
+        brokerage: _parseOptionalNumber(_cellAt(row, brokerageCol)),
+        transactionCharges: _parseOptionalNumber(_cellAt(row, chargesCol)),
+        stampDuty: _parseOptionalNumber(_cellAt(row, stampCol)),
+        segment: '',
+        stt: _cellAt(row, sttCol),
+        exchange: _cellAt(row, exchangeCol),
+      ));
+    }
+    return txns;
+  }
+
+  List<_TradeTxnRow> _parseZerodhaTransactions(Uint8List bytes) {
+    return _parseExcelOrDelimitedTxns(bytes, _txnsFromZerodhaTradeRows);
+  }
+
+  List<_TradeTxnRow> _txnsFromZerodhaTradeRows(List<List<String>> rows) {
+    if (rows.isEmpty) return [];
+
+    int? headerRowIndex;
+    var symbolCol = -1;
+    var isinCol = -1;
+    var actionCol = -1;
+    var qtyCol = -1;
+    var priceCol = -1;
+    var dateCol = -1;
+    var exchangeCol = -1;
+    var segmentCol = -1;
+
+    for (var i = 0; i < rows.length; i++) {
+      final headers = <String, int>{};
+      for (var j = 0; j < rows[i].length; j++) {
+        final header = _normalizeImportHeader(rows[i][j]);
+        if (header.isNotEmpty) headers[header] = j;
+      }
+      final hasSymbol = headers.keys.any((h) => h == 'symbol');
+      final hasTradeDate = headers.keys.any((h) => h.contains('trade date'));
+      final hasTradeType = headers.keys.any((h) => h.contains('trade type'));
+      if (!hasSymbol || !hasTradeDate || !hasTradeType) continue;
+
+      headerRowIndex = i;
+      symbolCol = _headerCol(headers, (h) => h == 'symbol');
+      isinCol = _headerCol(headers, (h) => h.contains('isin'));
+      actionCol = _headerCol(headers, (h) => h.contains('trade type'));
+      qtyCol = _headerCol(headers, (h) => h == 'quantity' || h == 'qty');
+      priceCol = _headerCol(headers, (h) => h == 'price');
+      dateCol = _headerCol(headers, (h) => h.contains('trade date'));
+      exchangeCol = _headerCol(headers, (h) => h == 'exchange');
+      segmentCol = _headerCol(headers, (h) => h == 'segment');
+      break;
+    }
+
+    if (headerRowIndex == null ||
+        symbolCol < 0 ||
+        actionCol < 0 ||
+        qtyCol < 0 ||
+        priceCol < 0 ||
+        dateCol < 0) {
+      return [];
+    }
+
+    final txns = <_TradeTxnRow>[];
+    for (var i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final symbol = _cellAt(row, symbolCol).toUpperCase();
+      final isin = _parseIsinFromCell(_cellAt(row, isinCol)) ?? '';
+      if (symbol.isEmpty && isin.isEmpty) continue;
+      if (symbol.contains('TOTAL') || symbol == 'SYMBOL') continue;
+      final action = _cellAt(row, actionCol);
+      if (action.isEmpty) continue;
+      final quantity = _parseOptionalNumber(_cellAt(row, qtyCol));
+      if (quantity <= 0) continue;
+      final date = _parseICICITransactionDate(_cellAt(row, dateCol));
+      if (date == null) continue;
+      txns.add((
+        symbol: symbol,
+        name: '',
+        isin: isin,
+        action: action,
+        quantity: quantity,
+        price: _parseOptionalNumber(_cellAt(row, priceCol)),
+        transactionDate: date,
+        brokerage: 0,
+        transactionCharges: 0,
+        stampDuty: 0,
+        segment: _cellAt(row, segmentCol),
+        stt: '',
+        exchange: _cellAt(row, exchangeCol),
+      ));
+    }
+    return txns;
+  }
+
+  List<_TradeTxnRow> _parseBulkTransactions(Uint8List bytes) {
+    final fromExcel = _parseExcelOrDelimitedTxns(bytes, _txnsFromBulkTradeRows);
+    if (fromExcel.isNotEmpty) return fromExcel;
+    try {
+      final input = utf8.decode(bytes);
+      final fields = const CsvToListConverter().convert(input);
+      final rows = fields
+          .map((row) => row.map((cell) => cell.toString().trim()).toList())
+          .toList();
+      return _txnsFromBulkTradeRows(rows);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  List<_TradeTxnRow> _txnsFromBulkTradeRows(List<List<String>> rows) {
+    if (rows.isEmpty) return [];
+
+    int? headerRowIndex;
+    var symbolCol = -1;
+    var actionCol = -1;
+    var qtyCol = -1;
+    var priceCol = -1;
+    var dateCol = -1;
+
+    for (var i = 0; i < rows.length; i++) {
+      final headers = <String, int>{};
+      for (var j = 0; j < rows[i].length; j++) {
+        final header = _normalizeImportHeader(rows[i][j]);
+        if (header.isNotEmpty) headers[header] = j;
+      }
+      final hasSymbol = headers.keys.any((h) => h == 'symbol');
+      final hasTradeDate = headers.keys.any(
+        (h) => h.contains('trade date') || h.contains('transaction date'),
+      );
+      final hasType = headers.keys.any(
+        (h) =>
+            h.contains('trade type') ||
+            h == 'buy/sell' ||
+            h == 'action' ||
+            h == 'type',
+      );
+      if (!hasSymbol || !hasTradeDate || !hasType) continue;
+
+      headerRowIndex = i;
+      symbolCol = _headerCol(headers, (h) => h == 'symbol');
+      actionCol = _headerCol(
+        headers,
+        (h) =>
+            h.contains('trade type') ||
+            h == 'buy/sell' ||
+            h == 'action' ||
+            h == 'type',
+      );
+      qtyCol = _headerCol(headers, (h) => h == 'quantity' || h == 'qty');
+      priceCol = _headerCol(
+        headers,
+        (h) => h == 'price' || h.contains('buy price') || h.contains('trade price'),
+      );
+      dateCol = _headerCol(
+        headers,
+        (h) => h.contains('trade date') || h.contains('transaction date'),
+      );
+      break;
+    }
+
+    if (headerRowIndex == null ||
+        symbolCol < 0 ||
+        actionCol < 0 ||
+        qtyCol < 0 ||
+        priceCol < 0 ||
+        dateCol < 0) {
+      return [];
+    }
+
+    final txns = <_TradeTxnRow>[];
+    for (var i = headerRowIndex + 1; i < rows.length; i++) {
+      final row = rows[i];
+      final symbol = _cellAt(row, symbolCol).toUpperCase();
+      if (symbol.isEmpty || symbol.contains('TOTAL') || symbol == 'SYMBOL') {
+        continue;
+      }
+      final action = _cellAt(row, actionCol);
+      if (action.isEmpty) continue;
+      final quantity = _parseOptionalNumber(_cellAt(row, qtyCol));
+      if (quantity <= 0) continue;
+      final date = _parseICICITransactionDate(_cellAt(row, dateCol));
+      if (date == null) continue;
+      txns.add((
+        symbol: symbol,
+        name: '',
+        isin: '',
+        action: action,
+        quantity: quantity,
+        price: _parseOptionalNumber(_cellAt(row, priceCol)),
+        transactionDate: date,
+        brokerage: 0,
+        transactionCharges: 0,
+        stampDuty: 0,
+        segment: '',
+        stt: '',
+        exchange: '',
+      ));
+    }
+    return txns;
   }
 
   List<Stock> _parseHDFCSecCSV(Uint8List bytes) {
@@ -855,7 +1652,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
         }
       }
 
-      final hasSymbol = headers.keys.any((h) => h == 'symbol' || h.contains('symbol'));
+      final hasSymbol =
+          headers.keys.any((h) => h == 'symbol' || h.contains('symbol'));
       final hasQty = headers.keys.any((h) => h == 'qty' || h.contains('qty'));
       final hasAvgPrice = headers.keys.any(
         (h) => h.contains('avg price') || h.contains('average price'),
@@ -864,18 +1662,15 @@ class _AddStockScreenState extends State<AddStockScreen> {
       if (hasSymbol && hasQty && hasAvgPrice) {
         headerRowIndex = i;
         symbolCol = headers['symbol'] ??
-            headers.entries
-                .firstWhere((e) => e.key.contains('symbol'))
-                .value;
+            headers.entries.firstWhere((e) => e.key.contains('symbol')).value;
         // Prefer exact "qty" over "long term qty"
         qtyCol = headers['qty'] ??
-            headers.entries
-                .firstWhere((e) => e.key.contains('qty'))
-                .value;
+            headers.entries.firstWhere((e) => e.key.contains('qty')).value;
         buyPriceCol = headers.entries
             .firstWhere(
               (e) =>
-                  e.key.contains('avg price') || e.key.contains('average price'),
+                  e.key.contains('avg price') ||
+                  e.key.contains('average price'),
             )
             .value;
         currentPriceCol = -1;
@@ -893,7 +1688,10 @@ class _AddStockScreenState extends State<AddStockScreen> {
       }
     }
 
-    if (headerRowIndex == null || symbolCol < 0 || qtyCol < 0 || buyPriceCol < 0) {
+    if (headerRowIndex == null ||
+        symbolCol < 0 ||
+        qtyCol < 0 ||
+        buyPriceCol < 0) {
       return [];
     }
 
@@ -972,7 +1770,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
 
       final hasSymbol =
           headers.keys.any((h) => h == 'symbol' || h.contains('symbol'));
-      final hasQtyAvailable = headers.keys.any((h) => h == 'quantity available');
+      final hasQtyAvailable =
+          headers.keys.any((h) => h == 'quantity available');
       final hasAvgPrice = headers.keys.any(
         (h) => h == 'average price' || h.contains('average price'),
       );
@@ -980,9 +1779,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
       if (hasSymbol && hasQtyAvailable && hasAvgPrice) {
         headerRowIndex = i;
         symbolCol = headers['symbol'] ??
-            headers.entries
-                .firstWhere((e) => e.key.contains('symbol'))
-                .value;
+            headers.entries.firstWhere((e) => e.key.contains('symbol')).value;
         qtyCol = headers['quantity available']!;
         buyPriceCol = headers['average price'] ??
             headers.entries
@@ -1017,7 +1814,10 @@ class _AddStockScreenState extends State<AddStockScreen> {
       }
     }
 
-    if (headerRowIndex == null || symbolCol < 0 || qtyCol < 0 || buyPriceCol < 0) {
+    if (headerRowIndex == null ||
+        symbolCol < 0 ||
+        qtyCol < 0 ||
+        buyPriceCol < 0) {
       return [];
     }
 
@@ -1043,8 +1843,9 @@ class _AddStockScreenState extends State<AddStockScreen> {
         final isinRaw =
             isinCol >= 0 && isinCol < row.length ? row[isinCol].trim() : '';
         final isin = isinRaw.isEmpty ? null : isinRaw.toUpperCase();
-        final sector =
-            sectorCol >= 0 && sectorCol < row.length ? row[sectorCol].trim() : '';
+        final sector = sectorCol >= 0 && sectorCol < row.length
+            ? row[sectorCol].trim()
+            : '';
 
         if (quantity == 0) continue;
 
@@ -1070,86 +1871,6 @@ class _AddStockScreenState extends State<AddStockScreen> {
     return stocks;
   }
 
-  Future<void> _saveImportedStocks() async {
-    if (_importedStocks.isEmpty || _importSource == null || _isSavingImported) {
-      return;
-    }
-
-    setState(() => _isSavingImported = true);
-
-    try {
-      final provider = context.read<FinanceProvider>();
-      final watchList = context.read<AuthProvider>().useAsStockWatchList;
-      final toSave = watchList
-          ? _importedStocks
-              .map(
-                (s) => Stock(
-                  id: s.id,
-                  symbol: s.symbol,
-                  name: s.name,
-                  sector: s.sector,
-                  industry: s.industry,
-                  marketCap: s.marketCap,
-                  source: s.source,
-                  quantity: 1,
-                  buyPrice: s.buyPrice,
-                  currentPrice: s.currentPrice,
-                  sixthHighestPrice: s.sixthHighestPrice,
-                  sixthLowestPrice: s.sixthLowestPrice,
-                  lastFetchedDate: s.lastFetchedDate,
-                  lastPriceFetchedDate: s.lastPriceFetchedDate,
-                  createdAt: s.createdAt,
-                  updatedAt: s.updatedAt,
-                  isin: s.isin,
-                  lastBuyPrice: s.lastBuyPrice,
-                  lastBuyDate: s.lastBuyDate,
-                  lastSalePrice: s.lastSalePrice,
-                  lastSaleDate: s.lastSaleDate,
-                ),
-              )
-              .toList()
-          : _importedStocks;
-      await provider.addStocksBulk(toSave, source: _importSource!);
-
-      if (provider.error != null) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error: ${provider.error}'),
-              backgroundColor: Colors.red,
-              duration: const Duration(days: 1),
-              action: SnackBarAction(
-                label: 'Close',
-                textColor: Colors.white,
-                onPressed: () {},
-              ),
-            ),
-          );
-        }
-        return;
-      }
-
-      setState(() {
-        _importedStocks = [];
-        _importSource = null;
-      });
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Stocks imported successfully'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        Navigator.pop(context);
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSavingImported = false);
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1158,7 +1879,29 @@ class _AddStockScreenState extends State<AddStockScreen> {
           widget.stock == null ? 'Add Stock' : 'Edit Stock',
         ),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        actions: authAppBarActions(context),
+        actions: authAppBarActions(
+          context,
+          extra: [
+            if (widget.stock == null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                child: OutlinedButton(
+                  onPressed: _isImporting ? null : _confirmAndDeleteAllHoldings,
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red.shade700,
+                    side: BorderSide(color: Colors.red.shade700),
+                  ),
+                  child: _isDeletingAll
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Delete All Stocks'),
+                ),
+              ),
+          ],
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -1190,24 +1933,59 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Upload ICICIDirect portfolio Excel (Stock Symbol, ISIN Code, Qty, Average Cost Price). ISIN auto-maps broker symbols to NSE/Yahoo on import.',
+                          'Upload ICICIDirect portfolio Excel (Stock Symbol, ISIN Code, Qty, Average Cost Price) or the transactions export (Action, Transaction Date). ISIN auto-maps broker symbols to NSE/Yahoo on import.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: _isImporting ? null : _pickAndImportICICIDirectFile,
-                          icon: _isImporting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.upload_file),
-                          label: Text(_isImporting ? 'Importing...' : 'Select ICICIDirect File'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.orange,
-                            foregroundColor: Colors.white,
-                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _pickAndImportICICIDirectFile,
+                              icon: _isBusy(_StockImportKind.iciciSummary)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.upload_file),
+                              label: Text(
+                                _isBusy(_StockImportKind.iciciSummary)
+                                    ? 'Importing...'
+                                    : 'Select ICICIDirect Summary File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.orange,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _confirmAndImportICICIDirectTransactions,
+                              icon: _isBusy(_StockImportKind.iciciTransactions)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.receipt_long),
+                              label: Text(
+                                _isBusy(_StockImportKind.iciciTransactions)
+                                    ? 'Importing...'
+                                    : 'Select ICICIDirect Transactions File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.deepOrange,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                         const Divider(),
@@ -1217,7 +1995,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                             Icon(Icons.account_balance, color: Colors.teal),
                             SizedBox(width: 8),
                             Text(
-                              'Import HDFC Securities CSV',
+                              'Import HDFC Securities',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -1228,24 +2006,59 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Upload HDFC Securities portfolio CSV (Symbol, Qty, Avg Price). Account: HDFCSec. Transaction date is set to today.',
+                          'Upload HDFC portfolio CSV (Symbol, Qty, Avg Price) or Equity Trade Details Excel (Scrip Name, Trade Date, Buy/Sell). Account: HDFCSec. Scrip names must match Global Stocks.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: _isImporting ? null : _pickAndImportHDFCSecFile,
-                          icon: _isImporting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.upload_file),
-                          label: Text(_isImporting ? 'Importing...' : 'Select HDFCSec File'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.teal,
-                            foregroundColor: Colors.white,
-                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _pickAndImportHDFCSecFile,
+                              icon: _isBusy(_StockImportKind.hdfc)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.upload_file),
+                              label: Text(
+                                _isBusy(_StockImportKind.hdfc)
+                                    ? 'Importing...'
+                                    : 'Select HDFCSec Summary File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.teal,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _confirmAndImportHDFCTransactions,
+                              icon: _isBusy(_StockImportKind.hdfcTransactions)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.receipt_long),
+                              label: Text(
+                                _isBusy(_StockImportKind.hdfcTransactions)
+                                    ? 'Importing...'
+                                    : 'Select HDFCSec Transactions File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.teal.shade700,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                         const Divider(),
@@ -1255,7 +2068,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
                             Icon(Icons.account_balance, color: Colors.indigo),
                             SizedBox(width: 8),
                             Text(
-                              'Import Zerodha Holdings Excel',
+                              'Import Zerodha',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -1266,24 +2079,60 @@ class _AddStockScreenState extends State<AddStockScreen> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'Upload Zerodha holdings Excel (Symbol, ISIN, Sector, Quantity Available, Average Price). Account: Zerodha. Transaction date is set to today.',
+                          'Upload Zerodha holdings Excel (Symbol, ISIN, Quantity Available, Average Price) or tradebook (Symbol, ISIN, Trade Date, Trade Type). Account: Zerodha.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: _isImporting ? null : _pickAndImportZerodhaFile,
-                          icon: _isImporting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.upload_file),
-                          label: Text(_isImporting ? 'Importing...' : 'Select Zerodha File'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.indigo,
-                            foregroundColor: Colors.white,
-                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _pickAndImportZerodhaFile,
+                              icon: _isBusy(_StockImportKind.zerodha)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.upload_file),
+                              label: Text(
+                                _isBusy(_StockImportKind.zerodha)
+                                    ? 'Importing...'
+                                    : 'Select Zerodha Summary File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.indigo,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _confirmAndImportZerodhaTransactions,
+                              icon:
+                                  _isBusy(_StockImportKind.zerodhaTransactions)
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2),
+                                        )
+                                      : const Icon(Icons.receipt_long),
+                              label: Text(
+                                _isBusy(_StockImportKind.zerodhaTransactions)
+                                    ? 'Importing...'
+                                    : 'Select Zerodha Transactions File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.indigo.shade700,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                         const Divider(),
@@ -1302,113 +2151,76 @@ class _AddStockScreenState extends State<AddStockScreen> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 8),
                         const Text(
-                          'Upload a CSV or Excel file with columns: symbol, quantity, buyPrice',
+                          'Summary: symbol, quantity, buyPrice. Transactions: Symbol, Trade Date, Trade Type, Quantity, Price. Download a sample, fill it, then upload.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                         const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: _isImporting ? null : _pickAndImportFile,
-                          icon: _isImporting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.file_upload),
-                          label: Text(_isImporting ? 'Importing...' : 'Select File'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                            foregroundColor: Colors.white,
-                          ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            OutlinedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _downloadBulkSummarySample,
+                              icon: const Icon(Icons.download),
+                              label: const Text('Download Summary Sample'),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed:
+                                  _isImporting ? null : _pickAndImportFile,
+                              icon: _isBusy(_StockImportKind.bulk)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.file_upload),
+                              label: Text(
+                                _isBusy(_StockImportKind.bulk)
+                                    ? 'Importing...'
+                                    : 'Select Summary File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                            OutlinedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _downloadBulkTransactionsSample,
+                              icon: const Icon(Icons.download),
+                              label:
+                                  const Text('Download Transactions Sample'),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed: _isImporting
+                                  ? null
+                                  : _confirmAndImportBulkTransactions,
+                              icon: _isBusy(_StockImportKind.bulkTransactions)
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Icon(Icons.receipt_long),
+                              label: Text(
+                                _isBusy(_StockImportKind.bulkTransactions)
+                                    ? 'Importing...'
+                                    : 'Select Transactions File',
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue.shade700,
+                                foregroundColor: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
-                        if (_importedStocks.isNotEmpty) ...[
-                          const SizedBox(height: 16),
-                          const Divider(),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Imported ${_importedStocks.length} stocks',
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.green,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Container(
-                            constraints: const BoxConstraints(maxHeight: 200),
-                            child: ListView.builder(
-                              shrinkWrap: true,
-                              itemCount: _importedStocks.length,
-                              itemBuilder: (context, index) {
-                                final stock = _importedStocks[index];
-                                return ListTile(
-                                  dense: true,
-                                  leading: const Icon(Icons.chevron_right, size: 20),
-                                  title: Text(
-                                    stock.symbol,
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  subtitle: Text(
-                                    [
-                                      if (stock.isin != null) stock.isin!,
-                                      '${stock.quantity} @ ${formatInr(stock.buyPrice)}',
-                                    ].join(' · '),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: _isSavingImported
-                                      ? null
-                                      : _saveImportedStocks,
-                                  icon: _isSavingImported
-                                      ? const SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.white,
-                                          ),
-                                        )
-                                      : const Icon(Icons.save),
-                                  label: Text(
-                                    _isSavingImported
-                                        ? 'Saving...'
-                                        : 'Save All Stocks',
-                                  ),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    foregroundColor: Colors.white,
-                                    disabledBackgroundColor:
-                                        Colors.green.shade300,
-                                    disabledForegroundColor: Colors.white,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: _isSavingImported
-                                      ? null
-                                      : () {
-                                          setState(() {
-                                            _importedStocks = [];
-                                            _importSource = null;
-                                          });
-                                        },
-                                  child: const Text('Clear'),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
                       ],
                     ),
                   ),
@@ -1417,8 +2229,9 @@ class _AddStockScreenState extends State<AddStockScreen> {
                 Card(
                   color: Colors.indigo.shade50,
                   child: ExpansionTile(
-                    initiallyExpanded: false,
-                    leading: Icon(Icons.edit_note, color: Colors.indigo.shade700),
+                    initiallyExpanded: widget.stock != null,
+                    leading:
+                        Icon(Icons.edit_note, color: Colors.indigo.shade700),
                     title: Text(
                       'Manual Add - Single Stock',
                       style: TextStyle(
@@ -1483,8 +2296,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
             return _searchCatalog(q);
           },
           onSelected: _selectCatalogHit,
-          fieldViewBuilder:
-              (context, controller, focusNode, onFieldSubmitted) {
+          fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
             return TextFormField(
               controller: controller,
               focusNode: focusNode,
@@ -1528,7 +2340,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
               child: Material(
                 elevation: 4,
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 240, maxWidth: 480),
+                  constraints:
+                      const BoxConstraints(maxHeight: 240, maxWidth: 480),
                   child: ListView.builder(
                     padding: EdgeInsets.zero,
                     shrinkWrap: true,
@@ -1561,8 +2374,7 @@ class _AddStockScreenState extends State<AddStockScreen> {
       const SizedBox(height: 16),
       Builder(
         builder: (context) {
-          final watchList =
-              context.watch<AuthProvider>().useAsStockWatchList;
+          final watchList = context.watch<AuthProvider>().useAsStockWatchList;
           if (watchList && _quantityController.text != '1') {
             _quantityController.text = '1';
           }
@@ -1582,8 +2394,12 @@ class _AddStockScreenState extends State<AddStockScreen> {
               if (value == null || value.isEmpty) {
                 return 'Please enter quantity';
               }
-              if (double.tryParse(value) == null) {
+              final qty = double.tryParse(value);
+              if (qty == null) {
                 return 'Please enter a valid number';
+              }
+              if (qty < 0) {
+                return 'Quantity cannot be negative';
               }
               return null;
             },
@@ -1597,9 +2413,8 @@ class _AddStockScreenState extends State<AddStockScreen> {
           labelText: 'Buy Price (₹) *',
           hintText: 'e.g., 2500.50',
           border: const OutlineInputBorder(),
-          helperText: _buyPriceFromLtp
-              ? 'Prefilled from Global Stocks LTP'
-              : null,
+          helperText:
+              _buyPriceFromLtp ? 'Prefilled from Global Stocks LTP' : null,
         ),
         keyboardType: TextInputType.number,
         onChanged: (_) {
@@ -1611,8 +2426,16 @@ class _AddStockScreenState extends State<AddStockScreen> {
           if (value == null || value.isEmpty) {
             return 'Please enter buy price';
           }
-          if (double.tryParse(value) == null) {
+          final price = double.tryParse(value);
+          if (price == null) {
             return 'Please enter a valid number';
+          }
+          if (price < 0) {
+            return 'Buy price cannot be negative';
+          }
+          final qty = double.tryParse(_quantityController.text) ?? 0;
+          if (qty > 0 && price <= 0) {
+            return 'Buy price must be greater than 0';
           }
           return null;
         },

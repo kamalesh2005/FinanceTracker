@@ -1,3 +1,20 @@
+class AppPortal {
+  static const main = 'main';
+  static const learner = 'learner';
+  static const freedom = 'freedom';
+
+  static String normalize(String? value) {
+    switch (value) {
+      case learner:
+        return learner;
+      case freedom:
+        return freedom;
+      default:
+        return main;
+    }
+  }
+}
+
 class AppUser {
   final int id;
   final String? username;
@@ -7,10 +24,15 @@ class AppUser {
   final bool enabled;
   final DateTime? lastLoginAt;
   final int loginCount;
+  final bool googleAuth;
+  final String defaultPortal;
   final double? recommendationFluctuationPct;
   final bool recommendationRulesIsOverride;
   final int recommendationRulesCount;
   final Map<String, dynamic>? recommendationRules;
+  final bool stockReviewEmailEnabled;
+  final bool stockReviewEmailAdminEnabled;
+  final bool stockReviewEmailEffective;
 
   AppUser({
     required this.id,
@@ -21,10 +43,15 @@ class AppUser {
     required this.enabled,
     this.lastLoginAt,
     this.loginCount = 0,
+    this.googleAuth = false,
+    this.defaultPortal = AppPortal.main,
     this.recommendationFluctuationPct,
     this.recommendationRulesIsOverride = false,
     this.recommendationRulesCount = 0,
     this.recommendationRules,
+    this.stockReviewEmailEnabled = true,
+    this.stockReviewEmailAdminEnabled = false,
+    this.stockReviewEmailEffective = false,
   });
 
   bool get isAdmin => role == 'admin';
@@ -64,10 +91,15 @@ class AppUser {
     bool? enabled,
     DateTime? lastLoginAt,
     int? loginCount,
+    bool? googleAuth,
+    String? defaultPortal,
     double? recommendationFluctuationPct,
     bool? recommendationRulesIsOverride,
     int? recommendationRulesCount,
     Map<String, dynamic>? recommendationRules,
+    bool? stockReviewEmailEnabled,
+    bool? stockReviewEmailAdminEnabled,
+    bool? stockReviewEmailEffective,
   }) {
     return AppUser(
       id: id ?? this.id,
@@ -78,6 +110,8 @@ class AppUser {
       enabled: enabled ?? this.enabled,
       lastLoginAt: lastLoginAt ?? this.lastLoginAt,
       loginCount: loginCount ?? this.loginCount,
+      googleAuth: googleAuth ?? this.googleAuth,
+      defaultPortal: defaultPortal ?? this.defaultPortal,
       recommendationFluctuationPct:
           recommendationFluctuationPct ?? this.recommendationFluctuationPct,
       recommendationRulesIsOverride:
@@ -85,6 +119,12 @@ class AppUser {
       recommendationRulesCount:
           recommendationRulesCount ?? this.recommendationRulesCount,
       recommendationRules: recommendationRules ?? this.recommendationRules,
+      stockReviewEmailEnabled:
+          stockReviewEmailEnabled ?? this.stockReviewEmailEnabled,
+      stockReviewEmailAdminEnabled:
+          stockReviewEmailAdminEnabled ?? this.stockReviewEmailAdminEnabled,
+      stockReviewEmailEffective:
+          stockReviewEmailEffective ?? this.stockReviewEmailEffective,
     );
   }
 
@@ -112,6 +152,8 @@ class AppUser {
       enabled: json['enabled'] as bool? ?? true,
       lastLoginAt: lastLogin,
       loginCount: (json['login_count'] as num?)?.toInt() ?? 0,
+      googleAuth: json['google_auth'] == true,
+      defaultPortal: AppPortal.normalize(json['default_portal'] as String?),
       recommendationFluctuationPct:
           (json['recommendation_fluctuation_pct'] as num?)?.toDouble(),
       recommendationRulesIsOverride:
@@ -119,6 +161,10 @@ class AppUser {
       recommendationRulesCount:
           (json['recommendation_rules_count'] as num?)?.toInt() ?? 0,
       recommendationRules: rules,
+      stockReviewEmailEnabled: json['stock_review_email_enabled'] == true,
+      stockReviewEmailAdminEnabled:
+          json['stock_review_email_admin_enabled'] == true,
+      stockReviewEmailEffective: json['stock_review_email_effective'] == true,
     );
   }
 }

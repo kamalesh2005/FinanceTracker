@@ -74,9 +74,12 @@ func generateOTPCode() (string, error) {
 }
 
 func (h *Handler) CaptchaConfig(c *gin.Context) {
+	clientID := auth.GoogleClientID()
 	c.JSON(http.StatusOK, gin.H{
 		"turnstileSiteKey": auth.TurnstileSiteKey(),
 		"enabled":          true,
+		"googleClientId":   clientID,
+		"googleEnabled":    clientID != "",
 	})
 }
 
@@ -204,7 +207,7 @@ func (h *Handler) Register(c *gin.Context) {
 		Username:     ptrString(username),
 		Email:        ptrString(email),
 		Mobile:       ptrString(mobile),
-		PasswordHash: hash,
+		PasswordHash: &hash,
 		Role:         models.RoleUser,
 		Enabled:      true,
 	}
@@ -213,12 +216,7 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Role)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create token"})
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"token": token, "user": publicUser(user)})
+	h.writeAuthResponse(c, http.StatusCreated, user)
 }
 
 func (h *Handler) Login(c *gin.Context) {
@@ -240,53 +238,50 @@ func (h *Handler) Login(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "account disabled"})
 		return
 	}
-	if !auth.CheckPassword(user.PasswordHash, req.Password) {
+	if googleOnlyAccount(user) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "This account uses Google Sign-In"})
+		return
+	}
+	if !user.HasPassword() || !auth.CheckPassword(*user.PasswordHash, req.Password) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
-	now := time.Now().UTC()
-	if err := h.DB.Model(&user).Updates(map[string]interface{}{
-		"last_login_at": now,
-		"login_count":   gorm.Expr("login_count + 1"),
-	}).Error; err != nil {
+	if err := h.touchLogin(&user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update login stats"})
 		return
 	}
-	user.LastLoginAt = &now
-	user.LoginCount++
 
-	token, err := auth.GenerateToken(user.ID, user.Role)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create token"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"token": token, "user": publicUser(user)})
+	h.writeAuthResponse(c, http.StatusOK, user)
 }
 
-func (h *Handler) findUserByIdentifier(identifier string) (models.User, error) {
+func findUserByIdentifierOn(db *gorm.DB, identifier string) (models.User, error) {
 	identifier = strings.TrimSpace(identifier)
 	var user models.User
 
 	email := normalizeEmail(identifier)
 	if strings.Contains(email, "@") {
-		if err := h.DB.Where("email = ?", email).First(&user).Error; err == nil {
+		if err := db.Where("email = ?", email).First(&user).Error; err == nil {
 			return user, nil
 		}
 	}
 
 	mobile := normalizeMobile(identifier)
 	if mobile != "" {
-		if err := h.DB.Where("mobile = ?", mobile).First(&user).Error; err == nil {
+		if err := db.Where("mobile = ?", mobile).First(&user).Error; err == nil {
 			return user, nil
 		}
 	}
 
 	username := strings.ToLower(identifier)
-	if err := h.DB.Where("LOWER(username) = ?", username).First(&user).Error; err == nil {
+	if err := db.Where("LOWER(username) = ?", username).First(&user).Error; err == nil {
 		return user, nil
 	}
 	return user, gorm.ErrRecordNotFound
+}
+
+func (h *Handler) findUserByIdentifier(identifier string) (models.User, error) {
+	return findUserByIdentifierOn(h.DB, identifier)
 }
 
 func (h *Handler) Me(c *gin.Context) {
@@ -392,6 +387,37 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, publicUser(user))
 }
 
+func (h *Handler) UpdateDefaultPortal(c *gin.Context) {
+	v, _ := c.Get(middleware.ContextUserKey)
+	user, ok := v.(models.User)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		DefaultPortal string `json:"default_portal" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	portal, ok := models.NormalizeDefaultPortal(req.DefaultPortal)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "default_portal must be main or learner"})
+		return
+	}
+	if err := h.DB.Model(&user).Update("default_portal", portal).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.DB.First(&user, user.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reload profile"})
+		return
+	}
+	c.JSON(http.StatusOK, publicUser(user))
+}
+
 func (h *Handler) ChangePassword(c *gin.Context) {
 	v, _ := c.Get(middleware.ContextUserKey)
 	user, ok := v.(models.User)
@@ -412,7 +438,11 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "password must be at least 6 characters"})
 		return
 	}
-	if !auth.CheckPassword(user.PasswordHash, req.CurrentPassword) {
+	if googleOnlyAccount(user) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "this account uses Google Sign-In and has no password"})
+		return
+	}
+	if !user.HasPassword() || !auth.CheckPassword(*user.PasswordHash, req.CurrentPassword) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is incorrect"})
 		return
 	}
@@ -426,6 +456,7 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	_ = h.revokeRefreshTokensForUser(user.ID)
 	c.JSON(http.StatusOK, gin.H{"message": "password updated"})
 }
 
@@ -451,6 +482,10 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 	user, err := h.findUserByIdentifier(req.Identifier)
 	if err != nil {
 		// Do not reveal whether the account exists.
+		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code has been sent"})
+		return
+	}
+	if googleOnlyAccount(user) {
 		c.JSON(http.StatusOK, gin.H{"message": "If an account exists, a reset code has been sent"})
 		return
 	}
@@ -532,6 +567,10 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid code or identifier"})
 		return
 	}
+	if googleOnlyAccount(user) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "this account uses Google Sign-In and has no password"})
+		return
+	}
 
 	var otps []models.PasswordResetOTP
 	if err := h.DB.Where("user_id = ? AND used_at IS NULL AND expires_at > ?", user.ID, time.Now()).
@@ -566,6 +605,7 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		return
 	}
 	_ = h.DB.Model(matched).Update("used_at", now).Error
+	_ = h.revokeRefreshTokensForUser(user.ID)
 
 	c.JSON(http.StatusOK, gin.H{"message": "password updated"})
 }
@@ -579,7 +619,9 @@ func publicUser(u models.User) gin.H {
 		"role":          u.Role,
 		"enabled":       u.Enabled,
 		"last_login_at": u.LastLoginAt,
-		"login_count":   u.LoginCount,
+		"login_count":    u.LoginCount,
+		"google_auth":    u.GoogleAuth,
+		"default_portal": u.EffectiveDefaultPortal(),
 	}
 }
 
@@ -601,7 +643,7 @@ func SeedAdminUser(db *gorm.DB) (*models.User, error) {
 	username := "admin"
 	admin := models.User{
 		Username:     &username,
-		PasswordHash: hash,
+		PasswordHash: &hash,
 		Role:         models.RoleAdmin,
 		Enabled:      true,
 	}

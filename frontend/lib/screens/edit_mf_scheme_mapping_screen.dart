@@ -30,6 +30,7 @@ class _EditMFSchemeMappingScreenState extends State<EditMFSchemeMappingScreen> {
   late TextEditingController _notesController;
   final _catalogFocusNode = FocusNode();
   late String _sourceFormat;
+  late String _ignore;
   bool _saving = false;
 
   String? _confirmedIsin;
@@ -59,6 +60,8 @@ class _EditMFSchemeMappingScreenState extends State<EditMFSchemeMappingScreen> {
     _notesController = TextEditingController(text: m?.notes ?? '');
     final format = m?.sourceFormat ?? widget.initialSourceFormat ?? 'Other';
     _sourceFormat = _formats.contains(format) ? format : 'Other';
+    final ignoreRaw = (m?.ignore ?? 'N').trim().toUpperCase();
+    _ignore = ignoreRaw == 'Y' ? 'Y' : 'N';
   }
 
   @override
@@ -107,22 +110,14 @@ class _EditMFSchemeMappingScreenState extends State<EditMFSchemeMappingScreen> {
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_confirmedIsin == null || _confirmedIsin!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Select a scheme from the Global Mutual Funds catalog'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
-    }
     setState(() => _saving = true);
     try {
       final mapping = MFSchemeMapping(
         id: widget.mapping?.id ?? 0,
         sourceSchemeName: _sourceController.text.trim(),
-        mappedIsin: _confirmedIsin!,
+        mappedIsin: _confirmedIsin ?? '',
         sourceFormat: _sourceFormat,
+        ignore: _ignore,
         notes: _notesController.text.trim(),
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
@@ -134,8 +129,14 @@ class _EditMFSchemeMappingScreenState extends State<EditMFSchemeMappingScreen> {
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Mapping saved. Re-upload the broker file to apply.'),
+        SnackBar(
+          content: Text(
+            _ignore == 'Y'
+                ? 'Saved (ignored).'
+                : ((_confirmedIsin == null || _confirmedIsin!.isEmpty)
+                    ? 'Saved Ignore/Note.'
+                    : 'Mapping saved. Re-upload the broker file to apply.'),
+          ),
           backgroundColor: Colors.green,
         ),
       );
@@ -220,15 +221,17 @@ class _EditMFSchemeMappingScreenState extends State<EditMFSchemeMappingScreen> {
                     controller: controller,
                     focusNode: focusNode,
                     decoration: InputDecoration(
-                      labelText: 'Global Mutual Fund *',
-                      hintText: 'Start typing to search catalog',
+                      labelText: 'Global Mutual Fund',
+                      hintText: 'Optional — search catalog to map',
                       border: const OutlineInputBorder(),
                       helperText: _confirmedIsin != null
                           ? 'ISIN: $_confirmedIsin'
                               '${_confirmedSchemeName != null ? ' · $_confirmedSchemeName' : ''}'
-                          : 'Choose a scheme from Global Mutual Funds',
+                          : 'Leave empty to set Ignore/Note only',
                     ),
                     validator: (v) {
+                      final text = (v ?? '').trim();
+                      if (text.isEmpty) return null;
                       if (_confirmedIsin == null || _confirmedIsin!.isEmpty) {
                         return 'Select a scheme from search results';
                       }
@@ -294,12 +297,32 @@ class _EditMFSchemeMappingScreenState extends State<EditMFSchemeMappingScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _ignore,
+                decoration: const InputDecoration(
+                  labelText: 'Ignore',
+                  helperText:
+                      'Y hides this scheme from default missing-funds search',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'N', child: Text('N')),
+                  DropdownMenuItem(value: 'Y', child: Text('Y')),
+                ],
+                onChanged: (v) {
+                  if (v != null) setState(() => _ignore = v);
+                },
+              ),
+              const SizedBox(height: 16),
               TextFormField(
                 controller: _notesController,
                 decoration: const InputDecoration(
-                  labelText: 'Notes',
+                  labelText: 'Note',
+                  hintText: 'Optional (max 200 characters)',
                   border: OutlineInputBorder(),
+                  counterText: '',
                 ),
+                maxLength: 200,
                 maxLines: 2,
               ),
               const SizedBox(height: 24),

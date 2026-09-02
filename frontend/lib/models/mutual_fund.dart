@@ -12,6 +12,12 @@ class MutualFund {
   final DateTime purchaseDate;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final double? return2021;
+  final double? return2022;
+  final double? return2023;
+  final double? return2024;
+  final double? return2025;
+  final double? returnYtd;
 
   MutualFund({
     required this.id,
@@ -27,6 +33,12 @@ class MutualFund {
     required this.purchaseDate,
     required this.createdAt,
     required this.updatedAt,
+    this.return2021,
+    this.return2022,
+    this.return2023,
+    this.return2024,
+    this.return2025,
+    this.returnYtd,
   });
 
   /// Catalog name when linked; otherwise broker upload name.
@@ -34,6 +46,29 @@ class MutualFund {
     final catalog = schemeName.trim();
     if (catalog.isNotEmpty) return catalog;
     return sourceSchemeName.trim();
+  }
+
+  double? returnForYear(int year) {
+    switch (year) {
+      case 2021:
+        return return2021;
+      case 2022:
+        return return2022;
+      case 2023:
+        return return2023;
+      case 2024:
+        return return2024;
+      case 2025:
+        return return2025;
+      default:
+        return null;
+    }
+  }
+
+  static double? _optDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString());
   }
 
   factory MutualFund.fromJson(Map<String, dynamic> json) {
@@ -51,6 +86,12 @@ class MutualFund {
       purchaseDate: DateTime.parse(json['purchase_date']),
       createdAt: DateTime.parse(json['created_at']),
       updatedAt: DateTime.parse(json['updated_at']),
+      return2021: _optDouble(json['return_2021']),
+      return2022: _optDouble(json['return_2022']),
+      return2023: _optDouble(json['return_2023']),
+      return2024: _optDouble(json['return_2024']),
+      return2025: _optDouble(json['return_2025']),
+      returnYtd: _optDouble(json['return_ytd']),
     );
   }
 

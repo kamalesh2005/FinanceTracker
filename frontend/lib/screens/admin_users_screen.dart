@@ -103,11 +103,11 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: Text('Rules — ${user.displayName}'),
+          title: Text('Signal Rules — ${user.displayName}'),
           content: SizedBox(
             width: 520,
             child: !user.recommendationRulesIsOverride
-                ? const Text('Using admin default recommendation rules.')
+                ? const Text('Using admin default signal rules.')
                 : SingleChildScrollView(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -131,7 +131,7 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                         ],
                         const SizedBox(height: 12),
                         const Text(
-                          'Rules',
+                          'Signal rules',
                           style: TextStyle(fontWeight: FontWeight.w600),
                         ),
                         if (ruleList.isEmpty)
@@ -260,6 +260,36 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
     }
   }
 
+  Future<void> _toggleStockReviewEmailAdmin(AppUser user) async {
+    try {
+      final updated = await ApiService.setUserStockReviewEmailAdmin(
+        user.id,
+        !user.stockReviewEmailAdminEnabled,
+      );
+      if (!mounted) return;
+      setState(() {
+        _users = _users
+            .map(
+              (u) => u.id == updated.id
+                  ? u.copyWith(
+                      stockReviewEmailEnabled: updated.stockReviewEmailEnabled,
+                      stockReviewEmailAdminEnabled:
+                          updated.stockReviewEmailAdminEnabled,
+                      stockReviewEmailEffective:
+                          updated.stockReviewEmailEffective,
+                    )
+                  : u,
+            )
+            .toList();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -302,7 +332,10 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                   DataColumn(label: Text('Logins')),
                                   DataColumn(label: Text('Last login')),
                                   DataColumn(label: Text('Fluctuation')),
-                                  DataColumn(label: Text('Rules')),
+                                  DataColumn(label: Text('Signal Rules')),
+                                  DataColumn(label: Text('Review email')),
+                                  DataColumn(label: Text('Admin send')),
+                                  DataColumn(label: Text('Effective')),
                                   DataColumn(label: Text('Enabled')),
                                 ],
                                 rows: _users.map((user) {
@@ -334,6 +367,30 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                           ),
                                         ),
                                       ),
+                                      DataCell(Text(
+                                        user.email != null &&
+                                                user.email!.isNotEmpty
+                                            ? (user.stockReviewEmailEnabled
+                                                ? 'On'
+                                                : 'Off')
+                                            : '—',
+                                      )),
+                                      DataCell(
+                                        Switch(
+                                          value: user.stockReviewEmailAdminEnabled,
+                                          onChanged: user.email != null &&
+                                                  user.email!.isNotEmpty
+                                              ? (_) => _toggleStockReviewEmailAdmin(
+                                                    user,
+                                                  )
+                                              : null,
+                                        ),
+                                      ),
+                                      DataCell(Text(
+                                        user.stockReviewEmailEffective
+                                            ? 'Yes'
+                                            : 'No',
+                                      )),
                                       DataCell(
                                         Switch(
                                           value: user.enabled,

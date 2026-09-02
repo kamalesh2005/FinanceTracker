@@ -13,8 +13,14 @@ const (
 	OnMatchExit     = "exit"
 	OnMatchContinue = "continue"
 
+	// DefaultBuyCondition is the built-in BUY formula.
+	DefaultBuyCondition = `(curr_price < set_buy_price) OR (trend == "bullish" AND curr_price > avg_buy_price * 1.1)`
+
 	// DefaultBookProfitCondition is the built-in Book Profit formula.
-	DefaultBookProfitCondition = `(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95 AND curr_price > avg_buy_price)`
+	DefaultBookProfitCondition = `(curr_price > set_profit_booking_price) OR (highest_price > 0 AND curr_price >= highest_price * 0.95 AND curr_price > avg_buy_price)`
+
+	// DefaultSellCondition is the built-in SELL formula.
+	DefaultSellCondition = `(curr_price < set_stop_loss_price) OR (trend == "moderately bearish_st" AND curr_price < avg_buy_price * 0.9) OR (trend == "bearish_st" OR trend == "bearish_lt" OR trend == "moderately bearish_lt")`
 
 	// LegacyBookProfitCondition is the prior default (before requiring curr_price > avg_buy_price).
 	LegacyBookProfitCondition = `(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95)`
@@ -48,8 +54,13 @@ var BuiltinFields = map[string]struct{}{
 	"last_trade_is_buy":        {},
 	"last_trade_is_sale":       {},
 	"last_trade_is_hold":       {},
+	"last_trade_trend":         {},
+	"trend_matches_last_action": {},
 	"abs_pct_from_last_trade":  {},
+	"highest_price":            {},
+	"lowest_price":             {},
 	"sixth_highest_price":      {},
+	"sixth_lowest_price":       {},
 	"trend":                    {},
 	"set_buy_price":            {},
 	"set_profit_booking_price": {},
@@ -66,33 +77,34 @@ func DefaultRuleset(fluctuationPct float64) Ruleset {
 	return Ruleset{
 		NamedValues: []NamedValue{
 			{Name: "fluctuation_pct", Value: fluctuationPct},
+			{Name: "last_trade_rule_validity_days", Value: 30},
 		},
 		Rules: []Rule{
 			{
 				Order:          1,
 				Recommendation: "AT BUY PRICE",
-				Condition:      "abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_buy",
+				Condition:      "abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_buy AND trend_matches_last_action",
 				OnMatch:        OnMatchExit,
 				Enabled:        true,
 			},
 			{
 				Order:          2,
 				Recommendation: "AT SELL PRICE",
-				Condition:      "abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_sale",
+				Condition:      "abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_sale AND trend_matches_last_action",
 				OnMatch:        OnMatchExit,
 				Enabled:        true,
 			},
 			{
 				Order:          3,
 				Recommendation: "AT HOLD PRICE",
-				Condition:      "abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_hold",
+				Condition:      "abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_hold AND trend_matches_last_action",
 				OnMatch:        OnMatchExit,
 				Enabled:        true,
 			},
 			{
 				Order:          4,
 				Recommendation: "BUY",
-				Condition:      `(set_buy_price > 0 AND curr_price < set_buy_price) OR (trend == "bullish" AND curr_price > avg_buy_price * 1.1)`,
+				Condition:      DefaultBuyCondition,
 				OnMatch:        OnMatchContinue,
 				Enabled:        true,
 			},
@@ -106,7 +118,7 @@ func DefaultRuleset(fluctuationPct float64) Ruleset {
 			{
 				Order:          6,
 				Recommendation: "SELL",
-				Condition:      `(set_stop_loss_price > 0 AND curr_price < set_stop_loss_price) OR (trend == "moderately bearish_st" AND curr_price < avg_buy_price * 0.9) OR (trend == "bearish_st" OR trend == "bearish_lt" OR trend == "moderately bearish_lt")`,
+				Condition:      DefaultSellCondition,
 				OnMatch:        OnMatchContinue,
 				Enabled:        true,
 			},
@@ -276,6 +288,130 @@ func (r *Ruleset) SetNamedValue(name string, value float64) {
 	r.NamedValues = append(r.NamedValues, NamedValue{Name: name, Value: value})
 }
 
+const (
+	namedFluctuationPct              = "fluctuation_pct"
+	namedLastTradeRuleValidityDays   = "last_trade_rule_validity_days"
+	defaultLastTradeRuleValidityDays = 30
+)
+
+// EnsureNamedValueAfter inserts name=value after the named value `after` when
+// `name` is missing. Does not overwrite an existing value. Returns true if inserted.
+func EnsureNamedValueAfter(r *Ruleset, name string, value float64, after string) bool {
+	if r == nil {
+		return false
+	}
+	for _, nv := range r.NamedValues {
+		if nv.Name == name {
+			return false
+		}
+	}
+	insert := NamedValue{Name: name, Value: value}
+	if after != "" {
+		for i, nv := range r.NamedValues {
+			if nv.Name == after {
+				r.NamedValues = append(r.NamedValues[:i+1], append([]NamedValue{insert}, r.NamedValues[i+1:]...)...)
+				return true
+			}
+		}
+	}
+	r.NamedValues = append(r.NamedValues, insert)
+	return true
+}
+
+// EnsureLastTradeRuleValidityDays adds last_trade_rule_validity_days=30 after
+// fluctuation_pct when missing. Existing values are left unchanged.
+func EnsureLastTradeRuleValidityDays(r *Ruleset) bool {
+	return EnsureNamedValueAfter(r, namedLastTradeRuleValidityDays, defaultLastTradeRuleValidityDays, namedFluctuationPct)
+}
+
+var unsetThresholdGuardRes []*regexp.Regexp
+
+func init() {
+	for _, field := range []string{
+		"set_buy_price",
+		"set_stop_loss_price",
+		"set_profit_booking_price",
+	} {
+		unsetThresholdGuardRes = append(unsetThresholdGuardRes,
+			regexp.MustCompile(`(?i)\b`+field+`\s*>\s*0(?:\.0+)?\s+AND\s+`),
+			regexp.MustCompile(`(?i)\s+AND\s+`+field+`\s*>\s*0(?:\.0+)?\b`),
+		)
+	}
+}
+
+// PatchUnsetThresholdGuards removes explicit "field > 0 AND" / "AND field > 0"
+// guards for set_buy_price, set_stop_loss_price, and set_profit_booking_price.
+// Those checks are now applied implicitly when the column is still the default 0.
+// Returns true when any rule was changed.
+func PatchUnsetThresholdGuards(r *Ruleset) bool {
+	if r == nil {
+		return false
+	}
+	changed := false
+	for i := range r.Rules {
+		next := stripUnsetThresholdGuards(r.Rules[i].Condition)
+		if next != r.Rules[i].Condition {
+			r.Rules[i].Condition = next
+			changed = true
+		}
+	}
+	return changed
+}
+
+func stripUnsetThresholdGuards(cond string) string {
+	next := cond
+	for _, re := range unsetThresholdGuardRes {
+		next = re.ReplaceAllString(next, "")
+	}
+	return strings.TrimSpace(next)
+}
+
+// PatchSixthHighLowFieldNames rewrites sixth_highest_price / sixth_lowest_price
+// identifiers in stored formulas to highest_price / lowest_price.
+// Returns true when any rule was changed.
+func PatchSixthHighLowFieldNames(r *Ruleset) bool {
+	if r == nil {
+		return false
+	}
+	changed := false
+	for i := range r.Rules {
+		cond := r.Rules[i].Condition
+		next := strings.ReplaceAll(cond, "sixth_highest_price", "highest_price")
+		next = strings.ReplaceAll(next, "sixth_lowest_price", "lowest_price")
+		if next != cond {
+			r.Rules[i].Condition = next
+			changed = true
+		}
+	}
+	return changed
+}
+
+// PatchAtPriceTrendMatch appends AND trend_matches_last_action to AT BUY/SELL/HOLD
+// PRICE rules that do not already reference it. Returns true when any rule changed.
+func PatchAtPriceTrendMatch(r *Ruleset) bool {
+	if r == nil {
+		return false
+	}
+	changed := false
+	for i := range r.Rules {
+		rec := strings.ToUpper(strings.TrimSpace(r.Rules[i].Recommendation))
+		if rec != "AT BUY PRICE" && rec != "AT SELL PRICE" && rec != "AT HOLD PRICE" {
+			continue
+		}
+		cond := strings.TrimSpace(r.Rules[i].Condition)
+		if cond == "" {
+			continue
+		}
+		lower := strings.ToLower(cond)
+		if strings.Contains(lower, "trend_matches_last_action") {
+			continue
+		}
+		r.Rules[i].Condition = cond + " AND trend_matches_last_action"
+		changed = true
+	}
+	return changed
+}
+
 // PatchLegacyBookProfitConditions upgrades Book Profit rows that still use the
 // prior default formula (missing curr_price > avg_buy_price on the sixth-high branch).
 // Returns true when any rule was changed.
@@ -302,7 +438,8 @@ func PatchLegacyBookProfitConditions(r *Ruleset) bool {
 
 func isLegacySixthHighBookProfit(cond string) bool {
 	c := strings.ToLower(strings.ReplaceAll(cond, " ", ""))
-	if !strings.Contains(c, "sixth_highest_price") || !strings.Contains(c, "0.95") {
+	if (!strings.Contains(c, "sixth_highest_price") && !strings.Contains(c, "highest_price")) ||
+		!strings.Contains(c, "0.95") {
 		return false
 	}
 	// Already has the avg_buy_price guard on the sixth-high path.

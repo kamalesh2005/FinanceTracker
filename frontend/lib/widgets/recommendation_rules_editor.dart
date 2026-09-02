@@ -2,20 +2,87 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/recommendation_engine.dart';
 
-/// Tabular editor for named values + recommendation rules (no raw JSON).
+/// Tabular editor for named values + recommendation/trend rules (no raw JSON).
 class RecommendationRulesEditor extends StatefulWidget {
   final RecommendationRuleset initial;
   final ValueChanged<RecommendationRuleset>? onChanged;
 
-  /// When true, recommendation label fields are read-only (non-admin Configure).
+  /// When true, recommendation label fields are read-only (non-admin Configure / trends).
   final bool lockRecommendationText;
+
+  /// When true, rules cannot be added or removed (trend labels are fixed).
+  final bool fixedRules;
+
+  /// When false, hide the Add rule button (non-admin Configure).
+  final bool allowAddRule;
+
+  /// When true, hide On Match column and force exit on save.
+  final bool hideOnMatch;
+
+  /// Column header for the recommendation/trend label.
+  final String labelColumnTitle;
+
+  /// Section heading above the rules table.
+  final String rulesHeading;
+
+  /// Help text under the rules heading.
+  final String rulesHint;
+
+  /// ExpansionTile body for field names.
+  final String fieldHelpText;
+
+  /// Builtin identifiers allowed in conditions (defaults to signal fields).
+  final Set<String>? builtinFields;
 
   const RecommendationRulesEditor({
     super.key,
     required this.initial,
     this.onChanged,
     this.lockRecommendationText = false,
+    this.fixedRules = false,
+    this.allowAddRule = true,
+    this.hideOnMatch = false,
+    this.labelColumnTitle = 'Signal',
+    this.rulesHeading = 'Signal rules',
+    this.rulesHint =
+        'Evaluated top to bottom. Exit stops; Continue may combine labels with OR.',
+    this.fieldHelpText =
+        'curr_price — current market price\n'
+        'avg_buy_price — average buy price\n'
+        'last_trade_price — latest buy/sell/hold price\n'
+        'last_trade_is_buy / last_trade_is_sale / last_trade_is_hold — booleans\n'
+        'abs_pct_from_last_trade — |curr − last| / last × 100\n'
+        'last_trade_rule_validity_days — ignore last Buy/Sell/Hold older than this many days (default 30)\n'
+        'set_buy_price / set_profit_booking_price / set_stop_loss_price — thresholds (ignored when unset / 0)\n'
+        'highest_price — highest price\n'
+        'lowest_price — lowest price\n'
+        'trend — e.g. "bullish", "bearish_st", "bearish_lt"\n\n'
+        'Use AND / OR, parentheses, and comparisons like:\n'
+        'curr_price < avg_buy_price * 0.9',
+    this.builtinFields,
   });
+
+  /// Builtin fields for trend classification conditions.
+  static const trendBuiltinFields = {
+    'curr_price',
+    'ma7',
+    'ma20',
+    'ma50',
+    'adjusted_st_delta',
+    'adjusted_mt_delta',
+    'st_bearish_strength',
+    'lt_bearish_strength',
+  };
+
+  static const trendFieldHelpText =
+      'curr_price — current market price\n'
+      'ma7 / ma20 / ma50 — simple moving averages\n'
+      'adjusted_st_delta — stock ST delta minus Sensex ST delta\n'
+      'adjusted_mt_delta — stock MT delta minus Sensex MT delta\n'
+      'st_bearish_strength — 0/1/2 from price vs ma7/ma20 and adjusted_st_delta\n'
+      'lt_bearish_strength — 0/1/2 from price vs ma20/ma50 and adjusted_mt_delta\n'
+      'bearish_delta_threshold — named value used for strength (default 10)\n\n'
+      'Use AND / OR, parentheses, and comparisons. First matching Exit wins.';
 
   @override
   State<RecommendationRulesEditor> createState() =>
@@ -51,7 +118,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
     _rules = sorted
         .map((e) => _RuleRow(
               recommendation: TextEditingController(text: e.recommendation),
-              condition: TextEditingController(text: e.condition),
+              condition: TextEditingController(text: _uiCondition(e.condition)),
               onMatch: e.onMatch,
               enabled: e.enabled,
             ))
@@ -60,9 +127,30 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
 
   String _fmt(double v) => v % 1 == 0 ? v.toStringAsFixed(0) : v.toString();
 
+  /// Show friendlier field names in the editor; evaluation still accepts both.
+  static final _unsetGuardLead = RegExp(
+    r'\b(set_buy_price|set_stop_loss_price|set_profit_booking_price)\s*>\s*0(?:\.0+)?\s+AND\s+',
+    caseSensitive: false,
+  );
+  static final _unsetGuardTrail = RegExp(
+    r'\s+AND\s+(set_buy_price|set_stop_loss_price|set_profit_booking_price)\s*>\s*0(?:\.0+)?\b',
+    caseSensitive: false,
+  );
+
+  static String _uiCondition(String cond) {
+    var next = cond
+        .replaceAll('sixth_highest_price', 'highest_price')
+        .replaceAll('sixth_lowest_price', 'lowest_price');
+    next = next.replaceAll(_unsetGuardLead, '');
+    next = next.replaceAll(_unsetGuardTrail, '');
+    return next.trim();
+  }
+
   RecommendationRuleset? buildRuleset({List<String>? errors}) {
     final nvs = <NamedValue>[];
     final names = <String>{};
+    final builtins =
+        widget.builtinFields ?? RecommendationEngine.builtinFields;
     for (var i = 0; i < _named.length; i++) {
       final name = _named[i].name.text.trim();
       final val = double.tryParse(_named[i].value.text.trim());
@@ -70,7 +158,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
         errors?.add('Named value #${i + 1}: name required');
         continue;
       }
-      if (RecommendationEngine.builtinFields.contains(name)) {
+      if (builtins.contains(name)) {
         errors?.add('Named value "$name" conflicts with a built-in field');
         return null;
       }
@@ -90,10 +178,14 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
       final rec = _rules[i].recommendation.text.trim();
       final cond = _rules[i].condition.text.trim();
       if (rec.isEmpty) {
-        errors?.add('Rule #${i + 1}: signal required');
+        errors?.add('Rule #${i + 1}: ${widget.labelColumnTitle.toLowerCase()} required');
         return null;
       }
-      final err = RecommendationEngine.validateCondition(cond, nvs);
+      final err = RecommendationEngine.validateCondition(
+        cond,
+        nvs,
+        builtinFields: builtins,
+      );
       if (err != null) {
         errors?.add('Rule "$rec": $err');
         return null;
@@ -102,7 +194,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
         order: i + 1,
         recommendation: rec,
         condition: cond,
-        onMatch: _rules[i].onMatch,
+        onMatch: widget.hideOnMatch ? 'exit' : _rules[i].onMatch,
         enabled: _rules[i].enabled,
       ));
     }
@@ -210,48 +302,40 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
           ),
         ),
         const SizedBox(height: 20),
-        Text('Rules', style: Theme.of(context).textTheme.titleMedium),
+        Text(widget.rulesHeading, style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 4),
         Text(
-          'Evaluated top to bottom. Exit stops; Continue may combine labels with OR.',
+          widget.rulesHint,
           style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
         ),
         const SizedBox(height: 8),
         _buildRulesTable(),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: TextButton.icon(
-            onPressed: () {
-              setState(() {
-                _rules.add(_RuleRow(
-                  recommendation: TextEditingController(),
-                  condition: TextEditingController(),
-                  onMatch: 'continue',
-                  enabled: true,
-                ));
-              });
-            },
-            icon: const Icon(Icons.add),
-            label: const Text('Add rule'),
+        if (!widget.fixedRules && widget.allowAddRule)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () {
+                setState(() {
+                  _rules.add(_RuleRow(
+                    recommendation: TextEditingController(),
+                    condition: TextEditingController(),
+                    onMatch: 'continue',
+                    enabled: true,
+                  ));
+                });
+              },
+              icon: const Icon(Icons.add),
+              label: const Text('Add rule'),
+            ),
           ),
-        ),
         const SizedBox(height: 12),
         ExpansionTile(
           title: const Text('Field names help'),
           childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-          children: const [
+          children: [
             Text(
-              'curr_price — current market price\n'
-              'avg_buy_price — average buy price\n'
-              'last_trade_price — latest buy/sell/hold price\n'
-              'last_trade_is_buy / last_trade_is_sale / last_trade_is_hold — booleans\n'
-              'abs_pct_from_last_trade — |curr − last| / last × 100\n'
-              'set_buy_price / set_profit_booking_price / set_stop_loss_price — thresholds\n'
-              'sixth_highest_price — high historical price\n'
-              'trend — e.g. "bullish", "bearish_st", "bearish_lt"\n\n'
-              'Use AND / OR, parentheses, and comparisons like:\n'
-              'curr_price < avg_buy_price * 0.9',
-              style: TextStyle(fontSize: 13, height: 1.35),
+              widget.fieldHelpText,
+              style: const TextStyle(fontSize: 13, height: 1.35),
             ),
           ],
         ),
@@ -264,11 +348,12 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
   static const double _colCondition = 320;
   static const double _colOnMatch = 120;
   static const double _colActions = 200;
-  static const double _tableMinWidth = _colOrder +
-      _colRecommendation +
-      _colCondition +
-      _colOnMatch +
-      _colActions;
+
+  double get _tableMinWidth {
+    var w = _colOrder + _colRecommendation + _colCondition + _colActions;
+    if (!widget.hideOnMatch) w += _colOnMatch;
+    return w;
+  }
 
   Widget _buildRulesTable() {
     final borderColor = Colors.grey.shade300;
@@ -333,7 +418,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
             flex: 2,
             child: Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: Text('Signal', style: style),
+              child: Text(widget.labelColumnTitle, style: style),
             ),
           ),
           Expanded(
@@ -343,10 +428,11 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
               child: Text('Condition', style: style),
             ),
           ),
-          SizedBox(
-            width: _colOnMatch,
-            child: Text('On Match', style: style),
-          ),
+          if (!widget.hideOnMatch)
+            SizedBox(
+              width: _colOnMatch,
+              child: Text('On Match', style: style),
+            ),
           SizedBox(
             width: _colActions,
             child: Text('Actions', style: style),
@@ -388,7 +474,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
                 controller: r.recommendation,
                 readOnly: widget.lockRecommendationText,
                 decoration: InputDecoration(
-                  hintText: 'e.g. BUY',
+                  hintText: widget.fixedRules ? null : 'e.g. BUY',
                   border: const OutlineInputBorder(),
                   isDense: true,
                   filled: widget.lockRecommendationText,
@@ -410,7 +496,7 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
                 minLines: 2,
                 maxLines: 3,
                 decoration: const InputDecoration(
-                  hintText: 'curr_price < avg_buy_price * 0.9',
+                  hintText: 'curr_price < ma7 AND ma7 > ma20',
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
@@ -418,28 +504,29 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
               ),
             ),
           ),
-          SizedBox(
-            width: _colOnMatch,
-            child: DropdownButtonFormField<String>(
-              value: r.onMatch,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                isDense: true,
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+          if (!widget.hideOnMatch)
+            SizedBox(
+              width: _colOnMatch,
+              child: DropdownButtonFormField<String>(
+                value: r.onMatch,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'exit', child: Text('Exit')),
+                  DropdownMenuItem(value: 'continue', child: Text('Continue')),
+                ],
+                onChanged: (v) {
+                  if (v == null) return;
+                  setState(() => r.onMatch = v);
+                  _notify();
+                },
               ),
-              items: const [
-                DropdownMenuItem(value: 'exit', child: Text('Exit')),
-                DropdownMenuItem(value: 'continue', child: Text('Continue')),
-              ],
-              onChanged: (v) {
-                if (v == null) return;
-                setState(() => r.onMatch = v);
-                _notify();
-              },
             ),
-          ),
           SizedBox(
             width: _colActions,
             child: Row(
@@ -488,21 +575,22 @@ class RecommendationRulesEditorState extends State<RecommendationRulesEditor> {
                         },
                   icon: const Icon(Icons.arrow_downward, size: 18),
                 ),
-                IconButton(
-                  tooltip: 'Remove',
-                  padding: EdgeInsets.zero,
-                  constraints:
-                      const BoxConstraints(minWidth: 32, minHeight: 32),
-                  onPressed: () {
-                    setState(() {
-                      r.recommendation.dispose();
-                      r.condition.dispose();
-                      _rules.removeAt(i);
-                    });
-                    _notify();
-                  },
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                ),
+                if (!widget.fixedRules)
+                  IconButton(
+                    tooltip: 'Remove',
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 32, minHeight: 32),
+                    onPressed: () {
+                      setState(() {
+                        r.recommendation.dispose();
+                        r.condition.dispose();
+                        _rules.removeAt(i);
+                      });
+                      _notify();
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                  ),
               ],
             ),
           ),

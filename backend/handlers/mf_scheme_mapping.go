@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +11,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+func normalizeMFMappingIgnore(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "Y":
+		return "Y"
+	default:
+		return "N"
+	}
+}
+
+func normalizeMFMappingNotes(v string) (string, error) {
+	notes := strings.TrimSpace(v)
+	if len(notes) > 200 {
+		return "", fmt.Errorf("notes must be at most 200 characters")
+	}
+	return notes, nil
+}
 
 func (h *Handler) GetMFSchemeMappings(c *gin.Context) {
 	query := h.DB.Model(&models.MFSchemeMapping{}).Order("source_scheme_name ASC")
@@ -31,13 +49,42 @@ func (h *Handler) GetMFSchemeMappings(c *gin.Context) {
 	c.JSON(http.StatusOK, mappings)
 }
 
+// GetUnmappedMFSchemes lists Global_MFSchemeMappings with optional filters.
+// Query: q, unmapped (default true), ignore (default N; Y | N | all).
+// Unmapped = mapped_isin empty (same criteria as before).
 func (h *Handler) GetUnmappedMFSchemes(c *gin.Context) {
+	qFilter := strings.TrimSpace(c.Query("q"))
+	unmappedOnly := true
+	if raw := strings.TrimSpace(strings.ToLower(c.Query("unmapped"))); raw != "" {
+		unmappedOnly = raw == "true" || raw == "1" || raw == "yes"
+	}
+	ignoreFilter := strings.ToUpper(strings.TrimSpace(c.Query("ignore")))
+	if ignoreFilter == "" {
+		ignoreFilter = "N"
+	}
+
+	query := h.DB.Model(&models.MFSchemeMapping{})
+	if qFilter != "" {
+		like := "%" + qFilter + "%"
+		query = query.Where(
+			"source_scheme_name ILIKE ? OR mapped_isin ILIKE ? OR notes ILIKE ?",
+			like, like, like,
+		)
+	}
+	if unmappedOnly {
+		query = query.Where("mapped_isin IS NULL OR TRIM(mapped_isin) = ''")
+	}
+	switch ignoreFilter {
+	case "Y":
+		query = query.Where("UPPER(TRIM(COALESCE(ignore,''))) = ?", "Y")
+	case "ALL", "*":
+		// no ignore filter
+	default: // N
+		query = query.Where("ignore IS NULL OR TRIM(ignore) = '' OR UPPER(TRIM(ignore)) = ?", "N")
+	}
+
 	var mappings []models.MFSchemeMapping
-	err := h.DB.
-		Where("mapped_isin IS NULL OR TRIM(mapped_isin) = ''").
-		Order("source_scheme_name ASC").
-		Find(&mappings).Error
-	if err != nil {
+	if err := query.Order("source_scheme_name ASC").Find(&mappings).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -67,12 +114,21 @@ func backfillUserMutualFundsFromMapping(db *gorm.DB, sourceSchemeName, mappedISI
 	if g.CurrentNAV > 0 {
 		updates["current_nav"] = g.CurrentNAV
 	}
-	return db.Model(&models.MutualFund{}).
+	if err := db.Model(&models.MutualFund{}).
 		Where(
 			"LOWER(TRIM(source_scheme_name)) = ? AND (isin IS NULL OR TRIM(isin) = '')",
 			strings.ToLower(sourceSchemeName),
 		).
-		Updates(updates).Error
+		Updates(updates).Error; err != nil {
+		return err
+	}
+	// Keep ledger rows aligned once admin maps an unmatched scheme.
+	return db.Model(&models.UserMutualFundTransaction{}).
+		Where(
+			"LOWER(TRIM(source_scheme_name)) = ? AND (isin IS NULL OR TRIM(isin) = '')",
+			strings.ToLower(sourceSchemeName),
+		).
+		Update("isin", g.ISIN).Error
 }
 
 func (h *Handler) CreateMFSchemeMapping(c *gin.Context) {
@@ -81,10 +137,16 @@ func (h *Handler) CreateMFSchemeMapping(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	notes, err := normalizeMFMappingNotes(req.Notes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	req.SourceSchemeName = strings.TrimSpace(req.SourceSchemeName)
 	req.MappedISIN = strings.ToUpper(strings.TrimSpace(req.MappedISIN))
 	req.SourceFormat = strings.TrimSpace(req.SourceFormat)
-	req.Notes = strings.TrimSpace(req.Notes)
+	req.Ignore = normalizeMFMappingIgnore(req.Ignore)
+	req.Notes = notes
 	if req.SourceSchemeName == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "source_scheme_name is required"})
 		return
@@ -103,7 +165,7 @@ func (h *Handler) CreateMFSchemeMapping(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if req.MappedISIN != "" {
+	if req.Ignore != "Y" && req.MappedISIN != "" {
 		if err := backfillUserMutualFundsFromMapping(h.DB, req.SourceSchemeName, req.MappedISIN); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -133,6 +195,11 @@ func (h *Handler) UpdateMFSchemeMapping(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	notes, err := normalizeMFMappingNotes(req.Notes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	name := strings.TrimSpace(req.SourceSchemeName)
 	if name == "" {
 		name = mapping.SourceSchemeName
@@ -154,13 +221,14 @@ func (h *Handler) UpdateMFSchemeMapping(c *gin.Context) {
 	if sf := strings.TrimSpace(req.SourceFormat); sf != "" {
 		mapping.SourceFormat = sf
 	}
-	mapping.Notes = strings.TrimSpace(req.Notes)
+	mapping.Ignore = normalizeMFMappingIgnore(req.Ignore)
+	mapping.Notes = notes
 
 	if err := h.DB.Save(&mapping).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if mappedISIN != "" {
+	if mapping.Ignore != "Y" && mappedISIN != "" {
 		if err := backfillUserMutualFundsFromMapping(h.DB, mapping.SourceSchemeName, mappedISIN); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return

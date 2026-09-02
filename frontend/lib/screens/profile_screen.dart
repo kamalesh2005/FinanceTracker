@@ -637,6 +637,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 40),
                 const Divider(),
                 const SizedBox(height: 24),
+                if (context.watch<AuthProvider>().user?.googleAuth == true)
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        'This account uses Google Sign-In. There is no password to change.',
+                        style: TextStyle(height: 1.4),
+                      ),
+                    ),
+                  )
+                else ...[
                 Text(
                   'Change password',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -729,6 +745,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                 ),
+                ],
               ],
             ),
           ),

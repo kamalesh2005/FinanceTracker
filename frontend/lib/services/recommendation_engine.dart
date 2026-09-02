@@ -119,50 +119,62 @@ class RecommendationRuleset {
     return 5;
   }
 
+  double get lastTradeRuleValidityDays {
+    for (final nv in namedValues) {
+      if (nv.name == 'last_trade_rule_validity_days' && nv.value > 0) {
+        return nv.value;
+      }
+    }
+    return 30;
+  }
+
   static RecommendationRuleset defaults({double fluctuationPct = 5}) {
     return RecommendationRuleset(
-      namedValues: [NamedValue(name: 'fluctuation_pct', value: fluctuationPct)],
+      namedValues: [
+        NamedValue(name: 'fluctuation_pct', value: fluctuationPct),
+        NamedValue(name: 'last_trade_rule_validity_days', value: 30),
+      ],
       rules: [
         RecommendationRule(
           order: 1,
           recommendation: 'AT BUY PRICE',
           condition:
-              'abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_buy',
+              'abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_buy AND trend_matches_last_action',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 2,
           recommendation: 'AT SELL PRICE',
           condition:
-              'abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_sale',
+              'abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_sale AND trend_matches_last_action',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 3,
           recommendation: 'AT HOLD PRICE',
           condition:
-              'abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_hold',
+              'abs_pct_from_last_trade < fluctuation_pct AND last_trade_is_hold AND trend_matches_last_action',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 4,
           recommendation: 'BUY',
           condition:
-              '(set_buy_price > 0 AND curr_price < set_buy_price) OR (trend == "bullish" AND curr_price > avg_buy_price * 1.1)',
+              '(curr_price < set_buy_price) OR (trend == "bullish" AND curr_price > avg_buy_price * 1.1)',
           onMatch: 'continue',
         ),
         RecommendationRule(
           order: 5,
           recommendation: 'Book Profit',
           condition:
-              '(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95 AND curr_price > avg_buy_price)',
+              '(curr_price > set_profit_booking_price) OR (highest_price > 0 AND curr_price >= highest_price * 0.95 AND curr_price > avg_buy_price)',
           onMatch: 'continue',
         ),
         RecommendationRule(
           order: 6,
           recommendation: 'SELL',
           condition:
-              '(set_stop_loss_price > 0 AND curr_price < set_stop_loss_price) OR (trend == "moderately bearish_st" AND curr_price < avg_buy_price * 0.9) OR (trend == "bearish_st" OR trend == "bearish_lt" OR trend == "moderately bearish_lt")',
+              '(curr_price < set_stop_loss_price) OR (trend == "moderately bearish_st" AND curr_price < avg_buy_price * 0.9) OR (trend == "bearish_st" OR trend == "bearish_lt" OR trend == "moderately bearish_lt")',
           onMatch: 'continue',
         ),
       ],
@@ -178,12 +190,25 @@ class RecommendationEngine {
     'last_trade_is_buy',
     'last_trade_is_sale',
     'last_trade_is_hold',
+    'last_trade_trend',
+    'trend_matches_last_action',
     'abs_pct_from_last_trade',
+    'highest_price',
+    'lowest_price',
     'sixth_highest_price',
+    'sixth_lowest_price',
     'trend',
     'set_buy_price',
     'set_profit_booking_price',
     'set_stop_loss_price',
+  };
+
+  /// Threshold columns whose DB default is 0. Comparisons against an unset
+  /// value do not match; users do not need to write `field > 0` themselves.
+  static const unsetThresholdFields = {
+    'set_buy_price',
+    'set_stop_loss_price',
+    'set_profit_booking_price',
   };
 
   static String evaluate(
@@ -223,19 +248,37 @@ class RecommendationEngine {
     final lastTxn = stock.lastTradePrice;
     final curr = stock.currentPrice;
     final avg = stock.buyPrice;
+    final lastDate = stock.lastActionDate;
+    final validityDays = ruleset.lastTradeRuleValidityDays;
+    final cutoff = DateTime.now().subtract(
+      Duration(days: validityDays.round()),
+    );
+    final lastTradeValid = lastDate != null &&
+        !lastDate.isBefore(cutoff) &&
+        !stock.lastTradeClearedForRules;
     double absPct = 0;
-    if (lastTxn != null && lastTxn > 0 && curr > 0) {
+    if (lastTradeValid && lastTxn != null && lastTxn > 0 && curr > 0) {
       absPct = ((curr - lastTxn).abs() / lastTxn) * 100.0;
     }
+    final currentTrend = (trend?.trend ?? '').trim();
+    final actionTrend = stock.lastActionTrend.trim();
+    final trendMatches = !lastTradeValid ||
+        actionTrend.isEmpty ||
+        actionTrend == currentTrend;
     final ctx = <String, dynamic>{
       'curr_price': curr,
       'avg_buy_price': avg,
-      'last_trade_price': lastTxn ?? 0.0,
-      'last_trade_is_buy': stock.lastTradeIsBuy,
-      'last_trade_is_sale': stock.lastTradeIsSale,
-      'last_trade_is_hold': stock.lastTradeIsHold,
+      'last_trade_price': lastTradeValid ? (lastTxn ?? 0.0) : 0.0,
+      'last_trade_is_buy': lastTradeValid && stock.lastTradeIsBuy,
+      'last_trade_is_sale': lastTradeValid && stock.lastTradeIsSale,
+      'last_trade_is_hold': lastTradeValid && stock.lastTradeIsHold,
+      'last_trade_trend': lastTradeValid ? actionTrend : '',
+      'trend_matches_last_action': trendMatches,
       'abs_pct_from_last_trade': absPct,
+      'highest_price': stock.sixthHighestPrice,
+      'lowest_price': stock.sixthLowestPrice,
       'sixth_highest_price': stock.sixthHighestPrice,
+      'sixth_lowest_price': stock.sixthLowestPrice,
       'trend': trend?.trend ?? '',
       'set_buy_price': stock.setBuyPrice,
       'set_profit_booking_price': stock.setProfitBookingPrice,
@@ -250,8 +293,9 @@ class RecommendationEngine {
   /// Validates expression identifiers; returns error message or null.
   static String? validateCondition(
     String expr,
-    List<NamedValue> namedValues,
-  ) {
+    List<NamedValue> namedValues, {
+    Set<String>? builtinFields,
+  }) {
     final trimmed = expr.trim();
     if (trimmed.isEmpty) return null;
     if ('('.allMatches(trimmed).length != ')'.allMatches(trimmed).length) {
@@ -260,18 +304,19 @@ class RecommendationEngine {
     if ('"'.allMatches(trimmed).length.isOdd) {
       return 'Unbalanced string quotes';
     }
+    final builtins = builtinFields ?? RecommendationEngine.builtinFields;
     final named = {for (final n in namedValues) n.name};
     final stripped = trimmed.replaceAll(RegExp(r'"[^"]*"'), '""');
     for (final m in RegExp(r'[A-Za-z_][A-Za-z0-9_]*').allMatches(stripped)) {
       final id = m.group(0)!;
       final up = id.toUpperCase();
       if (up == 'AND' || up == 'OR' || up == 'TRUE' || up == 'FALSE') continue;
-      if (builtinFields.contains(id) || named.contains(id)) continue;
+      if (builtins.contains(id) || named.contains(id)) continue;
       return 'Unknown identifier "$id"';
     }
     try {
       _evalBool(trimmed, {
-        for (final f in builtinFields)
+        for (final f in builtins)
           f: f == 'trend' ? '' : (f.startsWith('last_trade_is') ? false : 0.0),
         for (final n in namedValues) n.name: n.value,
       });
@@ -337,25 +382,39 @@ class _Parser {
   dynamic parseComparison() {
     var left = parseAdd();
     _skip();
+    String? op;
     if (_match('==')) {
-      return _equals(left, parseAdd());
+      op = '==';
+    } else if (_match('!=')) {
+      op = '!=';
+    } else if (_match('<=')) {
+      op = '<=';
+    } else if (_match('>=')) {
+      op = '>=';
+    } else if (_match('<')) {
+      op = '<';
+    } else if (_match('>')) {
+      op = '>';
     }
-    if (_match('!=')) {
-      return !_equals(left, parseAdd());
+    if (op == null) return left;
+    final right = parseAdd();
+    if (_isUnset(left) || _isUnset(right)) return false;
+    switch (op) {
+      case '==':
+        return _equals(left, right);
+      case '!=':
+        return !_equals(left, right);
+      case '<=':
+        return _num(left) <= _num(right);
+      case '>=':
+        return _num(left) >= _num(right);
+      case '<':
+        return _num(left) < _num(right);
+      case '>':
+        return _num(left) > _num(right);
+      default:
+        return left;
     }
-    if (_match('<=')) {
-      return _num(left) <= _num(parseAdd());
-    }
-    if (_match('>=')) {
-      return _num(left) >= _num(parseAdd());
-    }
-    if (_match('<')) {
-      return _num(left) < _num(parseAdd());
-    }
-    if (_match('>')) {
-      return _num(left) > _num(parseAdd());
-    }
-    return left;
   }
 
   dynamic parseAdd() {
@@ -363,9 +422,9 @@ class _Parser {
     while (true) {
       _skip();
       if (_match('+')) {
-        left = _num(left) + _num(parseMul());
+        left = _arith(left, parseMul(), (a, b) => a + b);
       } else if (_match('-')) {
-        left = _num(left) - _num(parseMul());
+        left = _arith(left, parseMul(), (a, b) => a - b);
       } else {
         break;
       }
@@ -378,10 +437,9 @@ class _Parser {
     while (true) {
       _skip();
       if (_match('*')) {
-        left = _num(left) * _num(parseUnary());
+        left = _arith(left, parseUnary(), (a, b) => a * b);
       } else if (_match('/')) {
-        final r = _num(parseUnary());
-        left = r == 0 ? 0.0 : _num(left) / r;
+        left = _arith(left, parseUnary(), (a, b) => b == 0 ? 0.0 : a / b);
       } else {
         break;
       }
@@ -392,10 +450,14 @@ class _Parser {
   dynamic parseUnary() {
     _skip();
     if (_match('-')) {
-      return -_num(parseUnary());
+      final v = parseUnary();
+      if (_isUnset(v)) return v;
+      return -_num(v);
     }
     if (_match('+')) {
-      return _num(parseUnary());
+      final v = parseUnary();
+      if (_isUnset(v)) return v;
+      return _num(v);
     }
     return parsePrimary();
   }
@@ -439,7 +501,13 @@ class _Parser {
     if (!ctx.containsKey(id)) {
       throw FormatException('Unknown identifier "$id"');
     }
-    return ctx[id];
+    final v = ctx[id];
+    if (RecommendationEngine.unsetThresholdFields.contains(id) &&
+        v is num &&
+        v <= 0) {
+      return const _Unset();
+    }
+    return v;
   }
 
   String? _readIdent() {
@@ -488,10 +556,22 @@ class _Parser {
   }
 
   static bool _asBool(dynamic v) {
+    if (v is _Unset) return false;
     if (v is bool) return v;
     if (v is num) return v != 0;
     if (v is String) return v.isNotEmpty;
     return false;
+  }
+
+  static bool _isUnset(dynamic v) => v is _Unset;
+
+  static dynamic _arith(
+    dynamic a,
+    dynamic b,
+    double Function(double, double) op,
+  ) {
+    if (_isUnset(a) || _isUnset(b)) return const _Unset();
+    return op(_num(a), _num(b));
   }
 
   static double _num(dynamic v) {
@@ -505,4 +585,8 @@ class _Parser {
     if (a is num && b is num) return (a - b).abs() < 1e-12;
     return a.toString() == b.toString();
   }
+}
+
+class _Unset {
+  const _Unset();
 }

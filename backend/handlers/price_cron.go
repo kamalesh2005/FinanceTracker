@@ -40,6 +40,7 @@ func (h *Handler) UpdateAllCurrentPrices() {
 			log.Printf("IntradayPriceCron [%s]: DB update FAIL: %v", s.Symbol, err)
 			continue
 		}
+		persistYahooTargetAndNews(h.DB, s, price, now, yahooTargetNewsPolicy{})
 		ok++
 		log.Printf("IntradayPriceCron [%s]: OK %.2f (via %s)",
 			s.Symbol, price, resolveYahooSymbol(s.Symbol))

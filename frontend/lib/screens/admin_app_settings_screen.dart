@@ -13,10 +13,13 @@ class AdminAppSettingsScreen extends StatefulWidget {
 }
 
 class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
-  final _rulesKey = GlobalKey<RecommendationRulesEditorState>();
-  RecommendationRuleset? _rules;
+  final _signalRulesKey = GlobalKey<RecommendationRulesEditorState>();
+  final _trendRulesKey = GlobalKey<RecommendationRulesEditorState>();
+  RecommendationRuleset? _signalRules;
+  RecommendationRuleset? _trendRules;
   bool _loading = true;
-  bool _saving = false;
+  bool _savingSignal = false;
+  bool _savingTrend = false;
 
   @override
   void initState() {
@@ -28,41 +31,107 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
     setState(() => _loading = true);
     try {
       final data = await ApiService.getAdminConfig();
-      final raw = data['recommendation_rules'];
+      final signalRaw = data['recommendation_rules'];
+      final trendRaw = data['trend_rules'];
       setState(() {
-        _rules = raw is Map<String, dynamic>
-            ? RecommendationRuleset.fromJson(raw)
+        _signalRules = signalRaw is Map<String, dynamic>
+            ? RecommendationRuleset.fromJson(signalRaw)
             : RecommendationRuleset.defaults();
+        _trendRules = trendRaw is Map<String, dynamic>
+            ? RecommendationRuleset.fromJson(trendRaw)
+            : _defaultTrendRuleset();
       });
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
       );
-      setState(() => _rules = RecommendationRuleset.defaults());
+      setState(() {
+        _signalRules = RecommendationRuleset.defaults();
+        _trendRules = _defaultTrendRuleset();
+      });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _save() async {
+  /// Client-side fallback matching backend trendrules.DefaultRuleset labels.
+  RecommendationRuleset _defaultTrendRuleset() {
+    return RecommendationRuleset(
+      namedValues: [
+        NamedValue(name: 'bearish_delta_threshold', value: 10),
+      ],
+      rules: [
+        RecommendationRule(
+          order: 1,
+          recommendation: 'bullish',
+          condition:
+              'ma7 > 0 AND ma20 > 0 AND curr_price > ma7 AND ma7 > ma20 AND adjusted_st_delta > 0',
+          onMatch: 'exit',
+        ),
+        RecommendationRule(
+          order: 2,
+          recommendation: 'moderately bullish',
+          condition:
+              'ma7 > 0 AND ma20 > 0 AND ((curr_price > ma7 AND ma7 > ma20) OR (ma7 > ma20 AND curr_price <= ma7 AND adjusted_st_delta > 0))',
+          onMatch: 'exit',
+        ),
+        RecommendationRule(
+          order: 3,
+          recommendation: 'bearish_lt',
+          condition:
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength == 2 AND lt_bearish_strength == 2',
+          onMatch: 'exit',
+        ),
+        RecommendationRule(
+          order: 4,
+          recommendation: 'moderately bearish_lt',
+          condition:
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength > 0 AND lt_bearish_strength > 0',
+          onMatch: 'exit',
+        ),
+        RecommendationRule(
+          order: 5,
+          recommendation: 'bearish_st',
+          condition:
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength == 2',
+          onMatch: 'exit',
+        ),
+        RecommendationRule(
+          order: 6,
+          recommendation: 'moderately bearish_st',
+          condition:
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength > 0',
+          onMatch: 'exit',
+        ),
+        RecommendationRule(
+          order: 7,
+          recommendation: 'neutral',
+          condition: 'TRUE',
+          onMatch: 'exit',
+        ),
+      ],
+    );
+  }
+
+  Future<void> _saveSignal() async {
     final errors = <String>[];
-    final rs = _rulesKey.currentState?.buildRuleset(errors: errors);
+    final rs = _signalRulesKey.currentState?.buildRuleset(errors: errors);
     if (rs == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(errors.isEmpty ? 'Invalid rules' : errors.first),
+          content: Text(errors.isEmpty ? 'Invalid signal rules' : errors.first),
         ),
       );
       return;
     }
-    setState(() => _saving = true);
+    setState(() => _savingSignal = true);
     try {
       await ApiService.saveAdminConfig(recommendationRules: rs.toJson());
       if (!mounted) return;
-      setState(() => _rules = rs);
+      setState(() => _signalRules = rs);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Admin signal rules saved')),
+        const SnackBar(content: Text('Signal rules saved')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -70,7 +139,36 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
         SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
       );
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) setState(() => _savingSignal = false);
+    }
+  }
+
+  Future<void> _saveTrend() async {
+    final errors = <String>[];
+    final rs = _trendRulesKey.currentState?.buildRuleset(errors: errors);
+    if (rs == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errors.isEmpty ? 'Invalid trend rules' : errors.first),
+        ),
+      );
+      return;
+    }
+    setState(() => _savingTrend = true);
+    try {
+      await ApiService.saveAdminConfig(trendRules: rs.toJson());
+      if (!mounted) return;
+      setState(() => _trendRules = rs);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Trend rules saved')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
+    } finally {
+      if (mounted) setState(() => _savingTrend = false);
     }
   }
 
@@ -82,32 +180,69 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: authAppBarActions(context),
       ),
-      body: _loading || _rules == null
+      body: _loading || _signalRules == null || _trendRules == null
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
                 Text(
-                  'Default signal rules',
+                  'Signal Rules',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'These are the defaults for all users who have not set their '
-                  'own rules. Seeded to match the previous built-in logic.',
+                  'Defaults for all users who have not set their own signal '
+                  'rules. Seeded to match the previous built-in logic.',
                   style: TextStyle(color: Colors.grey.shade700),
                 ),
                 const SizedBox(height: 16),
                 RecommendationRulesEditor(
-                  key: _rulesKey,
-                  initial: _rules!,
+                  key: _signalRulesKey,
+                  initial: _signalRules!,
+                  rulesHeading: 'Signal rules',
                 ),
                 const SizedBox(height: 12),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: FilledButton(
-                    onPressed: _saving ? null : _save,
-                    child: const Text('Save'),
+                    onPressed: _savingSignal ? null : _saveSignal,
+                    child: const Text('Save signal rules'),
+                  ),
+                ),
+                const SizedBox(height: 32),
+                const Divider(),
+                const SizedBox(height: 16),
+                Text(
+                  'Trend Rules',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Global classification rules for all users. Trend names are '
+                  'fixed; only conditions, order, enable, and named values '
+                  'can be changed. Applied on the next trend refresh.',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
+                const SizedBox(height: 16),
+                RecommendationRulesEditor(
+                  key: _trendRulesKey,
+                  initial: _trendRules!,
+                  lockRecommendationText: true,
+                  fixedRules: true,
+                  hideOnMatch: true,
+                  labelColumnTitle: 'Trend',
+                  rulesHeading: 'Trend rules',
+                  rulesHint:
+                      'Evaluated top to bottom. First matching rule assigns the trend.',
+                  fieldHelpText: RecommendationRulesEditor.trendFieldHelpText,
+                  builtinFields: RecommendationRulesEditor.trendBuiltinFields,
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: FilledButton(
+                    onPressed: _savingTrend ? null : _saveTrend,
+                    child: const Text('Save trend rules'),
                   ),
                 ),
               ],

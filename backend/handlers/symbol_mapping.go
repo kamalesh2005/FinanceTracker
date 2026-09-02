@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"financetracker/dailyclose"
 	"financetracker/models"
 	"financetracker/nseimport"
@@ -116,6 +117,25 @@ type UnmappedStockView struct {
 	HasMapping     bool   `json:"has_mapping"`
 	NeedsAttention bool   `json:"needs_attention"`
 	Reason         string `json:"reason"`
+	Ignore         string `json:"ignore"`
+	Notes          string `json:"notes"`
+}
+
+func normalizeMappingIgnore(v string) string {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "Y":
+		return "Y"
+	default:
+		return "N"
+	}
+}
+
+func normalizeMappingNotes(v string) (string, error) {
+	notes := strings.TrimSpace(v)
+	if len(notes) > 200 {
+		return "", fmt.Errorf("notes must be at most 200 characters")
+	}
+	return notes, nil
 }
 
 func (h *Handler) GetSymbolMappings(c *gin.Context) {
@@ -145,30 +165,55 @@ func (h *Handler) GetSymbolMappings(c *gin.Context) {
 	c.JSON(http.StatusOK, mappings)
 }
 
+// symbolMappingRequest is the create/update body. Industry is applied to
+// Global_Stocks for the source symbol and is not stored on SymbolMapping.
+type symbolMappingRequest struct {
+	SourceSymbol string `json:"source_symbol"`
+	YahooSymbol  string `json:"yahoo_symbol"`
+	ISIN         string `json:"isin"`
+	SourceFormat string `json:"source_format"`
+	Ignore       string `json:"ignore"`
+	Notes        string `json:"notes"`
+	Industry     string `json:"industry"`
+}
+
 func (h *Handler) CreateSymbolMapping(c *gin.Context) {
-	var req models.SymbolMapping
+	var req symbolMappingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	req.SourceSymbol = strings.ToUpper(strings.TrimSpace(req.SourceSymbol))
-	req.YahooSymbol = strings.TrimSpace(req.YahooSymbol)
-	req.ISIN = normalizeISIN(req.ISIN)
-	if req.SourceSymbol == "" || req.YahooSymbol == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "source_symbol and yahoo_symbol are required"})
+	notes, err := normalizeMappingNotes(req.Notes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.SourceFormat == "" {
-		req.SourceFormat = models.SourceFormatManual
+	mapping := models.SymbolMapping{
+		SourceSymbol: strings.ToUpper(strings.TrimSpace(req.SourceSymbol)),
+		YahooSymbol:  strings.TrimSpace(req.YahooSymbol),
+		ISIN:         normalizeISIN(req.ISIN),
+		SourceFormat: strings.TrimSpace(req.SourceFormat),
+		Ignore:       normalizeMappingIgnore(req.Ignore),
+		Notes:        notes,
+	}
+	if mapping.SourceSymbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source_symbol is required"})
+		return
+	}
+	if mapping.SourceFormat == "" {
+		mapping.SourceFormat = models.SourceFormatManual
 	}
 
-	if err := h.DB.Create(&req).Error; err != nil {
+	if err := h.DB.Create(&mapping).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	_ = ReloadSymbolCache(h.DB)
-	h.invalidateStockFetch(req.SourceSymbol)
-	c.JSON(http.StatusCreated, req)
+	if mapping.Ignore != "Y" && mapping.YahooSymbol != "" {
+		h.invalidateStockFetch(mapping.SourceSymbol)
+		h.refreshStockAfterMapping(mapping.SourceSymbol, req.Industry)
+	}
+	c.JSON(http.StatusCreated, mapping)
 }
 
 func (h *Handler) UpdateSymbolMapping(c *gin.Context) {
@@ -179,8 +224,14 @@ func (h *Handler) UpdateSymbolMapping(c *gin.Context) {
 		return
 	}
 
-	var req models.SymbolMapping
+	var req symbolMappingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	notes, err := normalizeMappingNotes(req.Notes)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -190,9 +241,10 @@ func (h *Handler) UpdateSymbolMapping(c *gin.Context) {
 	mapping.YahooSymbol = strings.TrimSpace(req.YahooSymbol)
 	mapping.ISIN = normalizeISIN(req.ISIN)
 	mapping.SourceFormat = strings.TrimSpace(req.SourceFormat)
-	mapping.Notes = req.Notes
-	if mapping.SourceSymbol == "" || mapping.YahooSymbol == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "source_symbol and yahoo_symbol are required"})
+	mapping.Ignore = normalizeMappingIgnore(req.Ignore)
+	mapping.Notes = notes
+	if mapping.SourceSymbol == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source_symbol is required"})
 		return
 	}
 	if mapping.SourceFormat == "" {
@@ -204,9 +256,31 @@ func (h *Handler) UpdateSymbolMapping(c *gin.Context) {
 		return
 	}
 	_ = ReloadSymbolCache(h.DB)
-	h.invalidateStockFetch(oldSource)
-	h.invalidateStockFetch(mapping.SourceSymbol)
+	if mapping.Ignore != "Y" && mapping.YahooSymbol != "" {
+		h.invalidateStockFetch(oldSource)
+		h.invalidateStockFetch(mapping.SourceSymbol)
+		h.refreshStockAfterMapping(mapping.SourceSymbol, req.Industry)
+	}
 	c.JSON(http.StatusOK, mapping)
+}
+
+// refreshStockAfterMapping pulls Yahoo data for the mapped source symbol and
+// optionally applies a user-supplied industry (wins over Yahoo).
+func (h *Handler) refreshStockAfterMapping(sourceSymbol, industry string) {
+	key := strings.ToUpper(strings.TrimSpace(sourceSymbol))
+	if key == "" {
+		return
+	}
+	var stock models.Stock
+	if err := h.DB.Where("UPPER(symbol) = ?", key).First(&stock).Error; err != nil {
+		return
+	}
+	h.applyYahooDataToStock(stock.Symbol, &stock)
+	h.persistYahooStockFields(&stock)
+	if trimmed := strings.TrimSpace(industry); trimmed != "" {
+		stock.Industry = trimmed
+		_ = h.DB.Model(&stock).Update("industry", trimmed).Error
+	}
 }
 
 func (h *Handler) DeleteSymbolMapping(c *gin.Context) {
@@ -225,8 +299,23 @@ func (h *Handler) DeleteSymbolMapping(c *gin.Context) {
 }
 
 func (h *Handler) GetUnmappedStocks(c *gin.Context) {
+	qFilter := strings.TrimSpace(c.Query("q"))
+	unmappedOnly := true
+	if raw := strings.TrimSpace(strings.ToLower(c.Query("unmapped"))); raw != "" {
+		unmappedOnly = raw == "true" || raw == "1" || raw == "yes"
+	}
+	ignoreFilter := strings.ToUpper(strings.TrimSpace(c.Query("ignore")))
+	if ignoreFilter == "" {
+		ignoreFilter = "N"
+	}
+
 	var stocks []models.Stock
-	if err := h.DB.Where("pull_data = ?", models.PullDataYes).Order("symbol ASC").Find(&stocks).Error; err != nil {
+	query := h.DB.Where("pull_data = ?", models.PullDataYes)
+	if qFilter != "" {
+		like := "%" + qFilter + "%"
+		query = query.Where("symbol ILIKE ? OR name ILIKE ?", like, like)
+	}
+	if err := query.Order("symbol ASC").Find(&stocks).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -238,11 +327,37 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 		bySource[strings.ToUpper(m.SourceSymbol)] = m
 	}
 
-	var result []UnmappedStockView
-	result = make([]UnmappedStockView, 0)
+	result := make([]UnmappedStockView, 0)
 	for _, stock := range stocks {
 		key := strings.ToUpper(stock.Symbol)
 		mapping, hasMapping := bySource[key]
+		mappingIgnore := ""
+		mappingNotes := ""
+		if hasMapping {
+			mappingIgnore = strings.ToUpper(strings.TrimSpace(mapping.Ignore))
+			if mappingIgnore == "" {
+				mappingIgnore = "N"
+			}
+			mappingNotes = mapping.Notes
+		}
+
+		switch ignoreFilter {
+		case "Y":
+			if !hasMapping || mappingIgnore != "Y" {
+				continue
+			}
+		case "N":
+			if hasMapping && mappingIgnore == "Y" {
+				continue
+			}
+		case "ALL", "*":
+			// no ignore filter
+		default:
+			if hasMapping && mappingIgnore == "Y" {
+				continue
+			}
+		}
+
 		yahoo := resolveYahooSymbol(stock.Symbol)
 		fetchFailed := needsYahooAnyData(&stock)
 
@@ -254,10 +369,13 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 		} else if hasMapping && fetchFailed {
 			needsAttention = true
 			reason = "Mapped but Yahoo data still missing — mapping may be incorrect"
-		} else if !hasMapping {
-			// Works without mapping (native NSE symbol) — skip from unmapped list
-			continue
+		} else if hasMapping {
+			reason = "Mapped"
 		} else {
+			reason = "Native NSE symbol (no mapping required)"
+		}
+
+		if unmappedOnly && !needsAttention {
 			continue
 		}
 
@@ -268,8 +386,13 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 			if mapping.ISIN != "" {
 				isin = mapping.ISIN
 			}
-		} else {
+		} else if needsAttention {
 			yahooSymbol = ""
+		}
+
+		ignoreOut := ""
+		if hasMapping {
+			ignoreOut = mappingIgnore
 		}
 
 		result = append(result, UnmappedStockView{
@@ -279,6 +402,8 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 			HasMapping:     hasMapping,
 			NeedsAttention: needsAttention,
 			Reason:         reason,
+			Ignore:         ignoreOut,
+			Notes:          mappingNotes,
 		})
 	}
 
@@ -286,7 +411,7 @@ func (h *Handler) GetUnmappedStocks(c *gin.Context) {
 }
 
 // GetAllStocksAdmin returns a paginated Global_Stocks page for admins.
-// Query: q, series, listing_category, pull_data, page (1-based), page_size (default 50, max 100).
+// Query: q, industry, series, listing_category, pull_data, page (1-based), page_size (default 50, max 100).
 func (h *Handler) GetAllStocksAdmin(c *gin.Context) {
 	page := 1
 	if raw := strings.TrimSpace(c.Query("page")); raw != "" {
@@ -308,6 +433,9 @@ func (h *Handler) GetAllStocksAdmin(c *gin.Context) {
 	if search := strings.TrimSpace(c.Query("q")); search != "" {
 		like := "%" + search + "%"
 		q = q.Where("symbol ILIKE ? OR name ILIKE ? OR sector ILIKE ? OR industry ILIKE ?", like, like, like, like)
+	}
+	if industry := strings.TrimSpace(c.Query("industry")); industry != "" {
+		q = q.Where("industry = ?", industry)
 	}
 	if series := strings.TrimSpace(c.Query("series")); series != "" {
 		q = q.Where("UPPER(series) = ?", strings.ToUpper(series))
@@ -340,7 +468,7 @@ func (h *Handler) GetAllStocksAdmin(c *gin.Context) {
 	})
 }
 
-// ImportNSECatalogAdmin upserts Global_Stocks from an uploaded NSE_All CSV.
+// ImportNSECatalogAdmin upserts Global_Stocks from an uploaded NSE_All or Nifty constituent CSV.
 func (h *Handler) ImportNSECatalogAdmin(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -356,13 +484,22 @@ func (h *Handler) ImportNSECatalogAdmin(c *gin.Context) {
 
 	result, err := nseimport.ImportCSV(h.DB, f)
 	if err != nil {
+		_ = RecordImportStatus(h.DB, models.ImportKindNSE, models.ImportSourceManual, err, nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	summary := &ImportSummary{
+		Created: result.Created,
+		Updated: result.Updated,
+		Skipped: result.Skipped,
+		Errors:  result.Errors,
+	}
 	if err := BackfillPullDataFromHoldings(h.DB); err != nil {
+		_ = RecordImportStatus(h.DB, models.ImportKindNSE, models.ImportSourceManual, err, summary)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "import succeeded but pull_data backfill failed: " + err.Error()})
 		return
 	}
+	_ = RecordImportStatus(h.DB, models.ImportKindNSE, models.ImportSourceManual, nil, summary)
 	c.JSON(http.StatusOK, result)
 }
 
@@ -389,9 +526,17 @@ func (h *Handler) ImportClosingPricesAdmin(c *gin.Context) {
 
 	result, err := dailyclose.ImportClosingPricesXLSX(h.DB, data, file.Filename)
 	if err != nil {
+		_ = RecordImportStatus(h.DB, models.ImportKindCloses, models.ImportSourceManual, err, nil)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	_ = RecordImportStatus(h.DB, models.ImportKindCloses, models.ImportSourceManual, nil, &ImportSummary{
+		Created:   result.Created,
+		Updated:   result.Updated,
+		Skipped:   result.Skipped,
+		Unmatched: result.Unmatched,
+		Errors:    result.Errors,
+	})
 	c.JSON(http.StatusOK, result)
 }
 

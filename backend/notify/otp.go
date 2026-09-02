@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/smtp"
 	"net/url"
 	"os"
 	"strings"
@@ -13,39 +12,35 @@ import (
 
 // SendEmailOTP delivers a password-reset code by SMTP when configured; otherwise logs to console.
 func SendEmailOTP(to, code string) error {
-	host := os.Getenv("SMTP_HOST")
-	port := os.Getenv("SMTP_PORT")
-	user := os.Getenv("SMTP_USER")
+	host := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	port := strings.TrimSpace(os.Getenv("SMTP_PORT"))
+	user := strings.TrimSpace(os.Getenv("SMTP_USER"))
 	pass := os.Getenv("SMTP_PASS")
-	from := os.Getenv("SMTP_FROM")
-	if from == "" {
-		from = user
+	if len(pass) >= 2 {
+		if (pass[0] == '\'' && pass[len(pass)-1] == '\'') || (pass[0] == '"' && pass[len(pass)-1] == '"') {
+			pass = pass[1 : len(pass)-1]
+		}
 	}
+	from := strings.TrimSpace(os.Getenv("SMTP_FROM"))
 
-	if host == "" || port == "" || from == "" {
+	if host == "" || port == "" {
 		log.Printf("[OTP DEV] email to=%s code=%s (SMTP not configured)", to, code)
 		return nil
 	}
+	if from == "" {
+		log.Printf("[OTP ERR] SMTP_FROM must be set explicitly for OCI")
+		log.Printf("[OTP DEV] email to=%s code=%s", to, code)
+		return nil
+	}
 
-	addr := host + ":" + port
 	subject := "Finance Tracker password reset code"
 	body := fmt.Sprintf("Your password reset code is %s. It expires in 10 minutes.\r\n", code)
-	msg := []byte("To: " + to + "\r\n" +
-		"From: " + from + "\r\n" +
-		"Subject: " + subject + "\r\n" +
-		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/plain; charset=UTF-8\r\n" +
-		"\r\n" + body)
-
-	var auth smtp.Auth
-	if user != "" {
-		auth = smtp.PlainAuth("", user, pass, host)
-	}
-	if err := smtp.SendMail(addr, auth, from, []string{to}, msg); err != nil {
+	if err := sendMailSTARTTLS(host, port, user, pass, from, to, subject, body, "text/plain; charset=UTF-8"); err != nil {
 		log.Printf("[OTP] SMTP failed for %s: %v — logging code to console", to, err)
 		log.Printf("[OTP DEV] email to=%s code=%s", to, code)
 		return nil
 	}
+	log.Printf("[OTP] SMTP accepted for %s from=%s", to, from)
 	return nil
 }
 

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
+import '../widgets/google_sign_in_button.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
 
@@ -21,6 +23,8 @@ class _LoginScreenState extends State<LoginScreen> {
   final _privacyKey = GlobalKey();
   bool _submitting = false;
   bool _obscure = true;
+  bool _googleSubmitting = false;
+  String? _googleClientId;
 
   static const _teal = Color(0xFF0F5C56);
   static const _gold = Color(0xFFC4A35A);
@@ -28,6 +32,12 @@ class _LoginScreenState extends State<LoginScreen> {
   static const _sage = Color(0xFFC5D9D0);
   static const _loginPanelWidth = 400.0;
   static const _contentMaxWidth = 1248.0; // 1040 + 20%
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGoogleConfig();
+  }
 
   @override
   void dispose() {
@@ -47,6 +57,32 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _submitting = false);
     if (!ok) {
       final err = context.read<AuthProvider>().error ?? 'Login failed';
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+    }
+  }
+
+  Future<void> _loadGoogleConfig() async {
+    try {
+      final cfg = await ApiService.captchaConfig();
+      if (!mounted) return;
+      final id = (cfg['googleClientId'] as String?)?.trim() ?? '';
+      final enabled = cfg['googleEnabled'] == true && id.isNotEmpty;
+      setState(() => _googleClientId = enabled ? id : null);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _googleClientId = null);
+    }
+  }
+
+  Future<void> _submitGoogle(String idToken) async {
+    if (!mounted || _submitting || _googleSubmitting) return;
+    setState(() => _googleSubmitting = true);
+    final auth = context.read<AuthProvider>();
+    final ok = await auth.loginWithGoogle(idToken);
+    if (!mounted) return;
+    setState(() => _googleSubmitting = false);
+    if (!ok) {
+      final err = auth.error ?? 'Google Sign-In failed';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
     }
   }
@@ -71,6 +107,12 @@ class _LoginScreenState extends State<LoginScreen> {
       obscure: _obscure,
       onToggleObscure: () => setState(() => _obscure = !_obscure),
       onSubmit: _submit,
+      googleClientId: _googleClientId,
+      googleSubmitting: _googleSubmitting,
+      onGoogleIdToken: _submitGoogle,
+      onGoogleError: (msg) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      },
     );
   }
 
@@ -123,8 +165,12 @@ class _LoginScreenState extends State<LoginScreen> {
                                         crossAxisAlignment:
                                             CrossAxisAlignment.center,
                                         children: [
-                                          const Expanded(
-                                            child: _BrandHero(wide: true),
+                                          Expanded(
+                                            child: _BrandHero(
+                                              wide: true,
+                                              onPrivacy: () =>
+                                                  _scrollTo(_privacyKey),
+                                            ),
                                           ),
                                           const SizedBox(width: 40),
                                           SizedBox(
@@ -139,7 +185,11 @@ class _LoginScreenState extends State<LoginScreen> {
                                         crossAxisAlignment:
                                             CrossAxisAlignment.stretch,
                                         children: [
-                                          const _BrandHero(wide: false),
+                                          _BrandHero(
+                                            wide: false,
+                                            onPrivacy: () =>
+                                                _scrollTo(_privacyKey),
+                                          ),
                                           const SizedBox(height: 24),
                                           Center(
                                             child: ConstrainedBox(
@@ -273,13 +323,15 @@ class _NavLink extends StatelessWidget {
 }
 
 class _BrandHero extends StatelessWidget {
-  const _BrandHero({required this.wide});
+  const _BrandHero({required this.wide, required this.onPrivacy});
 
   final bool wide;
+  final VoidCallback onPrivacy;
 
   @override
   Widget build(BuildContext context) {
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment:
           wide ? CrossAxisAlignment.start : CrossAxisAlignment.center,
       children: [
@@ -314,6 +366,14 @@ class _BrandHero extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 16),
+        Align(
+          alignment: wide ? Alignment.centerLeft : Alignment.center,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: _AnonymousChip(onTap: onPrivacy),
+          ),
+        ),
+        const SizedBox(height: 16),
         ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Text(
@@ -331,6 +391,57 @@ class _BrandHero extends StatelessWidget {
   }
 }
 
+class _AnonymousChip extends StatelessWidget {
+  const _AnonymousChip({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const teal = _LoginScreenState._teal;
+    return Semantics(
+      button: true,
+      label: 'Stay anonymous, no personal information required. Jump to privacy.',
+      child: Material(
+        color: teal.withValues(alpha: 0.08),
+        elevation: 0,
+        shape: StadiumBorder(
+          side: BorderSide(color: teal.withValues(alpha: 0.18)),
+        ),
+        child: InkWell(
+          customBorder: const StadiumBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.lock_outline,
+                  size: 16,
+                  color: _LoginScreenState._gold,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'Stay anonymous - no personal information required',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.outfit(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: teal,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _LoginPanel extends StatelessWidget {
   const _LoginPanel({
     required this.formKey,
@@ -340,6 +451,10 @@ class _LoginPanel extends StatelessWidget {
     required this.obscure,
     required this.onToggleObscure,
     required this.onSubmit,
+    this.googleClientId,
+    this.googleSubmitting = false,
+    this.onGoogleIdToken,
+    this.onGoogleError,
   });
 
   final GlobalKey<FormState> formKey;
@@ -349,6 +464,10 @@ class _LoginPanel extends StatelessWidget {
   final bool obscure;
   final VoidCallback onToggleObscure;
   final VoidCallback onSubmit;
+  final String? googleClientId;
+  final bool googleSubmitting;
+  final ValueChanged<String>? onGoogleIdToken;
+  final ValueChanged<String>? onGoogleError;
 
   @override
   Widget build(BuildContext context) {
@@ -363,9 +482,10 @@ class _LoginPanel extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.all(28),
-        child: Form(
+          child: Form(
           key: formKey,
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
@@ -472,6 +592,42 @@ class _LoginPanel extends StatelessWidget {
                       )
                     : const Text('Sign in'),
               ),
+              if (googleClientId != null &&
+                  googleClientId!.isNotEmpty &&
+                  onGoogleIdToken != null) ...[
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(child: Divider(color: Colors.grey.shade300)),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(
+                        'or',
+                        style: GoogleFonts.outfit(
+                          color: Colors.grey.shade600,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                    Expanded(child: Divider(color: Colors.grey.shade300)),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                if (googleSubmitting)
+                  const Center(
+                    child: SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  )
+                else
+                  GoogleSignInButton(
+                    clientId: googleClientId!,
+                    onIdToken: onGoogleIdToken!,
+                    onError: onGoogleError,
+                  ),
+              ],
               const SizedBox(height: 8),
               TextButton(
                 onPressed: () {
@@ -488,6 +644,15 @@ class _LoginPanel extends StatelessWidget {
                     color: _LoginScreenState._teal,
                     fontWeight: FontWeight.w500,
                   ),
+                ),
+              ),
+              Text(
+                'Prefer privacy? Create an account with just a username.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.outfit(
+                  fontSize: 12,
+                  height: 1.35,
+                  color: Colors.grey.shade600,
                 ),
               ),
             ],
@@ -563,7 +728,7 @@ class _FeaturesSection extends StatelessWidget {
     (
       Icons.upload_file_outlined,
       'Broker imports',
-      'Bring holdings from CSV or Excel — ICICI, HDFC Sec, Zerodha, and more.',
+      'Bring holdings from CSV or Excel - ICICI, HDFC Sec, Zerodha, and more.',
     ),
     (
       Icons.rule_folder_outlined,
@@ -661,14 +826,14 @@ class _HowItWorksSection extends StatelessWidget {
 
   static const _steps = [
     (
-      '1', 
-      'Sign in', 
-      'Create an account and sign in securely.',
+      '1',
+      'Stay anonymous',
+      'Pick a username. Skip email and phone if you want.',
     ),
     (
       '2',
       'Add holdings',
-      'Import from your broker or add stocks and funds — full portfolio or watch list.',
+      'Import from your broker or add stocks and funds - full portfolio or watch list.',
     ),
     (
       '3',
@@ -686,7 +851,8 @@ class _HowItWorksSection extends StatelessWidget {
   Widget build(BuildContext context) {
     return _SectionShell(
       title: 'How it works',
-      subtitle: 'Four steps from sign-in to calm, rule-based guidance.',
+      subtitle:
+          'Four steps from an anonymous account to calm, rule-based guidance.',
       child: LayoutBuilder(
         builder: (context, constraints) {
           final wide = constraints.maxWidth >= 700;
@@ -789,7 +955,7 @@ class _PrivacySection extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Your watch list. Your rules.',
+                  'Stay anonymous. Your portfolio stays yours.',
                   style: GoogleFonts.fraunces(
                     fontSize: 28,
                     fontWeight: FontWeight.w600,
@@ -798,9 +964,9 @@ class _PrivacySection extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'Prefer privacy over a full portfolio view? Turn on Watch List mode '
-                  'to track invested equities as a personal watch list — without '
-                  'framing every symbol as a public-facing portfolio story.',
+                  'Sign up with a username. Email and mobile are optional - we do '
+                  'not need your name, PAN, or broker login. Holdings and signal '
+                  'rules live in your account and are not shown to other users.',
                   style: GoogleFonts.outfit(
                     fontSize: 15,
                     height: 1.5,
@@ -809,9 +975,9 @@ class _PrivacySection extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'Apply signal rules so BUY, SELL, and Book Profit alerts '
-                  'follow rules and thresholds you control. Signals stay in-app and under '
-                  'your preferences — calm automation, on your terms.',
+                  'Want even less on screen? Watch List mode tracks equities '
+                  'without framing every symbol as a portfolio with quantities '
+                  'and value. Signal rules stay in-app, under thresholds you control.',
                   style: GoogleFonts.outfit(
                     fontSize: 15,
                     height: 1.5,
@@ -822,14 +988,14 @@ class _PrivacySection extends StatelessWidget {
                 Row(
                   children: [
                     const Icon(
-                      Icons.visibility_outlined,
+                      Icons.lock_outline,
                       color: _LoginScreenState._gold,
                       size: 22,
                     ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'Watch List mode + custom notification rules',
+                        'Username-only accounts. Email and mobile optional.',
                         style: GoogleFonts.outfit(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
@@ -838,6 +1004,30 @@ class _PrivacySection extends StatelessWidget {
                       ),
                     ),
                   ],
+                ),
+                const SizedBox(height: 24),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const RegisterScreen(),
+                      ),
+                    );
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: _LoginScreenState._gold,
+                    foregroundColor: _LoginScreenState._teal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 14,
+                    ),
+                    textStyle: GoogleFonts.outfit(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  child: const Text('Create an anonymous account'),
                 ),
               ],
             ),

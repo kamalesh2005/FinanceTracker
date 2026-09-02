@@ -10,6 +10,7 @@ import (
 	"financetracker/middleware"
 	"financetracker/models"
 	"financetracker/recrules"
+	"financetracker/trendrules"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -105,7 +106,115 @@ func (h *Handler) PutStockColumnConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"hidden_columns": splitHiddenStockColumns(cfg.HiddenStockColumns)})
 }
 
-// EnsureAppConfig seeds singleton App_Config id=1 with current recommendation rules.
+func (h *Handler) GetMutualFundColumnConfig(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
+	var cfg models.UserConfig
+	err := h.DB.Where("user_id = ?", userID).First(&cfg).Error
+	if err == gorm.ErrRecordNotFound {
+		c.JSON(http.StatusOK, gin.H{"hidden_columns": []string{}})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"hidden_columns": splitHiddenStockColumns(cfg.HiddenMutualFundColumns)})
+}
+
+func (h *Handler) PutMutualFundColumnConfig(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
+	var req struct {
+		HiddenColumns []string `json:"hidden_columns"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.HiddenColumns == nil {
+		req.HiddenColumns = []string{}
+	}
+	joined := joinHiddenStockColumns(req.HiddenColumns)
+
+	var cfg models.UserConfig
+	err := h.DB.Where("user_id = ?", userID).First(&cfg).Error
+	if err == gorm.ErrRecordNotFound {
+		cfg = models.UserConfig{
+			UserID:                  userID,
+			HiddenMutualFundColumns: joined,
+		}
+		if err := h.DB.Create(&cfg).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else {
+		cfg.HiddenMutualFundColumns = joined
+		if err := h.DB.Save(&cfg).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"hidden_columns": splitHiddenStockColumns(cfg.HiddenMutualFundColumns)})
+}
+
+func (h *Handler) GetScreenerColumnConfig(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
+	var cfg models.UserConfig
+	err := h.DB.Where("user_id = ?", userID).First(&cfg).Error
+	if err == gorm.ErrRecordNotFound {
+		c.JSON(http.StatusOK, gin.H{"hidden_columns": []string{}})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"hidden_columns": splitHiddenStockColumns(cfg.HiddenScreenerColumns)})
+}
+
+func (h *Handler) PutScreenerColumnConfig(c *gin.Context) {
+	userID := middleware.CurrentUserID(c)
+	var req struct {
+		HiddenColumns []string `json:"hidden_columns"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.HiddenColumns == nil {
+		req.HiddenColumns = []string{}
+	}
+	joined := joinHiddenStockColumns(req.HiddenColumns)
+
+	var cfg models.UserConfig
+	err := h.DB.Where("user_id = ?", userID).First(&cfg).Error
+	if err == gorm.ErrRecordNotFound {
+		cfg = models.UserConfig{
+			UserID:                userID,
+			HiddenScreenerColumns: joined,
+		}
+		if err := h.DB.Create(&cfg).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else {
+		cfg.HiddenScreenerColumns = joined
+		if err := h.DB.Save(&cfg).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"hidden_columns": splitHiddenStockColumns(cfg.HiddenScreenerColumns)})
+}
+
+// EnsureAppConfig seeds singleton App_Config id=1 with recommendation and trend rules.
 func EnsureAppConfig(db *gorm.DB) error {
 	var cfg models.AppConfig
 	err := db.First(&cfg, 1).Error
@@ -116,16 +225,23 @@ func EnsureAppConfig(db *gorm.DB) error {
 		if mErr != nil {
 			return mErr
 		}
+		trs := trendrules.DefaultRuleset()
+		trendRaw, tErr := trs.Marshal()
+		if tErr != nil {
+			return tErr
+		}
 		cfg = models.AppConfig{
 			ID:                                  1,
 			DefaultRecommendationFluctuationPct: fluct,
 			RecommendationRulesJSON:             raw,
+			TrendRulesJSON:                      trendRaw,
 		}
 		return db.Create(&cfg).Error
 	}
 	if err != nil {
 		return err
 	}
+	changed := false
 	// Backfill rules JSON for existing App_Config rows.
 	if strings.TrimSpace(cfg.RecommendationRulesJSON) == "" {
 		fluct := cfg.DefaultRecommendationFluctuationPct
@@ -139,6 +255,18 @@ func EnsureAppConfig(db *gorm.DB) error {
 		}
 		cfg.RecommendationRulesJSON = raw
 		cfg.DefaultRecommendationFluctuationPct = fluct
+		changed = true
+	}
+	if strings.TrimSpace(cfg.TrendRulesJSON) == "" {
+		trs := trendrules.DefaultRuleset()
+		trendRaw, tErr := trs.Marshal()
+		if tErr != nil {
+			return tErr
+		}
+		cfg.TrendRulesJSON = trendRaw
+		changed = true
+	}
+	if changed {
 		return db.Save(&cfg).Error
 	}
 	return nil
@@ -191,7 +319,9 @@ func rulesetNeedsDefaultRulesRewrite(rs recrules.Ruleset) bool {
 // MigrateRecommendationRulesHoldThresholds upgrades App_Config (and user
 // overrides) to the current DefaultRuleset when they are missing Hold/threshold
 // rules, still have split BUY/Book Profit/SELL rows, or still include WATCH.
-// Also patches legacy Book Profit formulas that omit curr_price > avg_buy_price.
+// Also patches legacy Book Profit formulas that omit curr_price > avg_buy_price,
+// rewrites sixth_highest_price / sixth_lowest_price to highest_price / lowest_price,
+// and drops explicit set_*_price > 0 guards (those are now implicit).
 // Preserves fluctuation_pct. Subsequent startups no-op once rules are current.
 func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 	var cfg models.AppConfig
@@ -221,6 +351,22 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 	} else if recrules.PatchLegacyBookProfitConditions(&adminRS) {
 		adminChanged = true
 		log.Printf("Patched App_Config Book Profit rule to require curr_price > avg_buy_price")
+	}
+	if recrules.PatchSixthHighLowFieldNames(&adminRS) {
+		adminChanged = true
+		log.Printf("Migrated App_Config recommendation rules to highest_price / lowest_price")
+	}
+	if recrules.PatchUnsetThresholdGuards(&adminRS) {
+		adminChanged = true
+		log.Printf("Migrated App_Config recommendation rules to drop unset threshold guards")
+	}
+	if recrules.EnsureLastTradeRuleValidityDays(&adminRS) {
+		adminChanged = true
+		log.Printf("Added last_trade_rule_validity_days to App_Config recommendation rules")
+	}
+	if recrules.PatchAtPriceTrendMatch(&adminRS) {
+		adminChanged = true
+		log.Printf("Patched App_Config AT * PRICE rules to require trend_matches_last_action")
 	}
 	if adminChanged {
 		raw, mErr := adminRS.Marshal()
@@ -262,6 +408,22 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 			userChanged = true
 			log.Printf("Patched User_Config Book Profit rule for user_id=%d", uc.UserID)
 		}
+		if recrules.PatchSixthHighLowFieldNames(&userRS) {
+			userChanged = true
+			log.Printf("Migrated User_Config recommendation rules for user_id=%d to highest_price / lowest_price", uc.UserID)
+		}
+		if recrules.PatchUnsetThresholdGuards(&userRS) {
+			userChanged = true
+			log.Printf("Migrated User_Config recommendation rules for user_id=%d to drop unset threshold guards", uc.UserID)
+		}
+		if recrules.EnsureLastTradeRuleValidityDays(&userRS) {
+			userChanged = true
+			log.Printf("Added last_trade_rule_validity_days to User_Config recommendation rules for user_id=%d", uc.UserID)
+		}
+		if recrules.PatchAtPriceTrendMatch(&userRS) {
+			userChanged = true
+			log.Printf("Patched User_Config AT * PRICE rules for user_id=%d to require trend_matches_last_action", uc.UserID)
+		}
 		if !userChanged {
 			continue
 		}
@@ -285,13 +447,31 @@ func (h *Handler) getAppConfig() (models.AppConfig, error) {
 			return models.AppConfig{}, seedErr
 		}
 		err = h.DB.First(&cfg, 1).Error
-	} else if err == nil && strings.TrimSpace(cfg.RecommendationRulesJSON) == "" {
+	} else if err == nil && (strings.TrimSpace(cfg.RecommendationRulesJSON) == "" ||
+		strings.TrimSpace(cfg.TrendRulesJSON) == "") {
 		if seedErr := EnsureAppConfig(h.DB); seedErr != nil {
 			return models.AppConfig{}, seedErr
 		}
 		err = h.DB.First(&cfg, 1).Error
 	}
 	return cfg, err
+}
+
+func adminTrendRuleset(appCfg models.AppConfig) trendrules.Ruleset {
+	if strings.TrimSpace(appCfg.TrendRulesJSON) != "" {
+		if rs, err := trendrules.Parse(appCfg.TrendRulesJSON); err == nil {
+			return rs
+		}
+	}
+	return trendrules.DefaultRuleset()
+}
+
+func (h *Handler) loadTrendRuleset() trendrules.Ruleset {
+	cfg, err := h.getAppConfig()
+	if err != nil {
+		return trendrules.DefaultRuleset()
+	}
+	return adminTrendRuleset(cfg)
 }
 
 func (h *Handler) userUsesWatchList(userID uint) bool {
@@ -351,8 +531,10 @@ func preferencesResponse(cfg *models.UserConfig, appCfg models.AppConfig) (gin.H
 		return nil, err
 	}
 	useWatch := false
+	showZeroQty := false
 	if cfg != nil {
 		useWatch = cfg.UseAsStockWatchList
+		showZeroQty = cfg.ShowZeroQuantityStocks
 	}
 	fluct := recrules.FluctuationFromRuleset(effective, appCfg.DefaultRecommendationFluctuationPct)
 	adminFluct := recrules.FluctuationFromRuleset(adminRS, appCfg.DefaultRecommendationFluctuationPct)
@@ -362,6 +544,8 @@ func preferencesResponse(cfg *models.UserConfig, appCfg models.AppConfig) (gin.H
 	}
 	return gin.H{
 		"use_as_stock_watch_list":                  useWatch,
+		"show_xirr":                                true,
+		"show_zero_quantity_stocks":                showZeroQty,
 		"recommendation_fluctuation_pct":           userPct,
 		"effective_recommendation_fluctuation_pct": fluct,
 		"default_recommendation_fluctuation_pct":   adminFluct,
@@ -384,6 +568,10 @@ func (h *Handler) GetPreferences(c *gin.Context) {
 		resp, rErr := preferencesResponse(nil, appCfg)
 		if rErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": rErr.Error()})
+			return
+		}
+		if err := h.mergeStockReviewEmailPrefs(resp, userID, nil, false); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusOK, resp)
@@ -412,13 +600,33 @@ func (h *Handler) GetPreferences(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": rErr.Error()})
 		return
 	}
+	if err := h.mergeStockReviewEmailPrefs(resp, userID, &cfg, true); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, resp)
+}
+
+func (h *Handler) mergeStockReviewEmailPrefs(resp gin.H, userID uint, cfg *models.UserConfig, hasCfg bool) error {
+	var user models.User
+	if err := h.DB.First(&user, userID).Error; err != nil {
+		return err
+	}
+	enabled, adminEnabled, effective := stockReviewEmailPrefs(user, cfg, hasCfg)
+	resp["stock_review_email_enabled"] = enabled
+	resp["stock_review_email_available"] = userEmail(user) != ""
+	resp["stock_review_email_admin_enabled"] = adminEnabled
+	resp["stock_review_email_effective"] = effective
+	return nil
 }
 
 func (h *Handler) PutPreferences(c *gin.Context) {
 	userID := middleware.CurrentUserID(c)
 	var req struct {
 		UseAsStockWatchList            *bool           `json:"use_as_stock_watch_list"`
+		ShowXIRR                       *bool           `json:"show_xirr"`
+		ShowZeroQuantityStocks         *bool           `json:"show_zero_quantity_stocks"`
+		StockReviewEmailEnabled        *bool           `json:"stock_review_email_enabled"`
 		RecommendationFluctuationPct   *float64        `json:"recommendation_fluctuation_pct"`
 		ClearRecommendationFluctuation bool            `json:"clear_recommendation_fluctuation"`
 		RecommendationRules            json.RawMessage `json:"recommendation_rules"`
@@ -431,6 +639,17 @@ func (h *Handler) PutPreferences(c *gin.Context) {
 	if req.RecommendationFluctuationPct != nil && *req.RecommendationFluctuationPct <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "recommendation_fluctuation_pct must be greater than 0"})
 		return
+	}
+	if req.StockReviewEmailEnabled != nil {
+		var user models.User
+		if err := h.DB.First(&user, userID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if userEmail(user) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "add an email in Profile before enabling review emails"})
+			return
+		}
 	}
 
 	var rulesRaw *string
@@ -476,6 +695,15 @@ func (h *Handler) PutPreferences(c *gin.Context) {
 	if req.UseAsStockWatchList != nil {
 		cfg.UseAsStockWatchList = *req.UseAsStockWatchList
 	}
+	if req.ShowXIRR != nil {
+		cfg.ShowXIRR = *req.ShowXIRR
+	}
+	if req.ShowZeroQuantityStocks != nil {
+		cfg.ShowZeroQuantityStocks = *req.ShowZeroQuantityStocks
+	}
+	if req.StockReviewEmailEnabled != nil {
+		cfg.StockReviewEmailEnabled = *req.StockReviewEmailEnabled
+	}
 	if req.ClearRecommendationRules || req.ClearRecommendationFluctuation {
 		cfg.RecommendationRulesJSON = nil
 		cfg.RecommendationFluctuationPct = nil
@@ -520,6 +748,10 @@ func (h *Handler) PutPreferences(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": rErr.Error()})
 		return
 	}
+	if err := h.mergeStockReviewEmailPrefs(resp, userID, &cfg, true); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -545,9 +777,10 @@ func normalizePositionLotsToOne(db *gorm.DB, pos models.UserStock) error {
 	if err := db.Where(
 		"user_id = ? AND stock_id = ? AND source = ? AND type = ? AND quantity > 0",
 		pos.UserID, pos.StockID, pos.Source, models.TransactionTypeBuy,
-	).Order("transaction_date ASC, id ASC").Find(&buys).Error; err != nil {
+	).Find(&buys).Error; err != nil {
 		return err
 	}
+	sortLotsFIFO(buys)
 
 	remaining := 1.0
 	for i := range buys {
@@ -581,10 +814,7 @@ func normalizePositionLotsToOne(db *gorm.DB, pos models.UserStock) error {
 			Quantity:         remaining,
 			OriginalQuantity: remaining,
 			Price:            price,
-			TransactionDate:  pos.UpdatedAt,
-		}
-		if lot.TransactionDate.IsZero() {
-			lot.TransactionDate = pos.CreatedAt
+			Origin:           models.TxOriginSnapshot,
 		}
 		if err := db.Create(&lot).Error; err != nil {
 			return err
@@ -609,6 +839,7 @@ func (h *Handler) GetAdminConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"default_recommendation_fluctuation_pct": recrules.FluctuationFromRuleset(rs, cfg.DefaultRecommendationFluctuationPct),
 		"recommendation_rules":                   rs.ToMap(),
+		"trend_rules":                            adminTrendRuleset(cfg).ToMap(),
 	})
 }
 
@@ -616,6 +847,7 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 	var req struct {
 		DefaultRecommendationFluctuationPct *float64        `json:"default_recommendation_fluctuation_pct"`
 		RecommendationRules                 json.RawMessage `json:"recommendation_rules"`
+		TrendRules                          json.RawMessage `json:"trend_rules"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -628,6 +860,7 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 		return
 	}
 
+	updated := false
 	if len(req.RecommendationRules) > 0 && string(req.RecommendationRules) != "null" {
 		rs, err := recrules.Parse(string(req.RecommendationRules))
 		if err != nil {
@@ -641,6 +874,7 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 		}
 		cfg.RecommendationRulesJSON = raw
 		cfg.DefaultRecommendationFluctuationPct = recrules.FluctuationFromRuleset(rs, defaultRecommendationFluctuationPct)
+		updated = true
 	} else if req.DefaultRecommendationFluctuationPct != nil {
 		if *req.DefaultRecommendationFluctuationPct <= 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "default_recommendation_fluctuation_pct must be greater than 0"})
@@ -659,8 +893,26 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 			return
 		}
 		cfg.RecommendationRulesJSON = raw
-	} else {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "recommendation_rules or default_recommendation_fluctuation_pct required"})
+		updated = true
+	}
+
+	if len(req.TrendRules) > 0 && string(req.TrendRules) != "null" {
+		trs, err := trendrules.Parse(string(req.TrendRules))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		raw, err := trs.Marshal()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		cfg.TrendRulesJSON = raw
+		updated = true
+	}
+
+	if !updated {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "recommendation_rules, trend_rules, or default_recommendation_fluctuation_pct required"})
 		return
 	}
 
@@ -676,5 +928,6 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"default_recommendation_fluctuation_pct": recrules.FluctuationFromRuleset(rs, cfg.DefaultRecommendationFluctuationPct),
 		"recommendation_rules":                   rs.ToMap(),
+		"trend_rules":                            adminTrendRuleset(cfg).ToMap(),
 	})
 }

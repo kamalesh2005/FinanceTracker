@@ -1,12 +1,15 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/stock.dart';
+import '../models/screener_stock.dart';
 import '../models/stock_trend.dart';
 import '../models/mutual_fund.dart';
+import '../models/global_index.dart';
 import '../models/global_mutual_fund.dart';
 import '../models/symbol_mapping.dart';
 import '../models/mf_scheme_mapping.dart';
 import '../models/user.dart';
+import '../models/feedback.dart';
 
 class ApiService {
   static const String baseUrl = String.fromEnvironment(
@@ -15,9 +18,39 @@ class ApiService {
   );
   static String? _token;
   static void Function()? onUnauthorized;
+  static bool _suppressUnauthorized = false;
 
   static void setToken(String? token) {
     _token = token;
+  }
+
+  static Map<String, dynamic> _authResultFromResponse(
+      Map<String, dynamic> data) {
+    return {
+      'token': data['token'],
+      'refresh_token': data['refresh_token'],
+      'user': AppUser.fromJson(data['user'] as Map<String, dynamic>),
+    };
+  }
+
+  /// Exchanges a refresh token for a new access/refresh pair. Does not trigger
+  /// the global unauthorized handler on 401.
+  static Future<Map<String, dynamic>> refreshSession(String refreshToken) async {
+    _suppressUnauthorized = true;
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/auth/refresh'),
+        headers: _headers(jsonBody: true),
+        body: json.encode({'refresh_token': refreshToken}),
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body) as Map<String, dynamic>;
+        return _authResultFromResponse(data);
+      }
+      throw Exception(_errorMessage(response, 'Session refresh failed'));
+    } finally {
+      _suppressUnauthorized = false;
+    }
   }
 
   static Map<String, String> _headers({bool jsonBody = false}) {
@@ -32,6 +65,7 @@ class ApiService {
   }
 
   static void _checkUnauthorized(http.Response response) {
+    if (_suppressUnauthorized) return;
     if (response.statusCode == 401) {
       onUnauthorized?.call();
     }
@@ -75,7 +109,8 @@ class ApiService {
   }
 
   // Auth APIs
-  static Future<Map<String, dynamic>> login(String identifier, String password) async {
+  static Future<Map<String, dynamic>> login(
+      String identifier, String password) async {
     final response = await http.post(
       Uri.parse('$baseUrl/auth/login'),
       headers: _headers(jsonBody: true),
@@ -83,12 +118,22 @@ class ApiService {
     );
     if (response.statusCode == 200) {
       final data = json.decode(response.body) as Map<String, dynamic>;
-      return {
-        'token': data['token'],
-        'user': AppUser.fromJson(data['user'] as Map<String, dynamic>),
-      };
+      return _authResultFromResponse(data);
     }
     throw Exception(_errorMessage(response, 'Login failed'));
+  }
+
+  static Future<Map<String, dynamic>> loginWithGoogle(String idToken) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/auth/google'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'idToken': idToken}),
+    );
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return _authResultFromResponse(data);
+    }
+    throw Exception(_errorMessage(response, 'Google Sign-In failed'));
   }
 
   static Future<bool> checkUsername(String username) async {
@@ -143,9 +188,25 @@ class ApiService {
     );
     _checkUnauthorized(response);
     if (response.statusCode == 200) {
-      return AppUser.fromJson(json.decode(response.body) as Map<String, dynamic>);
+      return AppUser.fromJson(
+          json.decode(response.body) as Map<String, dynamic>);
     }
     throw Exception(_errorMessage(response, 'Failed to update profile'));
+  }
+
+  static Future<AppUser> setDefaultPortal(String portal) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/auth/default-portal'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'default_portal': portal}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return AppUser.fromJson(
+          json.decode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception(
+        _errorMessage(response, 'Failed to save default dashboard'));
   }
 
   static Future<void> changePassword({
@@ -186,10 +247,7 @@ class ApiService {
     );
     if (response.statusCode == 201) {
       final data = json.decode(response.body) as Map<String, dynamic>;
-      return {
-        'token': data['token'],
-        'user': AppUser.fromJson(data['user'] as Map<String, dynamic>),
-      };
+      return _authResultFromResponse(data);
     }
     throw Exception(_errorMessage(response, 'Registration failed'));
   }
@@ -231,7 +289,8 @@ class ApiService {
     );
     _checkUnauthorized(response);
     if (response.statusCode == 200) {
-      return AppUser.fromJson(json.decode(response.body) as Map<String, dynamic>);
+      return AppUser.fromJson(
+          json.decode(response.body) as Map<String, dynamic>);
     }
     throw Exception(_errorMessage(response, 'Failed to load profile'));
   }
@@ -244,7 +303,9 @@ class ApiService {
     _checkUnauthorized(response);
     if (response.statusCode == 200) {
       final data = _decodeList(response.body);
-      return data.map((e) => AppUser.fromJson(e as Map<String, dynamic>)).toList();
+      return data
+          .map((e) => AppUser.fromJson(e as Map<String, dynamic>))
+          .toList();
     }
     throw Exception(_errorMessage(response, 'Failed to load users'));
   }
@@ -269,7 +330,8 @@ class ApiService {
     );
     _checkUnauthorized(response);
     if (response.statusCode == 201) {
-      return AppUser.fromJson(json.decode(response.body) as Map<String, dynamic>);
+      return AppUser.fromJson(
+          json.decode(response.body) as Map<String, dynamic>);
     }
     throw Exception(_errorMessage(response, 'Failed to create user'));
   }
@@ -282,9 +344,77 @@ class ApiService {
     );
     _checkUnauthorized(response);
     if (response.statusCode == 200) {
-      return AppUser.fromJson(json.decode(response.body) as Map<String, dynamic>);
+      return AppUser.fromJson(
+          json.decode(response.body) as Map<String, dynamic>);
     }
     throw Exception(_errorMessage(response, 'Failed to update user'));
+  }
+
+  static Future<AppUser> setUserStockReviewEmailAdmin(
+    int id,
+    bool adminEnabled,
+  ) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/admin/users/$id/stock-review-email'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'admin_enabled': adminEnabled}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final users = await getUsers();
+      final match = users.where((u) => u.id == id).toList();
+      if (match.isNotEmpty) {
+        return match.first.copyWith(
+          stockReviewEmailAdminEnabled:
+              data['stock_review_email_admin_enabled'] == true,
+          stockReviewEmailEnabled:
+              data['stock_review_email_enabled'] == true,
+          stockReviewEmailEffective:
+              data['stock_review_email_effective'] == true,
+        );
+      }
+      return AppUser(
+        id: id,
+        role: 'user',
+        enabled: true,
+        stockReviewEmailAdminEnabled:
+            data['stock_review_email_admin_enabled'] == true,
+        stockReviewEmailEnabled: data['stock_review_email_enabled'] == true,
+        stockReviewEmailEffective: data['stock_review_email_effective'] == true,
+      );
+    }
+    throw Exception(
+      _errorMessage(response, 'Failed to update stock review email'),
+    );
+  }
+
+  static Future<Map<String, dynamic>> getStockReviewEmailStatus() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/stocks/review-email-status'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to load stock review email status');
+  }
+
+  static Future<void> sendStockReviewEmails({int? userId}) async {
+    final body = <String, dynamic>{};
+    if (userId != null) body['user_id'] = userId;
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/stocks/send-review-emails'),
+      headers: _headers(jsonBody: true),
+      body: json.encode(body),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode != 202) {
+      throw Exception(
+        _errorMessage(response, 'Failed to trigger stock review emails'),
+      );
+    }
   }
 
   // Stock APIs
@@ -310,6 +440,7 @@ class ApiService {
         int pageSize,
       })> getAdminStocks({
     String q = '',
+    String industry = '',
     String series = '',
     String listingCategory = '',
     String pullData = '',
@@ -321,6 +452,7 @@ class ApiService {
       'page_size': '$pageSize',
     };
     if (q.trim().isNotEmpty) params['q'] = q.trim();
+    if (industry.trim().isNotEmpty) params['industry'] = industry.trim();
     if (series.trim().isNotEmpty) params['series'] = series.trim();
     if (listingCategory.trim().isNotEmpty) {
       params['listing_category'] = listingCategory.trim();
@@ -347,7 +479,82 @@ class ApiService {
     throw Exception(_errorMessage(response, 'Failed to load admin stocks'));
   }
 
-  /// Upload NSE_All CSV to upsert Global_Stocks catalog (admin only).
+  /// Last attempt/success status for Admin NSE / ETF / Closing Prices uploads.
+  static Future<List<Map<String, dynamic>>> getStockImportStatus() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/stocks/import-status'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data is! List) {
+        throw Exception('Unexpected import-status response');
+      }
+      return data
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    throw Exception(_errorMessage(response, 'Failed to load import status'));
+  }
+
+  /// On-demand run of the daily NSE PR pull (same as 22:00 IST cron).
+  static Future<void> pullNsePrDaily() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/stocks/pull-nse-pr'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) return;
+    throw Exception(_errorMessage(response, 'NSE PR pull failed'));
+  }
+
+  /// On-demand run of the weekday BSE bhav pull (same as 23:00 IST cron).
+  static Future<void> pullBseBhavDaily() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/stocks/pull-bse-bhav'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) return;
+    throw Exception(_errorMessage(response, 'BSE bhav pull failed'));
+  }
+
+  /// Upload BSE bhav CSV to upsert Global_Stocks by ISIN (admin only).
+  static Future<
+      ({
+        int created,
+        int updated,
+        int skipped,
+        int errors,
+      })> importBseBhav(List<int> bytes, String filename) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/admin/stocks/import-bse-bhav'),
+    );
+    if (_token != null && _token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $_token';
+    }
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (
+        created: (data['created'] as num?)?.toInt() ?? 0,
+        updated: (data['updated'] as num?)?.toInt() ?? 0,
+        skipped: (data['skipped'] as num?)?.toInt() ?? 0,
+        errors: (data['errors'] as num?)?.toInt() ?? 0,
+      );
+    }
+    throw Exception(_errorMessage(response, 'BSE bhav import failed'));
+  }
+
+  /// Upload NSE_All or Nifty constituent CSV to upsert Global_Stocks catalog (admin only).
   static Future<
       ({
         int created,
@@ -447,6 +654,37 @@ class ApiService {
     throw Exception(_errorMessage(response, 'ETF catalog import failed'));
   }
 
+  /// Last attempt/success status for Admin MF catalog / MF_VAR uploads.
+  static Future<List<Map<String, dynamic>>> getMFImportStatus() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/mutualfunds/import-status'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (data is! List) {
+        throw Exception('Unexpected MF import-status response');
+      }
+      return data
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    }
+    throw Exception(_errorMessage(response, 'Failed to load MF import status'));
+  }
+
+  /// On-demand run of the daily MF_VAR pull (same as 22:00 IST cron).
+  static Future<void> pullMFVarDaily() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/admin/mutualfunds/pull-mf-var'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) return;
+    throw Exception(_errorMessage(response, 'MF_VAR pull failed'));
+  }
+
   /// Paginated Global_MutualFunds catalog for admins.
   static Future<
       ({
@@ -482,7 +720,8 @@ class ApiService {
         pageSize: (data['page_size'] as num?)?.toInt() ?? pageSize,
       );
     }
-    throw Exception(_errorMessage(response, 'Failed to load admin mutual funds'));
+    throw Exception(
+        _errorMessage(response, 'Failed to load admin mutual funds'));
   }
 
   /// Upload catalog xlsx/csv or MF_VAR NAV csv (admin only).
@@ -624,16 +863,161 @@ class ApiService {
     _checkUnauthorized(response);
     if (response.statusCode == 200) {
       final list = json.decode(response.body) as List<dynamic>;
-      return list.map((e) {
-        final data = e as Map<String, dynamic>;
-        return (
-          symbol: data['symbol']?.toString() ?? '',
-          name: data['name']?.toString() ?? '',
-          currentPrice: (data['current_price'] as num?)?.toDouble() ?? 0.0,
-        );
-      }).where((e) => e.symbol.isNotEmpty).toList();
+      return list
+          .map((e) {
+            final data = e as Map<String, dynamic>;
+            return (
+              symbol: data['symbol']?.toString() ?? '',
+              name: data['name']?.toString() ?? '',
+              currentPrice: (data['current_price'] as num?)?.toDouble() ?? 0.0,
+            );
+          })
+          .where((e) => e.symbol.isNotEmpty)
+          .toList();
     }
     throw Exception(_errorMessage(response, 'Failed to search stocks'));
+  }
+
+  static Future<ScreenerOptions> screenerOptions() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/stocks/screener/options'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return ScreenerOptions.fromJson(
+        json.decode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to load screener options'));
+  }
+
+  static Future<ScreenerPage> searchScreener({
+    List<String> industries = const [],
+    List<String> marketCaps = const [],
+    List<String> trends = const [],
+    List<String> consensusTypes = const [],
+    List<String> labels = const [],
+    String? nameLike,
+    double? adjStMin,
+    double? adjMtMin,
+    double? consensusUpsideMin,
+    int page = 1,
+  }) async {
+    final params = <String, dynamic>{'page': '$page'};
+    void putList(String key, List<String> values) {
+      final cleaned = values.map((v) => v.trim()).where((v) => v.isNotEmpty);
+      if (cleaned.isNotEmpty) params[key] = cleaned.toList();
+    }
+
+    void putNum(String key, double? value) {
+      if (value != null) params[key] = value.toString();
+    }
+
+    putList('industry', industries);
+    putList('market_cap', marketCaps);
+    putList('trend', trends);
+    putList('consensus_type', consensusTypes);
+    putList('label', labels);
+    putNum('adj_st_min', adjStMin);
+    putNum('adj_mt_min', adjMtMin);
+    putNum('consensus_upside_min', consensusUpsideMin);
+    final nameNeedle = nameLike?.trim() ?? '';
+    if (nameNeedle.isNotEmpty) {
+      params['name_like'] = nameNeedle;
+    }
+
+    final response = await http.get(
+      Uri.parse('$baseUrl/stocks/screener').replace(
+        queryParameters: params.map(
+          (key, value) => MapEntry(key, value),
+        ),
+      ),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final list = (data['items'] as List<dynamic>? ?? [])
+          .map((e) => ScreenerStock.fromJson(e as Map<String, dynamic>))
+          .toList();
+      return ScreenerPage(
+        items: list,
+        total: (data['total'] as num?)?.toInt() ?? list.length,
+        page: (data['page'] as num?)?.toInt() ?? page,
+        pageSize: (data['page_size'] as num?)?.toInt() ?? 20,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to search screener'));
+  }
+
+  static Future<List<ScreenerStock>> getWatchlist() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/watchlist'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return _decodeList(response.body)
+          .map((e) => ScreenerStock.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    throw Exception(_errorMessage(response, 'Failed to load watchlist'));
+  }
+
+  static Future<ScreenerStock> addToWatchlist(int stockId) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/watchlist'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'stock_id': stockId}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201 || response.statusCode == 200) {
+      return ScreenerStock.fromJson(
+        json.decode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to add to watchlist'));
+  }
+
+  static Future<void> removeFromWatchlist(int stockId) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/watchlist/$stockId'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 204 || response.statusCode == 200) {
+      return;
+    }
+    throw Exception(_errorMessage(response, 'Failed to remove from watchlist'));
+  }
+
+  static Future<ScreenerStock> addScreenerLabel(int stockId, String label) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/stocks/screener/labels'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'stock_id': stockId, 'label': label}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201 || response.statusCode == 200) {
+      return ScreenerStock.fromJson(
+        json.decode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to add label'));
+  }
+
+  static Future<void> removeScreenerLabel(int stockId, String label) async {
+    final encoded = Uri.encodeComponent(label);
+    final response = await http.delete(
+      Uri.parse('$baseUrl/stocks/screener/labels/$stockId/$encoded'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 204 || response.statusCode == 200) {
+      return;
+    }
+    throw Exception(_errorMessage(response, 'Failed to remove label'));
   }
 
   static Future<Stock> createStock(Stock stock) async {
@@ -721,7 +1105,8 @@ class ApiService {
     throw Exception('Failed to update stock admin fields');
   }
 
-  static Future<void> deleteStock(int id, {String source = 'Manual Add'}) async {
+  static Future<void> deleteStock(int id,
+      {String source = 'Manual Add'}) async {
     final uri = Uri.parse('$baseUrl/stocks/$id/holdings').replace(
       queryParameters: {'source': source},
     );
@@ -735,10 +1120,23 @@ class ApiService {
     }
   }
 
+  static Future<void> deleteAllHoldings() async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/stocks/all-holdings'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode != 200) {
+      throw Exception(
+          _errorMessage(response, 'Failed to delete all stock records'));
+    }
+  }
+
   // Symbol mapping APIs
   static Future<List<SymbolMapping>> getSymbolMappings({String? query}) async {
     final uri = query != null && query.isNotEmpty
-        ? Uri.parse('$baseUrl/symbol-mappings?q=${Uri.encodeQueryComponent(query)}')
+        ? Uri.parse(
+            '$baseUrl/symbol-mappings?q=${Uri.encodeQueryComponent(query)}')
         : Uri.parse('$baseUrl/symbol-mappings');
     final response = await http.get(uri, headers: _headers());
     _checkUnauthorized(response);
@@ -749,7 +1147,8 @@ class ApiService {
     throw Exception('Failed to load symbol mappings');
   }
 
-  static Future<SymbolMapping> createSymbolMapping(SymbolMapping mapping) async {
+  static Future<SymbolMapping> createSymbolMapping(
+      SymbolMapping mapping) async {
     final response = await http.post(
       Uri.parse('$baseUrl/symbol-mappings'),
       headers: _headers(jsonBody: true),
@@ -762,7 +1161,8 @@ class ApiService {
     throw Exception('Failed to create symbol mapping');
   }
 
-  static Future<SymbolMapping> updateSymbolMapping(int id, SymbolMapping mapping) async {
+  static Future<SymbolMapping> updateSymbolMapping(
+      int id, SymbolMapping mapping) async {
     final response = await http.put(
       Uri.parse('$baseUrl/symbol-mappings/$id'),
       headers: _headers(jsonBody: true),
@@ -787,7 +1187,8 @@ class ApiService {
   }
 
   // MF scheme mapping APIs
-  static Future<List<MFSchemeMapping>> getMFSchemeMappings({String? query}) async {
+  static Future<List<MFSchemeMapping>> getMFSchemeMappings(
+      {String? query}) async {
     final uri = query != null && query.isNotEmpty
         ? Uri.parse(
             '$baseUrl/mf-scheme-mappings?q=${Uri.encodeQueryComponent(query)}',
@@ -802,9 +1203,20 @@ class ApiService {
     throw Exception('Failed to load MF scheme mappings');
   }
 
-  static Future<List<MFSchemeMapping>> getUnmappedMFSchemes() async {
+  static Future<List<MFSchemeMapping>> getUnmappedMFSchemes({
+    String q = '',
+    bool unmapped = true,
+    String ignore = 'N',
+  }) async {
+    final params = <String, String>{
+      'unmapped': unmapped ? 'true' : 'false',
+      'ignore': ignore.trim().isEmpty ? 'all' : ignore.trim(),
+    };
+    if (q.trim().isNotEmpty) params['q'] = q.trim();
+
     final response = await http.get(
-      Uri.parse('$baseUrl/admin/unmapped-mf-schemes'),
+      Uri.parse('$baseUrl/admin/unmapped-mf-schemes')
+          .replace(queryParameters: params),
       headers: _headers(),
     );
     _checkUnauthorized(response);
@@ -827,7 +1239,8 @@ class ApiService {
     if (response.statusCode == 201) {
       return MFSchemeMapping.fromJson(json.decode(response.body));
     }
-    throw Exception(_errorMessage(response, 'Failed to create MF scheme mapping'));
+    throw Exception(
+        _errorMessage(response, 'Failed to create MF scheme mapping'));
   }
 
   static Future<MFSchemeMapping> updateMFSchemeMapping(
@@ -843,7 +1256,8 @@ class ApiService {
     if (response.statusCode == 200) {
       return MFSchemeMapping.fromJson(json.decode(response.body));
     }
-    throw Exception(_errorMessage(response, 'Failed to update MF scheme mapping'));
+    throw Exception(
+        _errorMessage(response, 'Failed to update MF scheme mapping'));
   }
 
   static Future<void> deleteMFSchemeMapping(int id) async {
@@ -857,9 +1271,20 @@ class ApiService {
     }
   }
 
-  static Future<List<UnmappedStock>> getUnmappedStocks() async {
+  static Future<List<UnmappedStock>> getUnmappedStocks({
+    String q = '',
+    bool unmapped = true,
+    String ignore = 'N',
+  }) async {
+    final params = <String, String>{
+      'unmapped': unmapped ? 'true' : 'false',
+      'ignore': ignore.trim().isEmpty ? 'all' : ignore.trim(),
+    };
+    if (q.trim().isNotEmpty) params['q'] = q.trim();
+
     final response = await http.get(
-      Uri.parse('$baseUrl/admin/unmapped-stocks'),
+      Uri.parse('$baseUrl/admin/unmapped-stocks')
+          .replace(queryParameters: params),
       headers: _headers(),
     );
     _checkUnauthorized(response);
@@ -895,13 +1320,14 @@ class ApiService {
     if (response.statusCode == 201) {
       return json.decode(response.body);
     }
-    throw Exception(_errorMessage(response, 'Failed to create buy transaction'));
+    throw Exception(
+        _errorMessage(response, 'Failed to create buy transaction'));
   }
 
   static Future<int> replaceBuyTransactionsBySource({
     required String source,
     required List<Stock> stocks,
-    required DateTime transactionDate,
+    DateTime? transactionDate,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/transactions/buy/replace-by-source'),
@@ -913,9 +1339,12 @@ class ApiService {
                   'symbol': stock.symbol,
                   'quantity': stock.quantity,
                   'price': stock.buyPrice,
-                  'transaction_date': transactionDate.toUtc().toIso8601String(),
+                  if (transactionDate != null)
+                    'transaction_date':
+                        transactionDate.toUtc().toIso8601String(),
                   if (stock.name.isNotEmpty) 'name': stock.name,
-                  if (stock.isin != null && stock.isin!.isNotEmpty) 'isin': stock.isin,
+                  if (stock.isin != null && stock.isin!.isNotEmpty)
+                    'isin': stock.isin,
                   if (stock.sector.isNotEmpty) 'sector': stock.sector,
                 })
             .toList(),
@@ -926,7 +1355,60 @@ class ApiService {
       final data = json.decode(response.body) as Map<String, dynamic>;
       return (data['count'] as num?)?.toInt() ?? stocks.length;
     }
-    throw Exception('Failed to replace buy transactions by source');
+    throw Exception(_errorMessage(
+        response, 'Failed to replace buy transactions by source'));
+  }
+
+  static Future<int> rebuildLedgerFromTransactions({
+    required String source,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/transactions/rebuild-from-ledger'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'source': source,
+        'items': items,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      return (data['count'] as num?)?.toInt() ?? items.length;
+    }
+    throw Exception(_errorMessage(
+        response, 'Failed to rebuild transactions from ledger file'));
+  }
+
+  static Future<({int count, List<String> unmapped})>
+      mergeLedgerFromTransactions({
+    required String source,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/transactions/merge-from-ledger'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'source': source,
+        'items': items,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final count = (data['count'] as num?)?.toInt() ?? items.length;
+      final raw = data['unmapped'];
+      final unmapped = <String>[];
+      if (raw is List) {
+        for (final item in raw) {
+          final s = item?.toString().trim() ?? '';
+          if (s.isNotEmpty) unmapped.add(s);
+        }
+      }
+      return (count: count, unmapped: unmapped);
+    }
+    throw Exception(_errorMessage(
+        response, 'Failed to merge transactions from ledger file'));
   }
 
   static Future<Map<String, dynamic>> createSellTransaction({
@@ -951,7 +1433,8 @@ class ApiService {
     if (response.statusCode == 201) {
       return json.decode(response.body);
     }
-    throw Exception(_errorMessage(response, 'Failed to create sell transaction'));
+    throw Exception(
+        _errorMessage(response, 'Failed to create sell transaction'));
   }
 
   static Future<Map<String, dynamic>> markStockHold({
@@ -1000,7 +1483,62 @@ class ApiService {
     throw Exception(_errorMessage(response, 'Failed to save price thresholds'));
   }
 
-  static Future<List<Map<String, dynamic>>> getStockHistory(String symbol) async {
+  static Future<Map<String, dynamic>> setStockNotes({
+    required int stockId,
+    required String source,
+    required String notes,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/stocks/$stockId/notes'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'source': source,
+        'notes': notes,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to save note'));
+  }
+
+  static Future<Map<String, dynamic>> clearStockReviewValues({
+    required int stockId,
+    required String source,
+    required List<String> fields,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/stocks/$stockId/clear-review-values'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'source': source,
+        'fields': fields,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return json.decode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception(_errorMessage(response, 'Failed to clear review values'));
+  }
+
+  static Future<void> clearAllStockReviewValues() async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/stocks/clear-review-values'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return;
+    }
+    throw Exception(
+        _errorMessage(response, 'Failed to clear all review values'));
+  }
+
+  static Future<List<Map<String, dynamic>>> getStockHistory(
+      String symbol) async {
     final response = await http.get(
       Uri.parse('$baseUrl/stocks/history?symbol=$symbol'),
       headers: _headers(),
@@ -1012,7 +1550,8 @@ class ApiService {
     throw Exception('Failed to load stock history');
   }
 
-  static Future<List<Map<String, dynamic>>> getStockTransactions(String symbol) async {
+  static Future<List<Map<String, dynamic>>> getStockTransactions(
+      String symbol) async {
     final response = await http.get(
       Uri.parse('$baseUrl/transactions?symbol=$symbol'),
       headers: _headers(),
@@ -1062,6 +1601,19 @@ class ApiService {
       return data.map((json) => MutualFund.fromJson(json)).toList();
     }
     throw Exception('Failed to load mutual funds');
+  }
+
+  static Future<List<GlobalIndex>> getIndices() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/indices'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = _decodeList(response.body);
+      return data.map((json) => GlobalIndex.fromJson(json)).toList();
+    }
+    throw Exception('Failed to load indices');
   }
 
   static Future<MutualFund> createMutualFund(MutualFund mf) async {
@@ -1155,7 +1707,7 @@ class ApiService {
     throw Exception(_errorMessage(response, 'Failed to update mutual fund'));
   }
 
-  static Future<void> deleteMutualFund(int id) async {
+	static Future<void> deleteMutualFund(int id) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/mutualfunds/$id'),
       headers: _headers(),
@@ -1163,6 +1715,18 @@ class ApiService {
     _checkUnauthorized(response);
     if (response.statusCode != 200) {
       throw Exception('Failed to delete mutual fund');
+    }
+  }
+
+  static Future<void> deleteAllMutualFunds() async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/mutualfunds/all-holdings'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode != 200) {
+      throw Exception(
+          _errorMessage(response, 'Failed to delete all mutual fund records'));
     }
   }
 
@@ -1197,7 +1761,80 @@ class ApiService {
     throw Exception('Failed to load stock column config');
   }
 
-  static Future<List<String>> saveHiddenStockColumns(List<String> hiddenColumns) async {
+  static Future<List<String>> getHiddenMutualFundColumns() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/config/mf-columns'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final raw = data['hidden_columns'];
+      if (raw is List) {
+        return raw.map((e) => e.toString()).toList();
+      }
+      return [];
+    }
+    throw Exception('Failed to load mutual fund column config');
+  }
+
+  static Future<List<String>> saveHiddenMutualFundColumns(
+      List<String> hiddenColumns) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/config/mf-columns'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'hidden_columns': hiddenColumns}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final raw = data['hidden_columns'];
+      if (raw is List) {
+        return raw.map((e) => e.toString()).toList();
+      }
+      return [];
+    }
+    throw Exception('Failed to save mutual fund column config');
+  }
+
+  static Future<List<String>> getHiddenScreenerColumns() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/config/screener-columns'),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final raw = data['hidden_columns'];
+      if (raw is List) {
+        return raw.map((e) => e.toString()).toList();
+      }
+      return [];
+    }
+    throw Exception('Failed to load screener column config');
+  }
+
+  static Future<List<String>> saveHiddenScreenerColumns(
+      List<String> hiddenColumns) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/config/screener-columns'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'hidden_columns': hiddenColumns}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final raw = data['hidden_columns'];
+      if (raw is List) {
+        return raw.map((e) => e.toString()).toList();
+      }
+      return [];
+    }
+    throw Exception('Failed to save screener column config');
+  }
+
+  static Future<List<String>> saveHiddenStockColumns(
+      List<String> hiddenColumns) async {
     final response = await http.put(
       Uri.parse('$baseUrl/config/stock-columns'),
       headers: _headers(jsonBody: true),
@@ -1229,6 +1866,8 @@ class ApiService {
 
   static Future<Map<String, dynamic>> savePreferences({
     bool? useAsStockWatchList,
+    bool? showZeroQuantityStocks,
+    bool? stockReviewEmailEnabled,
     double? recommendationFluctuationPct,
     bool clearRecommendationFluctuation = false,
     Map<String, dynamic>? recommendationRules,
@@ -1237,6 +1876,12 @@ class ApiService {
     final body = <String, dynamic>{};
     if (useAsStockWatchList != null) {
       body['use_as_stock_watch_list'] = useAsStockWatchList;
+    }
+    if (showZeroQuantityStocks != null) {
+      body['show_zero_quantity_stocks'] = showZeroQuantityStocks;
+    }
+    if (stockReviewEmailEnabled != null) {
+      body['stock_review_email_enabled'] = stockReviewEmailEnabled;
     }
     if (clearRecommendationRules || clearRecommendationFluctuation) {
       body['clear_recommendation_rules'] = true;
@@ -1273,10 +1918,14 @@ class ApiService {
   static Future<Map<String, dynamic>> saveAdminConfig({
     double? defaultRecommendationFluctuationPct,
     Map<String, dynamic>? recommendationRules,
+    Map<String, dynamic>? trendRules,
   }) async {
     final body = <String, dynamic>{};
     if (recommendationRules != null) {
       body['recommendation_rules'] = recommendationRules;
+    }
+    if (trendRules != null) {
+      body['trend_rules'] = trendRules;
     }
     if (defaultRecommendationFluctuationPct != null) {
       body['default_recommendation_fluctuation_pct'] =
@@ -1293,4 +1942,130 @@ class ApiService {
     }
     throw Exception('Failed to save admin config');
   }
+
+  static Future<FeedbackItem> submitFeedback({
+    required String message,
+    required String screenName,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/feedback'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({
+        'message': message,
+        'screen_name': screenName,
+      }),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 201) {
+      return FeedbackItem.fromJson(
+        json.decode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to submit feedback'));
+  }
+
+  static Future<FeedbackPage> getMyFeedback({
+    int page = 1,
+    int pageSize = 5,
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/feedback').replace(
+        queryParameters: {
+          'page': '$page',
+          'page_size': '$pageSize',
+        },
+      ),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return _parseFeedbackPage(response.body, page, pageSize);
+    }
+    throw Exception(_errorMessage(response, 'Failed to load feedback'));
+  }
+
+  static Future<FeedbackPage> getAdminFeedback({
+    int page = 1,
+    int pageSize = 5,
+    String status = 'open',
+  }) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/admin/feedback').replace(
+        queryParameters: {
+          'page': '$page',
+          'page_size': '$pageSize',
+          'status': status,
+        },
+      ),
+      headers: _headers(),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return _parseFeedbackPage(response.body, page, pageSize);
+    }
+    throw Exception(_errorMessage(response, 'Failed to load admin feedback'));
+  }
+
+  static Future<FeedbackItem> respondToFeedback({
+    required int id,
+    required String response,
+  }) async {
+    final httpResponse = await http.put(
+      Uri.parse('$baseUrl/admin/feedback/$id/respond'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({'response': response}),
+    );
+    _checkUnauthorized(httpResponse);
+    if (httpResponse.statusCode == 200) {
+      return FeedbackItem.fromJson(
+        json.decode(httpResponse.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(
+      _errorMessage(httpResponse, 'Failed to save feedback response'),
+    );
+  }
+
+  static Future<FeedbackItem> closeFeedback(int id) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/admin/feedback/$id/close'),
+      headers: _headers(jsonBody: true),
+      body: json.encode({}),
+    );
+    _checkUnauthorized(response);
+    if (response.statusCode == 200) {
+      return FeedbackItem.fromJson(
+        json.decode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(_errorMessage(response, 'Failed to close feedback'));
+  }
+
+  static FeedbackPage _parseFeedbackPage(
+    String body,
+    int page,
+    int pageSize,
+  ) {
+    final data = json.decode(body) as Map<String, dynamic>;
+    final list = (data['items'] as List<dynamic>? ?? [])
+        .map((e) => FeedbackItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return FeedbackPage(
+      items: list,
+      total: (data['total'] as num?)?.toInt() ?? list.length,
+      page: (data['page'] as num?)?.toInt() ?? page,
+      pageSize: (data['page_size'] as num?)?.toInt() ?? pageSize,
+    );
+  }
+
+  static Map<String, String> requestHeaders({bool jsonBody = false}) =>
+      _headers(jsonBody: jsonBody);
+
+  static void noteUnauthorized(http.Response response) =>
+      _checkUnauthorized(response);
+
+  static String responseError(http.Response response, String fallback) =>
+      _errorMessage(response, fallback);
+
+  static List<dynamic> decodeJsonList(String body) => _decodeList(body);
 }

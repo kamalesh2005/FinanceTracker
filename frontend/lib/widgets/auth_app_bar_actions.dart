@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../screens/profile_screen.dart';
+import '../screens/feedback_screen.dart';
+import '../utils/screen_tracker.dart';
 
 /// AppBar actions for authenticated screens.
 /// Order: [extra] → Profile avatar menu → Help (Help is always rightmost).
 List<Widget> authAppBarActions(
   BuildContext context, {
   List<Widget> extra = const [],
+  VoidCallback? onHelp,
 }) {
   final auth = context.watch<AuthProvider>();
   final user = auth.user;
@@ -24,10 +27,12 @@ List<Widget> authAppBarActions(
           final isAlreadyProfile =
               context.findAncestorWidgetOfExactType<ProfileScreen>() != null;
           if (isAlreadyProfile) return;
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const ProfileScreen()),
-          );
+          Navigator.push(context, appPageRoute(const ProfileScreen()));
+        } else if (value == 'feedback') {
+          final isAlreadyFeedback =
+              context.findAncestorWidgetOfExactType<FeedbackScreen>() != null;
+          if (isAlreadyFeedback) return;
+          Navigator.push(context, appPageRoute(const FeedbackScreen()));
         } else if (value == 'logout') {
           context.read<AuthProvider>().logout();
         }
@@ -51,6 +56,15 @@ List<Widget> authAppBarActions(
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.person_outline),
             title: Text('Profile'),
+          ),
+        ),
+        const PopupMenuItem<String>(
+          value: 'feedback',
+          child: ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.feedback_outlined),
+            title: Text('My Feedback'),
           ),
         ),
         const PopupMenuItem<String>(
@@ -79,7 +93,7 @@ List<Widget> authAppBarActions(
     IconButton(
       tooltip: 'Help',
       icon: const Icon(Icons.help_outline),
-      onPressed: () => showAppHelpDialog(context),
+      onPressed: onHelp ?? () => showAppHelpDialog(context),
     ),
   ];
 }

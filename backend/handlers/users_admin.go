@@ -35,6 +35,10 @@ func (h *Handler) ListUsers(c *gin.Context) {
 			row["recommendation_rules_is_override"] = false
 			row["recommendation_rules_count"] = 0
 			row["recommendation_rules"] = nil
+			enabled, adminEnabled, effective := stockReviewEmailPrefs(u, nil, false)
+			row["stock_review_email_enabled"] = enabled
+			row["stock_review_email_admin_enabled"] = adminEnabled
+			row["stock_review_email_effective"] = effective
 			out = append(out, row)
 			continue
 		}
@@ -61,6 +65,10 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		row["recommendation_rules_is_override"] = hasRulesOverride
 		row["recommendation_rules_count"] = rulesCount
 		row["recommendation_rules"] = rulesMap
+		enabled, adminEnabled, effective := stockReviewEmailPrefs(u, &cfg, true)
+		row["stock_review_email_enabled"] = enabled
+		row["stock_review_email_admin_enabled"] = adminEnabled
+		row["stock_review_email_effective"] = effective
 		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, out)
@@ -110,7 +118,7 @@ func (h *Handler) CreateUser(c *gin.Context) {
 		Username:     ptrString(username),
 		Email:        ptrString(email),
 		Mobile:       ptrString(mobile),
-		PasswordHash: hash,
+		PasswordHash: &hash,
 		Role:         role,
 		Enabled:      true,
 	}

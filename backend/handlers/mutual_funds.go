@@ -8,10 +8,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
-	"financetracker/middleware"
 	"financetracker/mfimport"
+	"financetracker/middleware"
 	"financetracker/models"
 
 	"github.com/gin-gonic/gin"
@@ -101,10 +100,25 @@ func (h *Handler) ImportMutualFundsAdmin(c *gin.Context) {
 	_ = filepath.Ext(filename)
 
 	result, err := mfimport.ImportBytes(h.DB, data, filename)
+	kind := models.ImportKindMFCatalog
+	switch {
+	case result.Kind == "nav":
+		kind = models.ImportKindMFVar
+	case strings.Contains(strings.ToUpper(filename), "MF_VAR"):
+		kind = models.ImportKindMFVar
+	}
+	summary := &ImportSummary{
+		Created: result.Created,
+		Updated: result.Updated,
+		Skipped: result.Skipped,
+		Errors:  result.Errors,
+	}
 	if err != nil {
+		_ = RecordImportStatus(h.DB, kind, models.ImportSourceManual, err, summary)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	_ = RecordImportStatus(h.DB, kind, models.ImportSourceManual, nil, summary)
 	c.JSON(http.StatusOK, result)
 }
 
@@ -383,6 +397,8 @@ func resolveImportGlobalMF(db *gorm.DB, schemeName, isin string) (*models.Global
 // ReplaceSourceMutualFunds replaces the user's mutual fund holdings for a bulk/broker source.
 // Matched items upsert by user+source+isin. Unmatched items are still inserted using
 // source_scheme_name (pending admin mapping) and queued in Global_MF_SchemeMapping.
+// Qty changes write delta buy/sell rows to User_MutualFund_Transactions (no transaction
+// date when the holdings file has none). Stale holdings for the source are sold to zero.
 func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 	var req struct {
 		Source string `json:"source" binding:"required"`
@@ -407,8 +423,6 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 
 	userID := middleware.CurrentUserID(c)
 	watchList := h.userUsesWatchList(userID)
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
 	catalog, err := buildMFSchemeCatalogIndex(h.DB)
 	if err != nil {
@@ -417,11 +431,11 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 	}
 
 	type matchedAgg struct {
-		global         *models.GlobalMutualFund
-		sourceScheme   string
-		quantity       float64
-		cost           float64
-		brokerCurrent  float64
+		global        *models.GlobalMutualFund
+		sourceScheme  string
+		quantity      float64
+		cost          float64
+		brokerCurrent float64
 	}
 	type unmatchedAgg struct {
 		sourceScheme  string
@@ -527,6 +541,7 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 	touchedISIN := map[string]struct{}{}
 	touchedSource := map[string]struct{}{}
 	result := make([]models.MutualFund, 0, len(byISIN)+len(bySourceName))
+	deltas := make([]models.UserMutualFundTransaction, 0)
 	created, updated := 0, 0
 
 	for isin, a := range byISIN {
@@ -541,57 +556,30 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 			currentNAV = a.brokerCurrent
 		}
 
-		var existing models.MutualFund
-		err := tx.Where("user_id = ? AND source = ? AND UPPER(isin) = ?", userID, source, isin).
-			First(&existing).Error
-		if err != nil && err != gorm.ErrRecordNotFound {
+		var before models.MutualFund
+		existed := findUserMutualFund(tx, userID, source, isin, a.sourceScheme, &before) == nil
+
+		pos, delta, err := applyUploadMFPosition(
+			tx, userID,
+			a.global.ISIN, a.global.Symbol, a.global.SchemeName, a.sourceScheme, source,
+			qty, avgNAV, currentNAV, nil,
+		)
+		if err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-
-		if err == gorm.ErrRecordNotFound {
-			mf := models.MutualFund{
-				UserID:           userID,
-				ISIN:             a.global.ISIN,
-				SchemeCode:       a.global.Symbol,
-				SchemeName:       a.global.SchemeName,
-				SourceSchemeName: a.sourceScheme,
-				Source:           source,
-				Quantity:         qty,
-				NAV:              avgNAV,
-				CurrentNAV:       currentNAV,
-				PurchaseDate:     today,
+		if pos.ID != 0 {
+			result = append(result, pos)
+			if existed {
+				updated++
+			} else {
+				created++
 			}
-			if err := tx.Create(&mf).Error; err != nil {
-				tx.Rollback()
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			result = append(result, mf)
-			created++
-			continue
 		}
-
-		existing.ISIN = a.global.ISIN
-		existing.SchemeCode = a.global.Symbol
-		existing.SchemeName = a.global.SchemeName
-		if a.sourceScheme != "" {
-			existing.SourceSchemeName = a.sourceScheme
+		if delta != nil {
+			deltas = append(deltas, *delta)
 		}
-		existing.Quantity = qty
-		existing.NAV = avgNAV
-		if currentNAV > 0 {
-			existing.CurrentNAV = currentNAV
-		}
-		existing.PurchaseDate = today
-		if err := tx.Save(&existing).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		result = append(result, existing)
-		updated++
 	}
 
 	for key, a := range bySourceName {
@@ -602,63 +590,39 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 		}
 		touchedSource[key] = struct{}{}
 
-		var existing models.MutualFund
-		err := tx.Where(
-			"user_id = ? AND source = ? AND (isin IS NULL OR TRIM(isin) = '') AND LOWER(TRIM(source_scheme_name)) = ?",
-			userID, source, key,
-		).First(&existing).Error
-		if err != nil && err != gorm.ErrRecordNotFound {
+		var before models.MutualFund
+		existed := findUserMutualFund(tx, userID, source, "", a.sourceScheme, &before) == nil
+
+		pos, delta, err := applyUploadMFPosition(
+			tx, userID,
+			"", "", "", a.sourceScheme, source,
+			qty, avgNAV, a.brokerCurrent, nil,
+		)
+		if err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-
-		if err == gorm.ErrRecordNotFound {
-			mf := models.MutualFund{
-				UserID:           userID,
-				ISIN:             "",
-				SchemeCode:       "",
-				SchemeName:       "",
-				SourceSchemeName: a.sourceScheme,
-				Source:           source,
-				Quantity:         qty,
-				NAV:              avgNAV,
-				CurrentNAV:       a.brokerCurrent,
-				PurchaseDate:     today,
+		if pos.ID != 0 {
+			result = append(result, pos)
+			if existed {
+				updated++
+			} else {
+				created++
 			}
-			if err := tx.Create(&mf).Error; err != nil {
-				tx.Rollback()
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			result = append(result, mf)
-			created++
-			continue
 		}
-
-		existing.SourceSchemeName = a.sourceScheme
-		existing.Quantity = qty
-		existing.NAV = avgNAV
-		if a.brokerCurrent > 0 {
-			existing.CurrentNAV = a.brokerCurrent
+		if delta != nil {
+			deltas = append(deltas, *delta)
 		}
-		existing.PurchaseDate = today
-		if err := tx.Save(&existing).Error; err != nil {
-			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		result = append(result, existing)
-		updated++
 	}
 
 	var stale []models.MutualFund
-	if err := tx.Where("user_id = ? AND source = ?", userID, source).Find(&stale).Error; err != nil {
+	if err := tx.Where("user_id = ? AND source = ? AND quantity > 0", userID, source).Find(&stale).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	deleted := 0
+	zeroed := 0
 	for _, row := range stale {
 		isin := strings.ToUpper(strings.TrimSpace(row.ISIN))
 		if isin != "" {
@@ -671,12 +635,23 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 				continue
 			}
 		}
-		if err := tx.Delete(&row).Error; err != nil {
+		pos, delta, err := applyUploadMFPosition(
+			tx, userID,
+			row.ISIN, row.SchemeCode, row.SchemeName, row.SourceSchemeName, source,
+			0, row.NAV, row.CurrentNAV, nil,
+		)
+		if err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		deleted++
+		if pos.ID != 0 {
+			result = append(result, pos)
+		}
+		if delta != nil {
+			deltas = append(deltas, *delta)
+		}
+		zeroed++
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -689,10 +664,12 @@ func (h *Handler) ReplaceSourceMutualFunds(c *gin.Context) {
 		"count":           len(result),
 		"created":         created,
 		"updated":         updated,
-		"deleted":         deleted,
+		"deleted":         zeroed, // kept for API compat; holdings are zeroed, not deleted
+		"zeroed":          zeroed,
 		"unmatched":       pendingNames,
 		"queued_mappings": queuedMappings,
 		"items":           result,
+		"transactions":    deltas,
 	})
 }
 
@@ -723,15 +700,20 @@ func enrichUserMutualFundsNAV(db *gorm.DB, mfs []models.MutualFund) {
 	}
 	for i := range mfs {
 		isin := strings.ToUpper(strings.TrimSpace(mfs[i].ISIN))
-		if g, ok := byISIN[isin]; ok && g.CurrentNAV > 0 {
-			mfs[i].CurrentNAV = g.CurrentNAV
-			if mfs[i].SchemeName == "" {
-				mfs[i].SchemeName = g.SchemeName
-			}
-			if mfs[i].SchemeCode == "" {
-				mfs[i].SchemeCode = g.Symbol
-			}
+		g, ok := byISIN[isin]
+		if !ok {
+			continue
 		}
+		if g.CurrentNAV > 0 {
+			mfs[i].CurrentNAV = g.CurrentNAV
+		}
+		if mfs[i].SchemeName == "" {
+			mfs[i].SchemeName = g.SchemeName
+		}
+		if mfs[i].SchemeCode == "" {
+			mfs[i].SchemeCode = g.Symbol
+		}
+		applyGlobalReturns(&mfs[i], g)
 	}
 }
 

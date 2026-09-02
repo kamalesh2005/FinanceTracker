@@ -1,14 +1,13 @@
 import 'package:flutter/material.dart';
 import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
-import 'symbol_mappings_screen.dart';
 import 'unmapped_stocks_screen.dart';
-import 'mf_scheme_mappings_screen.dart';
 import 'unmapped_mf_schemes_screen.dart';
 import 'admin_stock_data_screen.dart';
 import 'admin_mutual_fund_data_screen.dart';
 import 'admin_users_screen.dart';
 import 'admin_app_settings_screen.dart';
+import 'admin_feedback_screen.dart';
 
 class AdminScreen extends StatelessWidget {
   const AdminScreen({super.key});
@@ -30,10 +29,20 @@ class AdminScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Manage users, app defaults, stock and mutual fund mappings, and catalog data.',
+            'Manage users, app defaults, missing stocks, missing mutual funds, and catalog data.',
             style: TextStyle(color: Colors.grey.shade700),
           ),
           const SizedBox(height: 24),
+          _AdminTile(
+            icon: Icons.rate_review_outlined,
+            color: Colors.blueGrey,
+            title: 'User Feedback',
+            subtitle: 'View open feedback, respond, and close',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const AdminFeedbackScreen()),
+            ),
+          ),
           _AdminTile(
             icon: Icons.people_outline,
             color: Colors.indigo,
@@ -48,8 +57,7 @@ class AdminScreen extends StatelessWidget {
             icon: Icons.tune,
             color: Colors.deepPurple,
             title: 'App Settings',
-            subtitle:
-                'Default fluctuation to ignore signals post any buy/sell',
+            subtitle: 'Signal Rules and Trend Rules (global defaults)',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const AdminAppSettingsScreen()),
@@ -58,7 +66,7 @@ class AdminScreen extends StatelessWidget {
           _AdminTile(
             icon: Icons.warning_amber_rounded,
             color: Colors.orange,
-            title: 'Unmapped Stocks',
+            title: 'Missing Stocks',
             subtitle:
                 'Broker symbols missing Yahoo data or with incorrect mappings',
             onTap: () => Navigator.push(
@@ -69,37 +77,13 @@ class AdminScreen extends StatelessWidget {
           _AdminTile(
             icon: Icons.warning_amber_rounded,
             color: Colors.deepOrange,
-            title: 'Unmapped Mutual Funds',
+            title: 'Missing Mutual Funds',
             subtitle:
                 'Broker scheme names missing catalog ISIN or with incorrect mappings',
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (_) => const UnmappedMFSchemesScreen(),
-              ),
-            ),
-          ),
-          _AdminTile(
-            icon: Icons.map_outlined,
-            color: Colors.blue,
-            title: 'Stock Symbol Mappings',
-            subtitle:
-                'View, search, add or edit broker → Yahoo symbol mappings',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SymbolMappingsScreen()),
-            ),
-          ),
-          _AdminTile(
-            icon: Icons.account_tree_outlined,
-            color: Colors.cyan,
-            title: 'Mutual Fund Scheme Mappings',
-            subtitle:
-                'View, search, add or edit broker → catalog ISIN mappings',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => const MFSchemeMappingsScreen(),
               ),
             ),
           ),

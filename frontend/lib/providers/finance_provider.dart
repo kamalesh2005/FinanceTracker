@@ -2,12 +2,14 @@ import 'package:flutter/foundation.dart';
 import '../models/stock.dart';
 import '../models/stock_trend.dart';
 import '../models/mutual_fund.dart';
+import '../models/global_index.dart';
 import '../services/api_service.dart';
 
 class FinanceProvider with ChangeNotifier {
   List<Stock> _stocks = [];
   List<MutualFund> _mutualFunds = [];
   List<StockTrend> _stockTrends = [];
+  GlobalIndex? _nifty50;
   Map<String, dynamic> _portfolioSummary = {};
   bool _isLoading = false;
   bool _isRefreshingPrices = false;
@@ -16,6 +18,7 @@ class FinanceProvider with ChangeNotifier {
   List<Stock> get stocks => _stocks;
   List<MutualFund> get mutualFunds => _mutualFunds;
   List<StockTrend> get stockTrends => _stockTrends;
+  GlobalIndex? get nifty50 => _nifty50;
   Map<String, dynamic> get portfolioSummary => _portfolioSummary;
   bool get isLoading => _isLoading;
   bool get isRefreshingPrices => _isRefreshingPrices;
@@ -31,6 +34,7 @@ class FinanceProvider with ChangeNotifier {
     _stocks = [];
     _mutualFunds = [];
     _stockTrends = [];
+    _nifty50 = null;
     _portfolioSummary = {};
     _isLoading = false;
     _isRefreshingPrices = false;
@@ -76,6 +80,19 @@ class FinanceProvider with ChangeNotifier {
 
     try {
       _stocks = await ApiService.getStocks();
+      try {
+        final indices = await ApiService.getIndices();
+        GlobalIndex? nifty;
+        for (final idx in indices) {
+          if (idx.symbol.toUpperCase() == 'NIFTY50') {
+            nifty = idx;
+            break;
+          }
+        }
+        _nifty50 = nifty ?? (indices.isNotEmpty ? indices.first : null);
+      } catch (_) {
+        // Index benchmark is supplementary.
+      }
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -92,6 +109,19 @@ class FinanceProvider with ChangeNotifier {
 
     try {
       _mutualFunds = await ApiService.getMutualFunds();
+      try {
+        final indices = await ApiService.getIndices();
+        GlobalIndex? nifty;
+        for (final idx in indices) {
+          if (idx.symbol.toUpperCase() == 'NIFTY50') {
+            nifty = idx;
+            break;
+          }
+        }
+        _nifty50 = nifty ?? (indices.isNotEmpty ? indices.first : null);
+      } catch (_) {
+        // Index benchmark is supplementary.
+      }
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -108,6 +138,19 @@ class FinanceProvider with ChangeNotifier {
 
     try {
       _portfolioSummary = await ApiService.getPortfolioSummary();
+      try {
+        final indices = await ApiService.getIndices();
+        GlobalIndex? nifty;
+        for (final idx in indices) {
+          if (idx.symbol.toUpperCase() == 'NIFTY50') {
+            nifty = idx;
+            break;
+          }
+        }
+        _nifty50 = nifty ?? (indices.isNotEmpty ? indices.first : null);
+      } catch (_) {
+        // Index benchmark is supplementary.
+      }
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -136,9 +179,16 @@ class FinanceProvider with ChangeNotifier {
       if (generation != _yahooWarmGeneration) return;
       _stocks = stocks;
       _yahooWarmed = true;
-    } catch (e) {
+    } catch (_) {
       if (generation != _yahooWarmGeneration) return;
-      _error = e.toString();
+      // Yahoo refresh can time out in front of the origin; keep the holdings
+      // already on screen and reload persisted prices without a blocking error.
+      _yahooWarmed = true;
+      try {
+        final stocks = await ApiService.getStocks();
+        if (generation != _yahooWarmGeneration) return;
+        _stocks = stocks;
+      } catch (_) {}
     } finally {
       if (generation == _yahooWarmGeneration) {
         _isRefreshingPrices = false;
@@ -263,6 +313,33 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
+  Future<bool> setStockNotes({
+    required int stockId,
+    required String source,
+    required String notes,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final src = source.trim().isEmpty ? 'Manual Add' : source.trim();
+      await ApiService.setStockNotes(
+        stockId: stockId,
+        source: src,
+        notes: notes,
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<bool> setStockThresholds({
     required int stockId,
     required String source,
@@ -294,7 +371,53 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
-  Future<void> addStocksBulk(List<Stock> stocks, {required String source}) async {
+  Future<bool> clearStockReviewValues({
+    required int stockId,
+    required String source,
+    required List<String> fields,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final src = source.trim().isEmpty ? 'Manual Add' : source.trim();
+      await ApiService.clearStockReviewValues(
+        stockId: stockId,
+        source: src,
+        fields: fields,
+      );
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> clearAllStockReviewValues() async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await ApiService.clearAllStockReviewValues();
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> addStocksBulk(List<Stock> stocks,
+      {required String source}) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
@@ -303,11 +426,56 @@ class FinanceProvider with ChangeNotifier {
       await ApiService.replaceBuyTransactionsBySource(
         source: source,
         stocks: stocks,
-        transactionDate: DateTime.now(),
       );
       await loadStocks();
     } catch (e) {
       _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> rebuildLedgerFromTransactions({
+    required String source,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await ApiService.rebuildLedgerFromTransactions(
+        source: source,
+        items: items,
+      );
+      await loadStocks();
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<({int count, List<String> unmapped})?> mergeLedgerFromTransactions({
+    required String source,
+    required List<Map<String, dynamic>> items,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final result = await ApiService.mergeLedgerFromTransactions(
+        source: source,
+        items: items,
+      );
+      await loadStocks();
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      return null;
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -365,6 +533,24 @@ class FinanceProvider with ChangeNotifier {
 
     try {
       await ApiService.deleteStock(id, source: source);
+      await loadStocks();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> deleteAllHoldings() async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await ApiService.deleteAllHoldings();
       await loadStocks();
       return true;
     } catch (e) {
@@ -455,6 +641,24 @@ class FinanceProvider with ChangeNotifier {
       await loadMutualFunds();
     } catch (e) {
       _error = e.toString();
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> deleteAllMutualFunds() async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await ApiService.deleteAllMutualFunds();
+      await loadMutualFunds();
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      return false;
     } finally {
       _isLoading = false;
       notifyListeners();
