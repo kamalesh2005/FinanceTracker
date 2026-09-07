@@ -10,12 +10,14 @@ class AppBrandTitle extends StatelessWidget {
   const AppBrandTitle(
     this.label, {
     super.key,
+    this.subtitle,
     this.onLogoTap,
     this.logoTooltip,
     this.trailing,
   });
 
   final String label;
+  final String? subtitle;
   final VoidCallback? onLogoTap;
   final String? logoTooltip;
   final Widget? trailing;
@@ -48,10 +50,7 @@ class AppBrandTitle extends StatelessWidget {
         logo,
         const SizedBox(width: 10),
         Flexible(
-          child: Text(
-            label,
-            overflow: TextOverflow.ellipsis,
-          ),
+          child: _titleText(context),
         ),
         if (trailing != null) ...[
           const SizedBox(width: 6),
@@ -63,6 +62,33 @@ class AppBrandTitle extends StatelessWidget {
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _titleText(BuildContext context) {
+    final title = Text(
+      label,
+      overflow: TextOverflow.ellipsis,
+    );
+    final gloss = subtitle?.trim();
+    if (gloss == null || gloss.isEmpty) return title;
+
+    final base = DefaultTextStyle.of(context).style;
+    return Wrap(
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 8,
+      runSpacing: 0,
+      children: [
+        title,
+        Text(
+          gloss,
+          style: base.copyWith(
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
+            color: (base.color ?? Colors.white).withValues(alpha: 0.72),
+          ),
+        ),
       ],
     );
   }

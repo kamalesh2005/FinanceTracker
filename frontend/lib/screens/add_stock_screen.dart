@@ -27,6 +27,7 @@ enum _StockImportKind {
   zerodhaTransactions,
   bulk,
   bulkTransactions,
+  cas,
 }
 
 typedef _TradeTxnRow = ({
@@ -320,6 +321,116 @@ class _AddStockScreenState extends State<AddStockScreen> {
       ),
     );
     Navigator.pop(context);
+  }
+
+  Future<String?> _promptCasPassword() async {
+    final controller = TextEditingController();
+    final password = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('NSDL e-CAS password'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter the PDF password. For NSDL e-CAS this is the PAN of the first/sole holder (capital letters).',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                obscureText: true,
+                textCapitalization: TextCapitalization.characters,
+                decoration: const InputDecoration(
+                  labelText: 'PAN password',
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Import'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    if (password == null || password.isEmpty) return null;
+    return password;
+  }
+
+  Future<void> _pickAndImportCasFile() async {
+    if (!context.read<AuthProvider>().isAdmin) {
+      _showImportError('NSDL e-CAS import is available to admins only');
+      return;
+    }
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final password = await _promptCasPassword();
+      if (password == null) return;
+      if (!mounted) return;
+
+      _setImporting(_StockImportKind.cas);
+      final picked = result.files.single;
+      final bytes = await _readPickedFileBytes(picked);
+      if (bytes == null) {
+        throw Exception('Could not read file contents');
+      }
+      if (!mounted) return;
+      final filename = picked.name.isNotEmpty ? picked.name : 'cas.pdf';
+      final provider = context.read<FinanceProvider>();
+      final summary = await provider.importCas(
+        bytes: bytes,
+        filename: filename,
+        password: password,
+      );
+      if (!mounted) return;
+      _setImporting(null);
+      if (summary == null) {
+        _showImportError('Error: ${provider.error ?? 'CAS import failed'}');
+        return;
+      }
+      final srcNames = summary.sources
+          .map((s) => (s['source'] ?? '').toString())
+          .where((s) => s.isNotEmpty)
+          .join(', ');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'CAS imported: ${summary.stocks} stocks, ${summary.mutualFunds} MFs'
+            '${srcNames.isEmpty ? '' : ' ($srcNames)'}',
+          ),
+          backgroundColor: Colors.green,
+        ),
+      );
+      if (summary.warnings.isNotEmpty) {
+        _showImportWarning(
+          '${summary.warnings.length} scheme(s) need catalog mapping.',
+        );
+      }
+      Navigator.pop(context);
+    } catch (e) {
+      _setImporting(null);
+      _showImportError('Error importing CAS: $e');
+    }
   }
 
   Future<void> _pickAndImportFile() async {
@@ -2134,6 +2245,53 @@ class _AddStockScreenState extends State<AddStockScreen> {
                             ),
                           ],
                         ),
+                        if (context.watch<AuthProvider>().isAdmin) ...[
+                          const SizedBox(height: 16),
+                          const Divider(),
+                          const SizedBox(height: 12),
+                          const Row(
+                            children: [
+                              Icon(Icons.picture_as_pdf,
+                                  color: Colors.deepPurple),
+                              SizedBox(width: 8),
+                              Text(
+                                'Import NSDL e-CAS (PDF)',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.deepPurple,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Admin only. Upload the password-protected NSDL Consolidated Account Statement (password = PAN). Updates stocks and MFs under separate CAS accounts (e.g. NSDL ICICI Bank, NSDL HDFC Bank, NSDL MF Folios) — does not merge with ICICIDirect/HDFCSec Excel uploads. Does not store PAN or account numbers.',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                          const SizedBox(height: 12),
+                          ElevatedButton.icon(
+                            onPressed:
+                                _isImporting ? null : _pickAndImportCasFile,
+                            icon: _isBusy(_StockImportKind.cas)
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.upload_file),
+                            label: Text(
+                              _isBusy(_StockImportKind.cas)
+                                  ? 'Importing...'
+                                  : 'Select NSDL e-CAS PDF',
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.deepPurple,
+                              foregroundColor: Colors.white,
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 16),
                         const Divider(),
                         const SizedBox(height: 12),

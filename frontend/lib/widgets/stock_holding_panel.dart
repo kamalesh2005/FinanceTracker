@@ -65,7 +65,7 @@ class StockHoldingPanel extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            stock.symbol,
+                            stock.displaySymbol,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -284,6 +284,8 @@ class StockHoldingPanel extends StatelessWidget {
     } else if (recommendation.contains('BUY') &&
         recommendation != 'AT BUY PRICE') {
       color = Colors.green;
+    } else if (recommendation == 'Review') {
+      color = Colors.blue;
     }
     final isDefault = recommendation == 'NO ACTION REQD' ||
         recommendation == 'AT BUY PRICE' ||

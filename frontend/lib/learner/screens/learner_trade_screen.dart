@@ -141,7 +141,7 @@ class _LearnerTradeScreenState extends State<LearnerTradeScreen> {
         0;
     return wrapLearnerPage(Scaffold(
       appBar: AppBar(
-        title: learnerBrandTitle(context, 'LP:$challengeName : Trade'),
+        title: learnerBrandTitle(context, '$challengeName : Trade'),
         actions: learnerAppBarActions(context),
       ),
       body: ListView(

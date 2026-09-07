@@ -42,6 +42,36 @@ func buyDateOrNil(t *time.Time) *time.Time {
 	return &d
 }
 
+// soldBeforePeriod is true when a stamped sale fully exited the lot before periodStart.
+// Those lots must not enter FY period returns: rewriting their buy to FY-end LTP/NAV
+// while keeping the historical sale price creates phantom losses.
+func soldBeforePeriod(salePrice float64, saleDate *time.Time, periodStart time.Time) bool {
+	if salePrice <= 1e-12 || saleDate == nil || saleDate.IsZero() {
+		return false
+	}
+	return dateOnlyUTC(*saleDate).Before(periodStart)
+}
+
+// clampSaleToPeriodEnd drops sales after periodEnd so the lot marks to period-end price.
+// Sold lots have Quantity=0; restore OriginalQuantity when treating them as still open.
+func clampSaleToPeriodEnd(
+	qty, orig, salePrice float64, saleDate *time.Time, periodEnd time.Time,
+) (outQty, outOrig, outSalePrice float64, outSaleDate *time.Time) {
+	outQty, outOrig, outSalePrice, outSaleDate = qty, orig, salePrice, saleDate
+	if salePrice <= 1e-12 || saleDate == nil || saleDate.IsZero() {
+		return
+	}
+	if !dateOnlyUTC(*saleDate).After(periodEnd) {
+		return
+	}
+	outSalePrice = 0
+	outSaleDate = nil
+	if outQty <= 1e-9 {
+		outQty = orig
+	}
+	return
+}
+
 // simpleReturnFromAdjustedLots is the period return (end/start - 1), not annualized.
 // Dashboard FY25+ / FY26 use this so figures match fund-level pctReturn and Nifty YTD.
 func simpleReturnFromAdjustedLots(xlots []xirr.Lot, asOf time.Time) *float64 {
@@ -69,6 +99,9 @@ func xirrStockSinceFY25(lots []models.UserStockTransaction, prices map[uint]stoc
 		if lot.Type != models.TransactionTypeBuy {
 			continue
 		}
+		if soldBeforePeriod(lot.SalePrice, lot.SaleDate, fy25Start) {
+			continue
+		}
 		px, ok := prices[lot.StockID]
 		if !ok || px.LtpFY2025 <= 0 {
 			continue // missing FY25 MTM — ignore stock
@@ -87,13 +120,16 @@ func xirrStockSinceFY25(lots []models.UserStockTransaction, prices map[uint]stoc
 			date = &d
 			price = px.LtpFY2024
 		}
+		qty, orig, salePrice, saleDate := clampSaleToPeriodEnd(
+			lot.Quantity, lot.OriginalQuantity, lot.SalePrice, lot.SaleDate, fy25End,
+		)
 		xlots = append(xlots, xirr.Lot{
-			Quantity:         lot.Quantity,
-			OriginalQuantity: lot.OriginalQuantity,
+			Quantity:         qty,
+			OriginalQuantity: orig,
 			Price:            price,
 			TransactionDate:  date,
-			SalePrice:        lot.SalePrice,
-			SaleDate:         lot.SaleDate,
+			SalePrice:        salePrice,
+			SaleDate:         saleDate,
 			CurrentPrice:     px.LtpFY2025,
 		})
 	}
@@ -105,6 +141,9 @@ func xirrStockFY26YTD(lots []models.UserStockTransaction, prices map[uint]stockF
 	xlots := make([]xirr.Lot, 0, len(lots))
 	for _, lot := range lots {
 		if lot.Type != models.TransactionTypeBuy {
+			continue
+		}
+		if soldBeforePeriod(lot.SalePrice, lot.SaleDate, fy26Start) {
 			continue
 		}
 		px, ok := prices[lot.StockID]
@@ -146,6 +185,9 @@ func xirrMFSinceFY25(lots []models.UserMutualFundTransaction, prices map[string]
 		if lot.Type != models.TransactionTypeBuy {
 			continue
 		}
+		if soldBeforePeriod(lot.SalePrice, lot.SaleDate, fy25Start) {
+			continue
+		}
 		key := mfLotISIN(lot)
 		px, ok := prices[key]
 		if !ok || px.NavFY2025 <= 0 {
@@ -165,13 +207,16 @@ func xirrMFSinceFY25(lots []models.UserMutualFundTransaction, prices map[string]
 			date = &d
 			price = px.NavFY2024
 		}
+		qty, orig, salePrice, saleDate := clampSaleToPeriodEnd(
+			lot.Quantity, lot.OriginalQuantity, lot.SalePrice, lot.SaleDate, fy25End,
+		)
 		xlots = append(xlots, xirr.Lot{
-			Quantity:         lot.Quantity,
-			OriginalQuantity: lot.OriginalQuantity,
+			Quantity:         qty,
+			OriginalQuantity: orig,
 			Price:            price,
 			TransactionDate:  date,
-			SalePrice:        lot.SalePrice,
-			SaleDate:         lot.SaleDate,
+			SalePrice:        salePrice,
+			SaleDate:         saleDate,
 			CurrentPrice:     px.NavFY2025,
 		})
 	}
@@ -183,6 +228,9 @@ func xirrMFFY26YTD(lots []models.UserMutualFundTransaction, prices map[string]mf
 	xlots := make([]xirr.Lot, 0, len(lots))
 	for _, lot := range lots {
 		if lot.Type != models.TransactionTypeBuy {
+			continue
+		}
+		if soldBeforePeriod(lot.SalePrice, lot.SaleDate, fy26Start) {
 			continue
 		}
 		key := mfLotISIN(lot)

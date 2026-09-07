@@ -46,6 +46,7 @@ class _StocksScreenState extends State<StocksScreen> {
     'Book Profit',
     'BUY',
     'SELL',
+    'Review',
     'AT BUY PRICE',
     'AT SELL PRICE',
     'AT HOLD PRICE',
@@ -55,6 +56,7 @@ class _StocksScreenState extends State<StocksScreen> {
     'Book Profit',
     'BUY',
     'SELL',
+    'Review',
   ];
   static const List<String> _nonActionRecommendations = [
     'NO ACTION REQD',
@@ -126,6 +128,7 @@ class _StocksScreenState extends State<StocksScreen> {
     'FY25',
     'FY26 YTD',
     'Last Actioned',
+    'Trend at Last Action',
     'Price Range',
     'High',
     'Low',
@@ -151,6 +154,9 @@ class _StocksScreenState extends State<StocksScreen> {
   /// Hides Industry, Account, FY21–FY25, YTD by default for existing prefs.
   static const String _columnDefaultsV4Sentinel = '__defaults_v4';
 
+  /// Hides Trend at Last Action by default for existing saved prefs.
+  static const String _columnDefaultsV5Sentinel = '__defaults_v5';
+
   static const Set<String> _defaultHiddenColumns = {
     'Industry',
     'Account',
@@ -165,6 +171,7 @@ class _StocksScreenState extends State<StocksScreen> {
     'FY26 YTD',
     'High',
     'Low',
+    'Trend at Last Action',
   };
 
   static const Set<String> _v4HiddenColumns = {
@@ -176,6 +183,10 @@ class _StocksScreenState extends State<StocksScreen> {
     'FY24',
     'FY25',
     'FY26 YTD',
+  };
+
+  static const Set<String> _v5HiddenColumns = {
+    'Trend at Last Action',
   };
 
   static const Set<String> _defaultSelectedColumns = {
@@ -291,6 +302,8 @@ class _StocksScreenState extends State<StocksScreen> {
       case 'Low':
       case 'Last Actioned':
         return 120;
+      case 'Trend at Last Action':
+        return 170;
       case 'P/L %':
       case 'XIRR':
       case 'FY21':
@@ -981,6 +994,7 @@ class _StocksScreenState extends State<StocksScreen> {
     if (recommendation.contains('BUY') && recommendation != 'AT BUY PRICE') {
       return Colors.green;
     }
+    if (recommendation == 'Review') return Colors.blue;
     return Colors.grey;
   }
 
@@ -1090,7 +1104,7 @@ class _StocksScreenState extends State<StocksScreen> {
                         context,
                         appPageRoute(
                           StockChartScreen(
-                            symbol: stock.symbol,
+                            symbol: stock.displaySymbol,
                             name: stock.name.isNotEmpty ? stock.name : null,
                             stockId: stock.id,
                             source: stock.source,
@@ -1102,7 +1116,7 @@ class _StocksScreenState extends State<StocksScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          stock.symbol,
+                          stock.displaySymbol,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1726,6 +1740,7 @@ class _StocksScreenState extends State<StocksScreen> {
                             ? Theme.of(context).colorScheme.primary
                             : null,
                       ),
+                      maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
                     if (subtitle != null)
@@ -1819,7 +1834,7 @@ class _StocksScreenState extends State<StocksScreen> {
               context,
               appPageRoute(
                 StockChartScreen(
-                  symbol: stock.symbol,
+                  symbol: stock.displaySymbol,
                   name: stock.name.isNotEmpty ? stock.name : null,
                   stockId: stock.id,
                   source: stock.source,
@@ -1832,7 +1847,7 @@ class _StocksScreenState extends State<StocksScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                stock.symbol,
+                stock.displaySymbol,
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.blue,
@@ -1904,6 +1919,15 @@ class _StocksScreenState extends State<StocksScreen> {
             ),
           ],
         );
+      case 'Trend at Last Action':
+        final actionTrend = stock.lastActionTrend.trim();
+        return actionTrend.isNotEmpty
+            ? FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: _buildTrendBadge(actionTrend),
+              )
+            : const Text('-');
       case 'Current':
         return Text(formatInr(stock.currentPrice));
       case 'P/L':
@@ -2053,8 +2077,8 @@ class _StocksScreenState extends State<StocksScreen> {
           return AlertDialog(
             title: Text(
               stock.notes.trim().isEmpty
-                  ? 'Add note — ${stock.symbol}'
-                  : 'Edit note — ${stock.symbol}',
+                  ? 'Add note — ${stock.displaySymbol}'
+                  : 'Edit note — ${stock.displaySymbol}',
             ),
             content: SizedBox(
               width: 420,
@@ -2103,7 +2127,7 @@ class _StocksScreenState extends State<StocksScreen> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text('Delete note — ${stock.symbol}'),
+          title: Text('Delete note — ${stock.displaySymbol}'),
           content: const Text('Remove the note for this stock?'),
           actions: [
             TextButton(
@@ -2242,7 +2266,7 @@ class _StocksScreenState extends State<StocksScreen> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text('${stock.symbol} — News'),
+          title: Text('${stock.displaySymbol} — News'),
           content: SizedBox(
             width: 480,
             child: SingleChildScrollView(
@@ -2894,7 +2918,7 @@ class _StocksScreenState extends State<StocksScreen> {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text('Set thresholds — ${stock.symbol}'),
+          title: Text('Set thresholds — ${stock.displaySymbol}'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -3018,7 +3042,7 @@ class _StocksScreenState extends State<StocksScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Hold ${stock.symbol}'),
+        title: Text('Hold ${stock.displaySymbol}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -3088,7 +3112,7 @@ class _StocksScreenState extends State<StocksScreen> {
           builder: (ctx, setDialogState) {
             return AlertDialog(
               title:
-                  Text(isBuy ? 'Buy ${stock.symbol}' : 'Sell ${stock.symbol}'),
+                  Text(isBuy ? 'Buy ${stock.displaySymbol}' : 'Sell ${stock.displaySymbol}'),
               content: Form(
                 key: formKey,
                 child: SingleChildScrollView(
@@ -3246,7 +3270,7 @@ class _StocksScreenState extends State<StocksScreen> {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Delete Stock'),
         content: Text(
-          'Remove ${stock.symbol} from your holdings'
+          'Remove ${stock.displaySymbol} from your holdings'
           '${stock.source.isNotEmpty ? ' (${stock.source})' : ''}?',
         ),
         actions: [
@@ -3283,10 +3307,12 @@ class _StocksScreenState extends State<StocksScreen> {
       final hasV2 = raw.contains(_columnDefaultsV2Sentinel);
       final hasV3 = raw.contains(_columnDefaultsV3Sentinel);
       final hasV4 = raw.contains(_columnDefaultsV4Sentinel);
+      final hasV5 = raw.contains(_columnDefaultsV5Sentinel);
       final hidden = <String>{
         ..._normalizeHiddenColumns(raw),
         if (!hasV2) ..._defaultHiddenColumns,
         if (!hasV4) ..._v4HiddenColumns,
+        if (!hasV5) ..._v5HiddenColumns,
       };
       if (!hasV3) {
         hidden.remove('XIRR');
@@ -3300,7 +3326,7 @@ class _StocksScreenState extends State<StocksScreen> {
           _selectedColumns.addAll(_defaultSelectedColumns);
         }
       });
-      if (!hasV2 || !hasV3 || !hasV4) {
+      if (!hasV2 || !hasV3 || !hasV4 || !hasV5) {
         // Persist migrated hide-set + sentinels so this does not re-run.
         await _saveColumnPreferences();
       }
@@ -3365,6 +3391,7 @@ class _StocksScreenState extends State<StocksScreen> {
       _columnDefaultsV2Sentinel,
       _columnDefaultsV3Sentinel,
       _columnDefaultsV4Sentinel,
+      _columnDefaultsV5Sentinel,
     ];
     try {
       await ApiService.saveHiddenStockColumns(hidden);
@@ -3502,6 +3529,8 @@ class _StocksScreenState extends State<StocksScreen> {
         return a.buyPrice.compareTo(b.buyPrice);
       case 'Last Actioned':
         return (a.lastActionPrice ?? 0).compareTo(b.lastActionPrice ?? 0);
+      case 'Trend at Last Action':
+        return _compareEmptyLast(a.lastActionTrend, b.lastActionTrend);
       case 'Current':
         return a.currentPrice.compareTo(b.currentPrice);
       case 'P/L':

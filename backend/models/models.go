@@ -89,6 +89,7 @@ const (
 	SourceICICIDirect      = "ICICIDirect"
 	SourceHDFCSec          = "HDFCSec"
 	SourceZerodha          = "Zerodha"
+	SourceNSDLMFFolios     = "NSDL MF Folios"
 )
 
 const (

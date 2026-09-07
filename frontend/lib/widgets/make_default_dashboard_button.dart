@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/user.dart';
 import '../providers/auth_provider.dart';
+import '../learner/learner_theme.dart';
+import '../freedom/freedom_theme.dart';
 
 class MakeDefaultDashboardButton extends StatefulWidget {
   final String portal;
@@ -61,8 +63,10 @@ class _MakeDefaultDashboardButtonState
     if (!mounted) return;
     setState(() => _saving = false);
     final name = widget.portal == AppPortal.learner
-        ? 'Learner Portal'
-        : 'DhanShanti Portal';
+        ? flexStreetName
+        : widget.portal == AppPortal.freedom
+            ? horizonName
+            : 'DhanShanti Portal';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(

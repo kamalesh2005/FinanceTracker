@@ -7,6 +7,10 @@ import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 
 const Color freedomSeed = Color(0xFF1B5E20);
+const String horizonName = 'Horizon';
+const String horizonGloss = 'A way to financial freedom';
+const String horizonBlurb =
+    'Assets, income, expenses. Ready to retire, live well, term cover.';
 
 /// Post-retirement pension income rows in the income section.
 const Color freedomPensionAccent = Color(0xFF1565C0);
@@ -85,9 +89,15 @@ void goToMainPortal(BuildContext context) {
   context.read<AuthProvider>().openPortal(AppPortal.main);
 }
 
-Widget freedomBrandTitle(BuildContext context, String label, {Widget? trailing}) {
+Widget freedomBrandTitle(
+  BuildContext context,
+  String label, {
+  String? subtitle,
+  Widget? trailing,
+}) {
   return AppBrandTitle(
     label,
+    subtitle: subtitle,
     onLogoTap: () => goToMainPortal(context),
     logoTooltip: 'Main portal',
     trailing: trailing,
@@ -119,8 +129,9 @@ void showFreedomHelpDialog(BuildContext context) {
   showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: const Text('Financial Freedom Portal'),
+      title: const Text('Help on $horizonName'),
       content: const Text(
+        '$horizonBlurb\n\n'
         'Track assets (with income and tax), income from salary/profession, '
         'recurring expenses, and major one-time costs.\n\n'
         'Active Income: sum of salary/profession income for the current year '

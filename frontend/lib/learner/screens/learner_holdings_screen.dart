@@ -44,12 +44,18 @@ class _LearnerHoldingsScreenState extends State<LearnerHoldingsScreen> {
     'Book Profit',
     'BUY',
     'SELL',
+    'Review',
     'AT BUY PRICE',
     'AT SELL PRICE',
     'AT HOLD PRICE',
     'NO ACTION REQD',
   ];
-  static const _actionableRecommendations = ['Book Profit', 'BUY', 'SELL'];
+  static const _actionableRecommendations = [
+    'Book Profit',
+    'BUY',
+    'SELL',
+    'Review',
+  ];
   static const _nonActionRecommendations = [
     'NO ACTION REQD',
     'AT BUY PRICE',

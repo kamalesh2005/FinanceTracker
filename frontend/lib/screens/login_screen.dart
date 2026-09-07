@@ -356,7 +356,7 @@ class _BrandHero extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         Text(
-          'Financial Peace, automated',
+          'Rules on. Noise off.',
           textAlign: wide ? TextAlign.start : TextAlign.center,
           style: GoogleFonts.outfit(
             fontSize: wide ? 20 : 17,
@@ -369,7 +369,7 @@ class _BrandHero extends StatelessWidget {
         Align(
           alignment: wide ? Alignment.centerLeft : Alignment.center,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 360),
+            constraints: const BoxConstraints(maxWidth: 420),
             child: _AnonymousChip(onTap: onPrivacy),
           ),
         ),
@@ -377,7 +377,7 @@ class _BrandHero extends StatelessWidget {
         ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Text(
-            'Put your portfolio on autopilot. Set rules and relax, let signals guide the next move when it matters.',
+            'Markets all day? Nah. Let rules watch. Show up only for the decisions that count.',
             textAlign: wide ? TextAlign.start : TextAlign.center,
             style: GoogleFonts.outfit(
               fontSize: 16,
@@ -401,7 +401,7 @@ class _AnonymousChip extends StatelessWidget {
     const teal = _LoginScreenState._teal;
     return Semantics(
       button: true,
-      label: 'Stay anonymous, no personal information required. Jump to privacy.',
+      label: 'Stay Anonymous. No personal information required. Jump to privacy.',
       child: Material(
         color: teal.withValues(alpha: 0.08),
         elevation: 0,
@@ -414,6 +414,7 @@ class _AnonymousChip extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 const Icon(
                   Icons.lock_outline,
@@ -423,7 +424,7 @@ class _AnonymousChip extends StatelessWidget {
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
-                    'Stay anonymous - no personal information required',
+                    'Stay Anonymous. No personal information required.',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.outfit(

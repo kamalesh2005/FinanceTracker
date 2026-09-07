@@ -2088,6 +2088,31 @@ func classifyTrend(rs trendrules.Ruleset, currentPrice, ma7, ma20, ma50, adjuste
 	})
 }
 
+// reclassifyStoredTrends applies trend rules to persisted MA/price/delta fields
+// for pull_data=Y stocks. It does not fetch Yahoo data or rewrite MAs.
+func (h *Handler) reclassifyStoredTrends(rs trendrules.Ruleset) (updated, skipped int, err error) {
+	var stocks []models.Stock
+	if err := h.DB.Where("pull_data = ?", models.PullDataYes).Find(&stocks).Error; err != nil {
+		return 0, 0, err
+	}
+	for i := range stocks {
+		s := &stocks[i]
+		if s.MA7 == 0 || s.MA20 == 0 {
+			skipped++
+			continue
+		}
+		label := classifyTrend(rs, s.CurrentPrice, s.MA7, s.MA20, s.MA50, s.AdjustedSTDelta, s.AdjustedMTDelta)
+		if strings.TrimSpace(s.Trend) == label {
+			continue
+		}
+		if err := h.DB.Model(s).Update("trend", label).Error; err != nil {
+			return updated, skipped, err
+		}
+		updated++
+	}
+	return updated, skipped, nil
+}
+
 func needsTrendData(stock *models.Stock, today time.Time) bool {
 	if stock == nil {
 		return true

@@ -17,20 +17,21 @@ type Inputs struct {
 	AdjustedMTDelta  float64
 }
 
-// ClassifyBearishStrength matches the historical classifyBearishStrength helper.
+// ClassifyBearishStrength scores short/long bearish alignment.
 // threshold is the absolute magnitude (e.g. 10 means adjustedDelta < -10).
-func ClassifyBearishStrength(currentPrice, fastMA, slowMA, adjustedDelta, threshold float64) int {
+// priceTolPct / maTolPct ignore noise-band gaps (see ClearlyAbove / ClearlyBelow).
+func ClassifyBearishStrength(currentPrice, fastMA, slowMA, adjustedDelta, threshold, priceTolPct, maTolPct float64) int {
 	if fastMA <= 0 || slowMA <= 0 {
 		return 0
 	}
 	negThresh := -threshold
-	if currentPrice < fastMA && fastMA < slowMA {
+	if ClearlyBelow(currentPrice, fastMA, priceTolPct) && ClearlyBelow(fastMA, slowMA, maTolPct) {
 		if adjustedDelta < negThresh {
 			return 2
 		}
 		return 1
 	}
-	if adjustedDelta < negThresh && fastMA <= slowMA {
+	if adjustedDelta < negThresh && !ClearlyAbove(fastMA, slowMA, maTolPct) {
 		return 1
 	}
 	return 0
@@ -42,6 +43,8 @@ func ClassifyBearishStrength(currentPrice, fastMA, slowMA, adjustedDelta, thresh
 func Evaluate(rs Ruleset, in Inputs) string {
 	rs.normalize()
 	threshold := BearishDeltaThreshold(rs)
+	priceTol := PriceMATolerancePct(rs)
+	maTol := MAMATolerancePct(rs)
 	ctx := map[string]any{
 		"curr_price":          in.CurrPrice,
 		"ma7":                 in.MA7,
@@ -49,8 +52,8 @@ func Evaluate(rs Ruleset, in Inputs) string {
 		"ma50":                in.MA50,
 		"adjusted_st_delta":   in.AdjustedSTDelta,
 		"adjusted_mt_delta":   in.AdjustedMTDelta,
-		"st_bearish_strength": float64(ClassifyBearishStrength(in.CurrPrice, in.MA7, in.MA20, in.AdjustedSTDelta, threshold)),
-		"lt_bearish_strength": float64(ClassifyBearishStrength(in.CurrPrice, in.MA20, in.MA50, in.AdjustedMTDelta, threshold)),
+		"st_bearish_strength": float64(ClassifyBearishStrength(in.CurrPrice, in.MA7, in.MA20, in.AdjustedSTDelta, threshold, priceTol, maTol)),
+		"lt_bearish_strength": float64(ClassifyBearishStrength(in.CurrPrice, in.MA20, in.MA50, in.AdjustedMTDelta, threshold, priceTol, maTol)),
 	}
 	for _, nv := range rs.NamedValues {
 		ctx[nv.Name] = nv.Value

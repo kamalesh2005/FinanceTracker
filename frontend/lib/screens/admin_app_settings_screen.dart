@@ -60,48 +60,50 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
     return RecommendationRuleset(
       namedValues: [
         NamedValue(name: 'bearish_delta_threshold', value: 10),
+        NamedValue(name: 'price_ma_tolerance_pct', value: 2.5),
+        NamedValue(name: 'ma_ma_tolerance_pct', value: 1.0),
       ],
       rules: [
         RecommendationRule(
           order: 1,
           recommendation: 'bullish',
           condition:
-              'ma7 > 0 AND ma20 > 0 AND curr_price > ma7 AND ma7 > ma20 AND adjusted_st_delta > 0',
+              'ma7 > 0 AND ma20 > 0 AND curr_price > ma7 * (1 + price_ma_tolerance_pct / 100) AND ma7 > ma20 * (1 + ma_ma_tolerance_pct / 100) AND adjusted_st_delta > 0',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 2,
           recommendation: 'moderately bullish',
           condition:
-              'ma7 > 0 AND ma20 > 0 AND ((curr_price > ma7 AND ma7 > ma20) OR (ma7 > ma20 AND curr_price <= ma7 AND adjusted_st_delta > 0))',
+              'ma7 > 0 AND ma20 > 0 AND ((curr_price > ma7 * (1 + price_ma_tolerance_pct / 100) AND ma7 > ma20 * (1 + ma_ma_tolerance_pct / 100)) OR (ma7 > ma20 * (1 + ma_ma_tolerance_pct / 100) AND curr_price <= ma7 * (1 + price_ma_tolerance_pct / 100) AND adjusted_st_delta > 0))',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 3,
           recommendation: 'bearish_lt',
           condition:
-              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength == 2 AND lt_bearish_strength == 2',
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 * (1 + ma_ma_tolerance_pct / 100) AND st_bearish_strength == 2 AND lt_bearish_strength == 2',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 4,
           recommendation: 'moderately bearish_lt',
           condition:
-              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength > 0 AND lt_bearish_strength > 0',
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 * (1 + ma_ma_tolerance_pct / 100) AND st_bearish_strength > 0 AND lt_bearish_strength > 0',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 5,
           recommendation: 'bearish_st',
           condition:
-              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength == 2',
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 * (1 + ma_ma_tolerance_pct / 100) AND st_bearish_strength == 2',
           onMatch: 'exit',
         ),
         RecommendationRule(
           order: 6,
           recommendation: 'moderately bearish_st',
           condition:
-              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 AND st_bearish_strength > 0',
+              'ma7 > 0 AND ma20 > 0 AND ma7 <= ma20 * (1 + ma_ma_tolerance_pct / 100) AND st_bearish_strength > 0',
           onMatch: 'exit',
         ),
         RecommendationRule(
@@ -156,11 +158,21 @@ class _AdminAppSettingsScreenState extends State<AdminAppSettingsScreen> {
     }
     setState(() => _savingTrend = true);
     try {
-      await ApiService.saveAdminConfig(trendRules: rs.toJson());
+      final data = await ApiService.saveAdminConfig(trendRules: rs.toJson());
       if (!mounted) return;
       setState(() => _trendRules = rs);
+      final n = data['trends_reclassified'];
+      final recErr = data['trends_reclassified_error'];
+      final String message;
+      if (recErr is String && recErr.isNotEmpty) {
+        message = 'Trend rules saved. Trend recalculation failed: $recErr';
+      } else if (n is num) {
+        message = 'Trend rules saved. Recalculated ${n.toInt()} stocks.';
+      } else {
+        message = 'Trend rules saved';
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Trend rules saved')),
+        SnackBar(content: Text(message)),
       );
     } catch (e) {
       if (!mounted) return;

@@ -88,7 +88,7 @@ class _LearnerTeamScreenState extends State<LearnerTeamScreen> {
     final challengeName = d?.name ?? 'Challenge';
     return wrapLearnerPage(Scaffold(
       appBar: AppBar(
-        title: learnerBrandTitle(context, 'LP:$challengeName : Team'),
+        title: learnerBrandTitle(context, '$challengeName : Team'),
         actions: learnerAppBarActions(context),
       ),
       body: ListView(

@@ -37,6 +37,8 @@ type EvaluateContext struct {
 	SetBuyPrice            float64
 	SetProfitBookingPrice  float64
 	SetStopLossPrice       float64
+	AdjustedSTDelta        float64
+	AdjustedMTDelta        float64
 	NamedValues            map[string]float64
 }
 
@@ -60,6 +62,8 @@ type HoldingInput struct {
 	SetBuyPrice           float64
 	SetProfitBookingPrice float64
 	SetStopLossPrice      float64
+	AdjustedSTDelta       float64
+	AdjustedMTDelta       float64
 	Now                   time.Time
 }
 
@@ -99,6 +103,8 @@ func BuildEvaluateContext(h HoldingInput, ruleset Ruleset) EvaluateContext {
 		SetBuyPrice:           h.SetBuyPrice,
 		SetProfitBookingPrice: h.SetProfitBookingPrice,
 		SetStopLossPrice:      h.SetStopLossPrice,
+		AdjustedSTDelta:       h.AdjustedSTDelta,
+		AdjustedMTDelta:       h.AdjustedMTDelta,
 		NamedValues:           make(map[string]float64),
 	}
 	if lastTradeValid {
@@ -192,6 +198,11 @@ func Evaluate(ruleset Ruleset, ctx EvaluateContext) string {
 			continue
 		}
 		if rule.OnMatch == OnMatchExit {
+			// Deferred fallback: after Continue matches, skip later Exit rules
+			// so Review only fires when no other Continue signal matched.
+			if len(parts) > 0 {
+				continue
+			}
 			return rule.Recommendation
 		}
 		parts = append(parts, rule.Recommendation)
@@ -207,6 +218,8 @@ func IsActionableSignal(signal string) bool {
 	switch signal {
 	case noActionRequired, "AT BUY PRICE", "AT SELL PRICE", "AT HOLD PRICE":
 		return false
+	case RecommendationReview:
+		return true
 	}
 	if strings.Contains(signal, "Book Profit") {
 		return true
@@ -538,6 +551,10 @@ func (p *parser) lookup(id string) (any, error) {
 		return p.ctx.SetProfitBookingPrice, nil
 	case "set_stop_loss_price":
 		return p.ctx.SetStopLossPrice, nil
+	case "adjusted_st_delta":
+		return p.ctx.AdjustedSTDelta, nil
+	case "adjusted_mt_delta":
+		return p.ctx.AdjustedMTDelta, nil
 	}
 	if v, ok := p.ctx.NamedValues[id]; ok {
 		return v, nil

@@ -1694,6 +1694,62 @@ class ApiService {
     );
   }
 
+  /// Upload a password-protected NSDL e-CAS PDF. Password is PAN (not stored).
+  static Future<
+      ({
+        int stocks,
+        int mutualFunds,
+        List<Map<String, dynamic>> sources,
+        List<Map<String, dynamic>> warnings,
+      })> importCas(List<int> bytes, String filename, String password) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/cas/import'),
+    );
+    if (_token != null && _token!.isNotEmpty) {
+      request.headers['Authorization'] = 'Bearer $_token';
+    }
+    request.fields['password'] = password;
+    request.files.add(
+      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+    );
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+    _checkUnauthorized(response);
+    if (response.statusCode == 201) {
+      final data = json.decode(response.body) as Map<String, dynamic>;
+      final sourcesRaw = data['sources'];
+      final warningsRaw = data['warnings'];
+      final sources = <Map<String, dynamic>>[];
+      final warnings = <Map<String, dynamic>>[];
+      if (sourcesRaw is List) {
+        for (final row in sourcesRaw) {
+          if (row is Map<String, dynamic>) {
+            sources.add(row);
+          } else if (row is Map) {
+            sources.add(Map<String, dynamic>.from(row));
+          }
+        }
+      }
+      if (warningsRaw is List) {
+        for (final row in warningsRaw) {
+          if (row is Map<String, dynamic>) {
+            warnings.add(row);
+          } else if (row is Map) {
+            warnings.add(Map<String, dynamic>.from(row));
+          }
+        }
+      }
+      return (
+        stocks: (data['stocks'] as num?)?.toInt() ?? 0,
+        mutualFunds: (data['mutual_funds'] as num?)?.toInt() ?? 0,
+        sources: sources,
+        warnings: warnings,
+      );
+    }
+    throw Exception(_errorMessage(response, 'CAS import failed'));
+  }
+
   static Future<MutualFund> updateMutualFund(int id, MutualFund mf) async {
     final response = await http.put(
       Uri.parse('$baseUrl/mutualfunds/$id'),

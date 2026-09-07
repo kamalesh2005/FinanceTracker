@@ -615,6 +615,34 @@ class FinanceProvider with ChangeNotifier {
     }
   }
 
+  /// Import NSDL e-CAS PDF (stocks + MFs). Reloads both holdings lists.
+  Future<
+      ({
+        int stocks,
+        int mutualFunds,
+        List<Map<String, dynamic>> sources,
+        List<Map<String, dynamic>> warnings,
+      })?> importCas({
+    required List<int> bytes,
+    required String filename,
+    required String password,
+  }) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+    try {
+      final result = await ApiService.importCas(bytes, filename, password);
+      await Future.wait([loadStocks(), loadMutualFunds()]);
+      return result;
+    } catch (e) {
+      _error = e.toString();
+      return null;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> updateMutualFund(int id, MutualFund mf) async {
     _isLoading = true;
     _error = null;

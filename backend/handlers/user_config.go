@@ -368,6 +368,10 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 		adminChanged = true
 		log.Printf("Patched App_Config AT * PRICE rules to require trend_matches_last_action")
 	}
+	if recrules.ApplyReviewSignalMigration(&adminRS) {
+		adminChanged = true
+		log.Printf("Added Review signal / review_adj_delta_pct to App_Config recommendation rules")
+	}
 	if adminChanged {
 		raw, mErr := adminRS.Marshal()
 		if mErr != nil {
@@ -424,6 +428,10 @@ func MigrateRecommendationRulesHoldThresholds(db *gorm.DB) error {
 			userChanged = true
 			log.Printf("Patched User_Config AT * PRICE rules for user_id=%d to require trend_matches_last_action", uc.UserID)
 		}
+		if recrules.ApplyReviewSignalMigration(&userRS) {
+			userChanged = true
+			log.Printf("Added Review signal / review_adj_delta_pct to User_Config recommendation rules for user_id=%d", uc.UserID)
+		}
 		if !userChanged {
 			continue
 		}
@@ -460,10 +468,43 @@ func (h *Handler) getAppConfig() (models.AppConfig, error) {
 func adminTrendRuleset(appCfg models.AppConfig) trendrules.Ruleset {
 	if strings.TrimSpace(appCfg.TrendRulesJSON) != "" {
 		if rs, err := trendrules.Parse(appCfg.TrendRulesJSON); err == nil {
+			_ = trendrules.ApplyToleranceMigration(&rs)
 			return rs
 		}
 	}
 	return trendrules.DefaultRuleset()
+}
+
+// MigrateTrendRulesTolerances inserts MA/price tolerance named values and upgrades
+// exact legacy default trend conditions on App_Config. Subsequent startups no-op.
+func MigrateTrendRulesTolerances(db *gorm.DB) error {
+	var cfg models.AppConfig
+	if err := db.First(&cfg, 1).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(cfg.TrendRulesJSON) == "" {
+		return nil
+	}
+	rs, err := trendrules.Parse(cfg.TrendRulesJSON)
+	if err != nil {
+		return fmt.Errorf("migrate trend tolerances: parse App_Config: %w", err)
+	}
+	if !trendrules.ApplyToleranceMigration(&rs) {
+		return nil
+	}
+	raw, mErr := rs.Marshal()
+	if mErr != nil {
+		return mErr
+	}
+	cfg.TrendRulesJSON = raw
+	if err := db.Save(&cfg).Error; err != nil {
+		return err
+	}
+	log.Printf("Migrated App_Config trend rules with MA/price tolerances")
+	return nil
 }
 
 func (h *Handler) loadTrendRuleset() trendrules.Ruleset {
@@ -861,6 +902,7 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 	}
 
 	updated := false
+	var savedTrendRules *trendrules.Ruleset
 	if len(req.RecommendationRules) > 0 && string(req.RecommendationRules) != "null" {
 		rs, err := recrules.Parse(string(req.RecommendationRules))
 		if err != nil {
@@ -909,6 +951,7 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 		}
 		cfg.TrendRulesJSON = raw
 		updated = true
+		savedTrendRules = &trs
 	}
 
 	if !updated {
@@ -925,9 +968,22 @@ func (h *Handler) PutAdminConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"default_recommendation_fluctuation_pct": recrules.FluctuationFromRuleset(rs, cfg.DefaultRecommendationFluctuationPct),
 		"recommendation_rules":                   rs.ToMap(),
 		"trend_rules":                            adminTrendRuleset(cfg).ToMap(),
-	})
+	}
+	if savedTrendRules != nil {
+		n, skipped, recErr := h.reclassifyStoredTrends(*savedTrendRules)
+		if recErr != nil {
+			log.Printf("PutAdminConfig: reclassifyStoredTrends FAIL: %v", recErr)
+			resp["trends_reclassified"] = 0
+			resp["trends_reclassified_error"] = recErr.Error()
+		} else {
+			log.Printf("PutAdminConfig: reclassified %d trends (skipped %d)", n, skipped)
+			resp["trends_reclassified"] = n
+			resp["trends_skipped"] = skipped
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }

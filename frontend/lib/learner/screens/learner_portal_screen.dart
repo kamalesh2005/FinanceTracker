@@ -93,7 +93,8 @@ class _LearnerPortalScreenState extends State<LearnerPortalScreen> {
       appBar: AppBar(
         title: learnerBrandTitle(
           context,
-          'Learner Portal',
+          flexStreetName,
+          subtitle: flexStreetGloss,
           trailing: isLearnerDefault
               ? null
               : const MakeDefaultDashboardButton(portal: AppPortal.learner),
@@ -135,8 +136,7 @@ class _LearnerPortalScreenState extends State<LearnerPortalScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Each teammate starts with the same cash amount you set. '
-                    'Books stay separate. Trades use live catalog prices plus a ₹20 fee.',
+                    flexStreetBlurb,
                     style: TextStyle(color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 16),
@@ -181,7 +181,7 @@ class _LearnerPortalScreenState extends State<LearnerPortalScreen> {
         leading: CircleAvatar(
           backgroundColor: learnerSeed.withValues(alpha: 0.12),
           child: Icon(
-            ch.ended ? Icons.emoji_events_outlined : Icons.school_outlined,
+            ch.ended ? Icons.emoji_events_outlined : Icons.military_tech,
             color: learnerSeed,
           ),
         ),

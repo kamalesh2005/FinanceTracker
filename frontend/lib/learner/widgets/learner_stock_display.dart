@@ -46,6 +46,7 @@ class LearnerStockDisplay {
     if (recommendation.contains('BUY') && recommendation != 'AT BUY PRICE') {
       return Colors.green;
     }
+    if (recommendation == 'Review') return Colors.blue;
     return Colors.grey;
   }
 

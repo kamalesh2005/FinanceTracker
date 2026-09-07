@@ -56,7 +56,10 @@ class RecommendationRulesEditor extends StatefulWidget {
         'set_buy_price / set_profit_booking_price / set_stop_loss_price — thresholds (ignored when unset / 0)\n'
         'highest_price — highest price\n'
         'lowest_price — lowest price\n'
-        'trend — e.g. "bullish", "bearish_st", "bearish_lt"\n\n'
+        'trend — e.g. "bullish", "bearish_st", "bearish_lt"\n'
+        'adjusted_st_delta — stock ST delta minus Sensex ST delta\n'
+        'adjusted_mt_delta — stock MT delta minus Sensex MT delta\n'
+        'review_adj_delta_pct — named value for Review conflict threshold (default 2)\n\n'
         'Use AND / OR, parentheses, and comparisons like:\n'
         'curr_price < avg_buy_price * 0.9',
     this.builtinFields,
@@ -81,7 +84,9 @@ class RecommendationRulesEditor extends StatefulWidget {
       'adjusted_mt_delta — stock MT delta minus Sensex MT delta\n'
       'st_bearish_strength — 0/1/2 from price vs ma7/ma20 and adjusted_st_delta\n'
       'lt_bearish_strength — 0/1/2 from price vs ma20/ma50 and adjusted_mt_delta\n'
-      'bearish_delta_threshold — named value used for strength (default 10)\n\n'
+      'bearish_delta_threshold — named value used for strength (default 10)\n'
+      'price_ma_tolerance_pct — noise band for price vs MA (default 2.5); clearly above means a > b*(1+tol/100)\n'
+      'ma_ma_tolerance_pct — noise band for MA vs MA (default 1.0); clearly below means a < b*(1-tol/100)\n\n'
       'Use AND / OR, parentheses, and comparisons. First matching Exit wins.';
 
   @override

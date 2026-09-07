@@ -16,7 +16,7 @@ class FreedomApi {
       return FFSummary.fromJson(json.decode(response.body) as Map<String, dynamic>);
     }
     throw Exception(
-      ApiService.responseError(response, 'Failed to load Financial Freedom summary'),
+      ApiService.responseError(response, 'Failed to load Horizon summary'),
     );
   }
 

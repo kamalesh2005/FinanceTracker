@@ -31,13 +31,13 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('Stay anonymous - no personal information required'), findsOneWidget);
+    expect(find.text('Stay Anonymous. No personal information required.'), findsOneWidget);
     expect(
       find.text('Prefer privacy? Create an account with just a username.'),
       findsOneWidget,
     );
 
-    await tester.tap(find.text('Stay anonymous - no personal information required'));
+    await tester.tap(find.text('Stay Anonymous. No personal information required.'));
     await tester.pumpAndSettle();
 
     expect(find.text('Stay anonymous'), findsWidgets);
@@ -95,7 +95,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('Stay anonymous - no personal information required'), findsOneWidget);
+    expect(find.text('Stay Anonymous. No personal information required.'), findsOneWidget);
     expect(find.text('Sign in'), findsWidgets);
   });
 }

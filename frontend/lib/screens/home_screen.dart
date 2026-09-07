@@ -9,6 +9,8 @@ import '../widgets/app_brand_title.dart';
 import '../widgets/auth_app_bar_actions.dart';
 import '../widgets/make_default_dashboard_button.dart';
 import '../utils/screen_tracker.dart';
+import '../learner/learner_theme.dart';
+import '../freedom/freedom_theme.dart';
 import 'stocks_screen.dart';
 import 'stock_screener_screen.dart';
 import 'stock_watchlist_screen.dart';
@@ -436,11 +438,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildLearnerPortalCard() {
     return _buildPortalCard(
-      icon: Icons.school_outlined,
+      icon: Icons.emoji_events,
       iconColor: const Color(0xFF0F5C56),
-      title: 'Learner Portal',
-      description:
-          'Run an Investment Challenge: each teammate gets the same starting cash and paper-trades catalog prices.',
+      title: flexStreetName,
+      subtitle: flexStreetGloss,
+      description: flexStreetBlurb,
       onOpen: () => context.read<AuthProvider>().openPortal(AppPortal.learner),
     );
   }
@@ -449,9 +451,9 @@ class _HomeScreenState extends State<HomeScreen> {
     return _buildPortalCard(
       icon: Icons.park_outlined,
       iconColor: const Color(0xFF1B5E20),
-      title: 'Financial Freedom Portal',
-      description:
-          'Plan assets, income, and expenses — see ready to retire, live well fund, and term insurance needs.',
+      title: horizonName,
+      subtitle: horizonGloss,
+      description: horizonBlurb,
       onOpen: () => context.read<AuthProvider>().openPortal(AppPortal.freedom),
     );
   }
@@ -460,6 +462,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required IconData icon,
     required Color iconColor,
     required String title,
+    String? subtitle,
     required String description,
     required VoidCallback onOpen,
   }) {
@@ -477,12 +480,31 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.end,
+                      spacing: 8,
+                      runSpacing: 0,
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        if (subtitle != null && subtitle.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: Text(
+                              subtitle,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w400,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text(description),

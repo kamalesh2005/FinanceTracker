@@ -209,7 +209,7 @@ class StockActions {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text('Set thresholds — ${stock.symbol}'),
+          title: Text('Set thresholds — ${stock.displaySymbol}'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -336,7 +336,7 @@ class StockActions {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Hold ${stock.symbol}'),
+        title: Text('Hold ${stock.displaySymbol}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -406,7 +406,7 @@ class StockActions {
           builder: (ctx, setDialogState) {
             return AlertDialog(
               title:
-                  Text(isBuy ? 'Buy ${stock.symbol}' : 'Sell ${stock.symbol}'),
+                  Text(isBuy ? 'Buy ${stock.displaySymbol}' : 'Sell ${stock.displaySymbol}'),
               content: Form(
                 key: formKey,
                 child: SingleChildScrollView(
@@ -567,7 +567,7 @@ class StockActions {
       builder: (dialogContext) => AlertDialog(
         title: const Text('Delete Stock'),
         content: Text(
-          'Remove ${stock.symbol} from your holdings'
+          'Remove ${stock.displaySymbol} from your holdings'
           '${stock.source.isNotEmpty ? ' (${stock.source})' : ''}?',
         ),
         actions: [
@@ -653,8 +653,8 @@ class StockActions {
           return AlertDialog(
             title: Text(
               stock.notes.trim().isEmpty
-                  ? 'Add note — ${stock.symbol}'
-                  : 'Edit note — ${stock.symbol}',
+                  ? 'Add note — ${stock.displaySymbol}'
+                  : 'Edit note — ${stock.displaySymbol}',
             ),
             content: SizedBox(
               width: 420,
@@ -707,7 +707,7 @@ class StockActions {
       context: context,
       builder: (ctx) {
         return AlertDialog(
-          title: Text('Delete note — ${stock.symbol}'),
+          title: Text('Delete note — ${stock.displaySymbol}'),
           content: const Text('Remove the note for this stock?'),
           actions: [
             TextButton(

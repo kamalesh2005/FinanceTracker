@@ -7,6 +7,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/glebarez/sqlite v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/ledongthuc/pdf v0.0.0-20260903153007-b3c860c23753
 	github.com/xuri/excelize/v2 v2.11.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.57.0
@@ -69,6 +70,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
+	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect

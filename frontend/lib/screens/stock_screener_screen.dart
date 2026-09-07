@@ -318,7 +318,18 @@ class _StockScreenerScreenState extends State<StockScreenerScreen>
         _nameLike.text.trim().isNotEmpty,
       ].where((active) => active).length;
 
-  void _clearFilters() {
+  bool get _hasAnyFilters =>
+      _industriesSelected.isNotEmpty ||
+      _marketCaps.isNotEmpty ||
+      _trends.isNotEmpty ||
+      _consensusTypesSelected.isNotEmpty ||
+      _labelsSelected.isNotEmpty ||
+      _adjStMin.text.trim().isNotEmpty ||
+      _adjMtMin.text.trim().isNotEmpty ||
+      _upsideMin.text.trim().isNotEmpty ||
+      _nameLike.text.trim().isNotEmpty;
+
+  void _resetFilters() {
     setState(() {
       _industriesSelected.clear();
       _marketCaps.clear();
@@ -334,6 +345,20 @@ class _StockScreenerScreenState extends State<StockScreenerScreen>
       _adjStMin.clear();
       _adjMtMin.clear();
       _upsideMin.text = _defaultUpsideMin;
+      _nameLike.clear();
+    });
+  }
+
+  void _clearAllFilters() {
+    setState(() {
+      _industriesSelected.clear();
+      _marketCaps.clear();
+      _trends.clear();
+      _consensusTypesSelected.clear();
+      _labelsSelected.clear();
+      _adjStMin.clear();
+      _adjMtMin.clear();
+      _upsideMin.clear();
       _nameLike.clear();
     });
   }
@@ -445,17 +470,28 @@ class _StockScreenerScreenState extends State<StockScreenerScreen>
         ),
       if (includeSearch && _hasActiveFilters)
         TextButton(
-          onPressed: _clearFilters,
-          child: const Text('Clear'),
+          onPressed: _resetFilters,
+          child: const Text('Reset'),
+        ),
+      if (includeSearch && _hasAnyFilters)
+        TextButton(
+          onPressed: _clearAllFilters,
+          child: const Text('Clear All'),
         ),
     ];
   }
 
   Widget _buildNarrowFilters() {
-    final clearButton = _hasActiveFilters
+    final resetButton = _hasActiveFilters
         ? TextButton(
-            onPressed: _clearFilters,
-            child: const Text('Clear'),
+            onPressed: _resetFilters,
+            child: const Text('Reset'),
+          )
+        : null;
+    final clearAllButton = _hasAnyFilters
+        ? TextButton(
+            onPressed: _clearAllFilters,
+            child: const Text('Clear All'),
           )
         : null;
 
@@ -479,7 +515,8 @@ class _StockScreenerScreenState extends State<StockScreenerScreen>
               ),
             ],
             const Spacer(),
-            if (clearButton != null) clearButton,
+            if (resetButton != null) resetButton,
+            if (clearAllButton != null) clearAllButton,
             FilledButton.icon(
               onPressed: _loading ? null : () => _search(page: 1),
               icon: const Icon(Icons.search),
@@ -617,10 +654,18 @@ class _StockScreenerScreenState extends State<StockScreenerScreen>
                           if (_hasActiveFilters)
                             TextButton(
                               onPressed: () {
-                                _clearFilters();
+                                _resetFilters();
                                 setSheetState(() {});
                               },
-                              child: const Text('Clear all'),
+                              child: const Text('Reset'),
+                            ),
+                          if (_hasAnyFilters)
+                            TextButton(
+                              onPressed: () {
+                                _clearAllFilters();
+                                setSheetState(() {});
+                              },
+                              child: const Text('Clear All'),
                             ),
                           const Spacer(),
                           FilledButton(

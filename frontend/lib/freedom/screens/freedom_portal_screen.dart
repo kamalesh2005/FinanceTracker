@@ -257,7 +257,11 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
     final provider = context.watch<FreedomProvider>();
     return wrapFreedomPage(Scaffold(
       appBar: AppBar(
-        title: freedomBrandTitle(context, 'Financial Freedom Portal'),
+        title: freedomBrandTitle(
+          context,
+          horizonName,
+          subtitle: horizonGloss,
+        ),
         actions: [
           IconButton(
             tooltip: 'Main portal',

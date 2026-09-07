@@ -133,6 +133,7 @@ class RecommendationRuleset {
       namedValues: [
         NamedValue(name: 'fluctuation_pct', value: fluctuationPct),
         NamedValue(name: 'last_trade_rule_validity_days', value: 30),
+        NamedValue(name: 'review_adj_delta_pct', value: 2),
       ],
       rules: [
         RecommendationRule(
@@ -177,6 +178,13 @@ class RecommendationRuleset {
               '(curr_price < set_stop_loss_price) OR (trend == "moderately bearish_st" AND curr_price < avg_buy_price * 0.9) OR (trend == "bearish_st" OR trend == "bearish_lt" OR trend == "moderately bearish_lt")',
           onMatch: 'continue',
         ),
+        RecommendationRule(
+          order: 7,
+          recommendation: 'Review',
+          condition:
+              '(adjusted_st_delta > review_adj_delta_pct AND adjusted_mt_delta < -review_adj_delta_pct) OR (adjusted_mt_delta > review_adj_delta_pct AND adjusted_st_delta < -review_adj_delta_pct)',
+          onMatch: 'exit',
+        ),
       ],
     );
   }
@@ -201,6 +209,8 @@ class RecommendationEngine {
     'set_buy_price',
     'set_profit_booking_price',
     'set_stop_loss_price',
+    'adjusted_st_delta',
+    'adjusted_mt_delta',
   };
 
   /// Threshold columns whose DB default is 0. Comparisons against an unset
@@ -232,6 +242,9 @@ class RecommendationEngine {
       }
       if (!matched) continue;
       if (rule.onMatch == 'exit') {
+        // Deferred fallback: after Continue matches, skip later Exit rules
+        // so Review only fires when no other Continue signal matched.
+        if (parts.isNotEmpty) continue;
         return rule.recommendation;
       }
       parts.add(rule.recommendation);
@@ -283,6 +296,8 @@ class RecommendationEngine {
       'set_buy_price': stock.setBuyPrice,
       'set_profit_booking_price': stock.setProfitBookingPrice,
       'set_stop_loss_price': stock.setStopLossPrice,
+      'adjusted_st_delta': trend?.adjustedSTDelta ?? 0.0,
+      'adjusted_mt_delta': trend?.adjustedMTDelta ?? 0.0,
     };
     for (final nv in ruleset.namedValues) {
       ctx[nv.name] = nv.value;

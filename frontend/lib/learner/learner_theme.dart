@@ -7,6 +7,10 @@ import '../../providers/auth_provider.dart';
 
 const Color learnerSeed = Color(0xFF1565C0);
 const String dhanShantiPortalName = 'DhanShanti Portal';
+const String flexStreetName = 'Flex Street';
+const String flexStreetGloss = 'An investment challenge';
+const String flexStreetBlurb =
+    'Virtual money, real stocks. Same starting cash. Leaderboard decides the Alpha.';
 
 final ThemeData learnerThemeData = ThemeData(
   colorScheme: ColorScheme.fromSeed(seedColor: learnerSeed),
@@ -50,11 +54,17 @@ ButtonStyle learnerOutlinedActionStyle(BuildContext context) {
   );
 }
 
-Widget learnerBrandTitle(BuildContext context, String label, {Widget? trailing}) {
+Widget learnerBrandTitle(
+  BuildContext context,
+  String label, {
+  String? subtitle,
+  Widget? trailing,
+}) {
   return AppBrandTitle(
     label,
+    subtitle: subtitle,
     onLogoTap: () => goToPortalDashboard(context),
-    logoTooltip: 'Learner Portal home',
+    logoTooltip: '$flexStreetName home',
     trailing: trailing,
   );
 }
@@ -78,7 +88,7 @@ void showLearnerHelpDialog(BuildContext context) {
   showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: const Text('Help on Learner Portal Investment Challenge'),
+      title: const Text('Help on $flexStreetName'),
       content: const SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -89,8 +99,9 @@ void showLearnerHelpDialog(BuildContext context) {
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'Learner Portal is a paper-trading Investment Challenge. It is '
-              'separate from your real portfolio on the $dhanShantiPortalName. '
+              '$flexStreetName is an investment challenge with virtual money '
+              'and real stocks. Same starting cash. Leaderboard decides the Alpha. '
+              'It is separate from your real portfolio on the $dhanShantiPortalName. '
               'Each member gets their own cash and holdings for the challenge.',
             ),
             SizedBox(height: 12),

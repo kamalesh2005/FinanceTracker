@@ -355,6 +355,20 @@ class Stock {
     }
   }
 
+  /// Ticker for UI / Yahoo when CAS PDF glued ISIN onto the symbol.
+  String get displaySymbol {
+    final s = symbol.trim().toUpperCase();
+    if (s.length <= 12) return symbol.trim();
+    final prefix = s.substring(0, 12);
+    if (RegExp(r'^IN[A-Z0-9]{10}$').hasMatch(prefix)) {
+      final rest = s.substring(12);
+      if (rest.isNotEmpty && RegExp(r'^[A-Z0-9][A-Z0-9.&/-]*$').hasMatch(rest)) {
+        return rest;
+      }
+    }
+    return symbol.trim();
+  }
+
   /// Baseline price for recommendation % fluctuation.
   double? get lastTradePrice => lastActionPrice;
 }

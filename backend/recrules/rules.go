@@ -22,6 +22,9 @@ const (
 	// DefaultSellCondition is the built-in SELL formula.
 	DefaultSellCondition = `(curr_price < set_stop_loss_price) OR (trend == "moderately bearish_st" AND curr_price < avg_buy_price * 0.9) OR (trend == "bearish_st" OR trend == "bearish_lt" OR trend == "moderately bearish_lt")`
 
+	// DefaultReviewCondition flags ST/MT adjusted-delta conflicts.
+	DefaultReviewCondition = `(adjusted_st_delta > review_adj_delta_pct AND adjusted_mt_delta < -review_adj_delta_pct) OR (adjusted_mt_delta > review_adj_delta_pct AND adjusted_st_delta < -review_adj_delta_pct)`
+
 	// LegacyBookProfitCondition is the prior default (before requiring curr_price > avg_buy_price).
 	LegacyBookProfitCondition = `(set_profit_booking_price > 0 AND curr_price > set_profit_booking_price) OR (sixth_highest_price > 0 AND curr_price >= sixth_highest_price * 0.95)`
 )
@@ -48,23 +51,25 @@ type Ruleset struct {
 }
 
 var BuiltinFields = map[string]struct{}{
-	"curr_price":               {},
-	"avg_buy_price":            {},
-	"last_trade_price":         {},
-	"last_trade_is_buy":        {},
-	"last_trade_is_sale":       {},
-	"last_trade_is_hold":       {},
-	"last_trade_trend":         {},
+	"curr_price":                {},
+	"avg_buy_price":             {},
+	"last_trade_price":          {},
+	"last_trade_is_buy":         {},
+	"last_trade_is_sale":        {},
+	"last_trade_is_hold":        {},
+	"last_trade_trend":          {},
 	"trend_matches_last_action": {},
-	"abs_pct_from_last_trade":  {},
-	"highest_price":            {},
-	"lowest_price":             {},
-	"sixth_highest_price":      {},
-	"sixth_lowest_price":       {},
-	"trend":                    {},
-	"set_buy_price":            {},
-	"set_profit_booking_price": {},
-	"set_stop_loss_price":      {},
+	"abs_pct_from_last_trade":   {},
+	"highest_price":             {},
+	"lowest_price":              {},
+	"sixth_highest_price":       {},
+	"sixth_lowest_price":        {},
+	"trend":                     {},
+	"set_buy_price":             {},
+	"set_profit_booking_price":  {},
+	"set_stop_loss_price":       {},
+	"adjusted_st_delta":         {},
+	"adjusted_mt_delta":         {},
 }
 
 var identRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
@@ -78,6 +83,7 @@ func DefaultRuleset(fluctuationPct float64) Ruleset {
 		NamedValues: []NamedValue{
 			{Name: "fluctuation_pct", Value: fluctuationPct},
 			{Name: "last_trade_rule_validity_days", Value: 30},
+			{Name: NamedReviewAdjDeltaPct, Value: DefaultReviewAdjDeltaPct},
 		},
 		Rules: []Rule{
 			{
@@ -120,6 +126,13 @@ func DefaultRuleset(fluctuationPct float64) Ruleset {
 				Recommendation: "SELL",
 				Condition:      DefaultSellCondition,
 				OnMatch:        OnMatchContinue,
+				Enabled:        true,
+			},
+			{
+				Order:          7,
+				Recommendation: RecommendationReview,
+				Condition:      DefaultReviewCondition,
+				OnMatch:        OnMatchExit,
 				Enabled:        true,
 			},
 		},
@@ -292,6 +305,10 @@ const (
 	namedFluctuationPct              = "fluctuation_pct"
 	namedLastTradeRuleValidityDays   = "last_trade_rule_validity_days"
 	defaultLastTradeRuleValidityDays = 30
+
+	NamedReviewAdjDeltaPct   = "review_adj_delta_pct"
+	DefaultReviewAdjDeltaPct = 2
+	RecommendationReview     = "Review"
 )
 
 // EnsureNamedValueAfter inserts name=value after the named value `after` when
@@ -322,6 +339,48 @@ func EnsureNamedValueAfter(r *Ruleset, name string, value float64, after string)
 // fluctuation_pct when missing. Existing values are left unchanged.
 func EnsureLastTradeRuleValidityDays(r *Ruleset) bool {
 	return EnsureNamedValueAfter(r, namedLastTradeRuleValidityDays, defaultLastTradeRuleValidityDays, namedFluctuationPct)
+}
+
+// EnsureReviewAdjDeltaNamedValue inserts review_adj_delta_pct=2 when missing.
+func EnsureReviewAdjDeltaNamedValue(r *Ruleset) bool {
+	return EnsureNamedValueAfter(r, NamedReviewAdjDeltaPct, DefaultReviewAdjDeltaPct, namedLastTradeRuleValidityDays)
+}
+
+// EnsureReviewRule appends the default Review exit rule when no Review row exists.
+// Does not overwrite an existing Review condition.
+func EnsureReviewRule(r *Ruleset) bool {
+	if r == nil {
+		return false
+	}
+	for _, rule := range r.Rules {
+		if strings.EqualFold(strings.TrimSpace(rule.Recommendation), RecommendationReview) {
+			return false
+		}
+	}
+	maxOrder := 0
+	for _, rule := range r.Rules {
+		if rule.Order > maxOrder {
+			maxOrder = rule.Order
+		}
+	}
+	r.Rules = append(r.Rules, Rule{
+		Order:          maxOrder + 1,
+		Recommendation: RecommendationReview,
+		Condition:      DefaultReviewCondition,
+		OnMatch:        OnMatchExit,
+		Enabled:        true,
+	})
+	return true
+}
+
+// ApplyReviewSignalMigration ensures named value + Review rule for older configs.
+func ApplyReviewSignalMigration(r *Ruleset) bool {
+	if r == nil {
+		return false
+	}
+	a := EnsureReviewAdjDeltaNamedValue(r)
+	b := EnsureReviewRule(r)
+	return a || b
 }
 
 var unsetThresholdGuardRes []*regexp.Regexp

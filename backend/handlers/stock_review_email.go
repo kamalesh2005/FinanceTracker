@@ -171,6 +171,8 @@ func (h *Handler) buildReviewEmailRows(userID uint, cfg *models.UserConfig, appC
 			SetBuyPrice:           d.SetBuyPrice,
 			SetProfitBookingPrice: d.SetProfitBookingPrice,
 			SetStopLossPrice:      d.SetStopLossPrice,
+			AdjustedSTDelta:       d.AdjustedSTDelta,
+			AdjustedMTDelta:       d.AdjustedMTDelta,
 			Now:                   now,
 		}
 		ctx := recrules.BuildEvaluateContext(input, effectiveRules)

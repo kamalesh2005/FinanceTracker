@@ -241,4 +241,54 @@ void main() {
       'AT BUY PRICE',
     );
   });
+
+  test('Review on adj ST/MT conflict when no other signal', () {
+    expect(
+      RecommendationEngine.evaluate(
+        _stock(currentPrice: 100, buyPrice: 100),
+        StockTrend(
+          stockId: 1,
+          symbol: 'TEST',
+          currentPrice: 100,
+          ma7: 0,
+          ma20: 0,
+          ma50: 0,
+          stockSTDelta: 0,
+          marketSTDelta: 0,
+          adjustedSTDelta: 3,
+          stockMTDelta: 0,
+          marketMTDelta: 0,
+          adjustedMTDelta: -3,
+          trend: 'neutral',
+        ),
+        RecommendationRuleset.defaults(),
+      ),
+      'Review',
+    );
+  });
+
+  test('BUY wins over Review when both would match', () {
+    expect(
+      RecommendationEngine.evaluate(
+        _stock(currentPrice: 90, buyPrice: 100, setBuyPrice: 95),
+        StockTrend(
+          stockId: 1,
+          symbol: 'TEST',
+          currentPrice: 90,
+          ma7: 0,
+          ma20: 0,
+          ma50: 0,
+          stockSTDelta: 0,
+          marketSTDelta: 0,
+          adjustedSTDelta: 3,
+          stockMTDelta: 0,
+          marketMTDelta: 0,
+          adjustedMTDelta: -3,
+          trend: 'neutral',
+        ),
+        RecommendationRuleset.defaults(),
+      ),
+      'BUY',
+    );
+  });
 }

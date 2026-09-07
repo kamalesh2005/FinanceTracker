@@ -622,6 +622,10 @@ func main() {
 		log.Fatal("Failed to migrate Hold/threshold recommendation rules:", err)
 	}
 
+	if err := handlers.MigrateTrendRulesTolerances(db); err != nil {
+		log.Fatal("Failed to migrate trend MA/price tolerances:", err)
+	}
+
 	admin, err := handlers.SeedAdminUser(db)
 	if err != nil {
 		log.Fatal("Failed to seed admin user:", err)
@@ -804,6 +808,7 @@ func main() {
 				admin.GET("/admin/mutualfunds/import-status", h.GetMFImportStatusAdmin)
 				admin.POST("/admin/mutualfunds/pull-mf-var", h.PullMFVarDailyAdmin)
 				admin.POST("/admin/mutualfunds/import", h.ImportMutualFundsAdmin)
+				admin.POST("/cas/import", h.ImportCAS)
 
 				admin.GET("/symbol-mappings", h.GetSymbolMappings)
 				admin.POST("/symbol-mappings", h.CreateSymbolMapping)

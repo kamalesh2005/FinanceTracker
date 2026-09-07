@@ -153,3 +153,64 @@ func TestPatchAtPriceTrendMatch_AppendsAndNoops(t *testing.T) {
 		t.Fatal("expected no-op on second patch")
 	}
 }
+
+func TestApplyReviewSignalMigration_InsertAndNoop(t *testing.T) {
+	rs := Ruleset{
+		NamedValues: []NamedValue{
+			{Name: namedFluctuationPct, Value: 5},
+			{Name: namedLastTradeRuleValidityDays, Value: 30},
+		},
+		Rules: []Rule{{
+			Order:          1,
+			Recommendation: "BUY",
+			Condition:      DefaultBuyCondition,
+			OnMatch:        OnMatchContinue,
+			Enabled:        true,
+		}},
+	}
+	if !ApplyReviewSignalMigration(&rs) {
+		t.Fatal("expected migration")
+	}
+	foundNV, foundRule := false, false
+	for _, nv := range rs.NamedValues {
+		if nv.Name == NamedReviewAdjDeltaPct && nv.Value == DefaultReviewAdjDeltaPct {
+			foundNV = true
+		}
+	}
+	for _, rule := range rs.Rules {
+		if rule.Recommendation == RecommendationReview && rule.Condition == DefaultReviewCondition {
+			foundRule = true
+		}
+	}
+	if !foundNV || !foundRule {
+		t.Fatalf("nv=%v rule=%v named=%+v rules=%+v", foundNV, foundRule, rs.NamedValues, rs.Rules)
+	}
+	if ApplyReviewSignalMigration(&rs) {
+		t.Fatal("second migration should no-op")
+	}
+	if err := rs.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDefaultRulesetIncludesReview(t *testing.T) {
+	rs := DefaultRuleset(5)
+	if err := rs.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, rule := range rs.Rules {
+		if rule.Recommendation == RecommendationReview {
+			found = true
+			if rule.OnMatch != OnMatchExit {
+				t.Fatalf("Review on_match=%q", rule.OnMatch)
+			}
+			if rule.Condition != DefaultReviewCondition {
+				t.Fatalf("Review condition=%q", rule.Condition)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing Review rule")
+	}
+}

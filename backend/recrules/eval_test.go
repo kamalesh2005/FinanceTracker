@@ -210,6 +210,7 @@ func TestIsActionableSignal(t *testing.T) {
 		{"SELL", true},
 		{"Book Profit", true},
 		{"BUY OR Book Profit", true},
+		{"Review", true},
 		{"AT BUY PRICE", false},
 		{"AT SELL PRICE", false},
 		{"NO ACTION REQD", false},
@@ -218,6 +219,54 @@ func TestIsActionableSignal(t *testing.T) {
 		if got := IsActionableSignal(tc.signal); got != tc.want {
 			t.Fatalf("IsActionableSignal(%q)=%v want %v", tc.signal, got, tc.want)
 		}
+	}
+}
+
+func TestReviewOnAdjDeltaConflict(t *testing.T) {
+	rs := DefaultRuleset(5)
+	h := HoldingInput{
+		CurrPrice:       100,
+		AvgBuyPrice:     100,
+		AdjustedSTDelta: 3,
+		AdjustedMTDelta: -3,
+		Now:             time.Now(),
+	}
+	ctx := BuildEvaluateContext(h, rs)
+	got := Evaluate(rs, ctx)
+	if got != RecommendationReview {
+		t.Fatalf("got %q want Review", got)
+	}
+}
+
+func TestReviewNotReturnedWhenBuyAlsoMatches(t *testing.T) {
+	rs := DefaultRuleset(5)
+	h := HoldingInput{
+		CurrPrice:       90,
+		AvgBuyPrice:     100,
+		SetBuyPrice:     95, // triggers BUY continue
+		AdjustedSTDelta: 3,
+		AdjustedMTDelta: -3, // would trigger Review alone
+		Now:             time.Now(),
+	}
+	ctx := BuildEvaluateContext(h, rs)
+	got := Evaluate(rs, ctx)
+	if got != "BUY" {
+		t.Fatalf("got %q want BUY (Review deferred when Continue matched)", got)
+	}
+}
+
+func TestAdjDeltasUsableInCustomCondition(t *testing.T) {
+	rs := rulesWithCondition("adjusted_st_delta > 2 AND adjusted_mt_delta < -2")
+	h := HoldingInput{
+		CurrPrice:       100,
+		AdjustedSTDelta: 2.5,
+		AdjustedMTDelta: -2.5,
+		Now:             time.Now(),
+	}
+	ctx := BuildEvaluateContext(h, rs)
+	got := Evaluate(rs, ctx)
+	if got != "MATCH" {
+		t.Fatalf("got %q want MATCH", got)
 	}
 }
 
