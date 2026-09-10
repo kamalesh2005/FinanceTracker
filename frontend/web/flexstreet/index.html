@@ -63,12 +63,16 @@
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
   <link rel="icon" type="image/png" href="favicon.png"/>
   <link rel="manifest" href="manifest.json">
+  <style>
+    /* Inline so the SEO shell cannot paint before seo-landing.css loads. */
+    .seo-landing{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0}
+  </style>
   <link rel="stylesheet" href="seo-landing.css">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-  <!-- Copy mirrored from AuthLandingStyle.flexStreetStyle. Keep in the DOM after Flutter paints. -->
-  <main id="seo-landing" class="seo-landing seo-landing--flex">
+  <!-- Copy mirrored from AuthLandingStyle.flexStreetStyle. Visually hidden; stays in the DOM for crawlers. -->
+  <main id="seo-landing" class="seo-landing seo-landing--flex" aria-hidden="true">
     <h1>FlexStreet</h1>
     <p>by DhanShanti</p>
     <p>An investment challenge</p>
@@ -132,11 +136,6 @@
       <p>Sign up with a username. Email and mobile are optional - we do not need your name, PAN, or broker login. Challenge holdings stay separate in FlexStreet and are not shown as a live portfolio.</p>
     </main>
   </noscript>
-  <script>
-    window.addEventListener('flutter-first-frame', function () {
-      document.body.classList.add('flutter-ready');
-    });
-  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

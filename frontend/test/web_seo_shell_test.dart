@@ -47,10 +47,11 @@ void _expectHead(
   expect(html, contains('"@type": "WebApplication"'), reason: file);
   expect(html, contains('"isAccessibleForFree": true'), reason: file);
   expect(html, contains('id="seo-landing"'), reason: file);
+  expect(html, contains('aria-hidden="true"'), reason: file);
   expect(html, contains('<noscript>'), reason: file);
-  expect(html, contains('flutter-first-frame'), reason: file);
-  expect(html, contains("classList.add('flutter-ready')"), reason: file);
-  expect(html, isNot(contains("getElementById('seo-landing')")), reason: file);
+  expect(html, contains('clip-path:inset(50%)'), reason: file);
+  expect(html, isNot(contains('flutter-first-frame')), reason: file);
+  expect(html, isNot(contains('flutter-ready')), reason: file);
   expect(html, contains('src="flutter_bootstrap.js"'), reason: file);
 }
 
@@ -155,5 +156,12 @@ void main() {
     expect(sitemap, contains('https://www.dhanshanti.com/</loc>'));
     expect(sitemap, contains('https://www.dhanshanti.com/flexstreet</loc>'));
     expect(sitemap, contains('https://flexstreet.dhanshanti.com/</loc>'));
+  });
+
+  test('SEO shell CSS hides copy from the first paint', () {
+    final css = File('web/seo-landing.css').readAsStringSync();
+    expect(css, isNot(contains('flutter-ready')));
+    expect(css, contains('clip-path: inset(50%)'));
+    expect(css, contains('noscript .seo-landing'));
   });
 }

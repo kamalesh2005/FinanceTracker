@@ -1,5 +1,5 @@
-/* Shared splash + crawlable shell for Flutter CanvasKit landings.
-   Stays in the DOM after first frame so crawlers still see the text. */
+/* Crawlable copy stays in the DOM. Never paint it for JS users — crawlers
+   still read the HTML. noscript remains visible when JS is off. */
 html, body {
   margin: 0;
   padding: 0;
@@ -8,55 +8,37 @@ html, body {
 
 .seo-landing {
   position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: auto;
-  box-sizing: border-box;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+noscript .seo-landing {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
   padding: 24px 20px 48px;
+  overflow: visible;
+  clip: auto;
+  clip-path: none;
+  white-space: normal;
   font-family: Georgia, "Times New Roman", serif;
   line-height: 1.5;
 }
 
-.seo-landing--dhan {
+noscript .seo-landing--dhan {
   background: #e8f2ef;
   color: #0f5c56;
 }
 
-.seo-landing--flex {
+noscript .seo-landing--flex {
   background: #f0edfb;
   color: #170b48;
-}
-
-.seo-landing a {
-  color: inherit;
-}
-
-.seo-landing h1 {
-  font-size: 2rem;
-  margin: 0 0 0.35em;
-}
-
-.seo-landing h2 {
-  font-size: 1.35rem;
-  margin: 1.6em 0 0.4em;
-}
-
-.seo-landing p,
-.seo-landing li {
-  max-width: 42em;
-}
-
-body.flutter-ready .seo-landing {
-  width: 1px;
-  height: 1px;
-  inset: auto;
-  left: 0;
-  top: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  clip-path: inset(50%);
-  padding: 0;
-  border: 0;
-  white-space: nowrap;
-  z-index: -1;
 }
