@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
+import '../learner/learner_theme.dart';
 import '../services/api_service.dart';
+import '../utils/auth_landing_style.dart';
 import '../widgets/app_brand_title.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
-  const ForgotPasswordScreen({super.key});
+  const ForgotPasswordScreen({super.key, this.flexStreet});
+
+  /// When null, detected from the browser URL.
+  final bool? flexStreet;
 
   @override
   State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
@@ -79,8 +84,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const AppBrandTitle('Forgot password')),
+    final style = AuthLandingStyle.resolve(flexStreet: widget.flexStreet);
+    final page = Scaffold(
+      appBar: AppBar(
+        title: AppBrandTitle(
+          'Forgot password',
+          logoAsset: style.logoAsset,
+        ),
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -165,5 +176,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         ),
       ),
     );
+    if (!style.flexStreet) return page;
+    return Theme(data: learnerThemeData, child: page);
   }
 }

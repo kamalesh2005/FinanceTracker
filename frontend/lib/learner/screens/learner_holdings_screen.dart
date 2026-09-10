@@ -501,7 +501,7 @@ class _LearnerHoldingsScreenState extends State<LearnerHoldingsScreen> {
         appBar: AppBar(
           title: learnerBrandTitle(
             context,
-            'LP : $challengeName : Stock Holdings',
+            '$challengeName : Stock Holdings',
           ),
           actions: learnerAppBarActions(
             context,

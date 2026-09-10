@@ -5,12 +5,21 @@ import '../../widgets/app_brand_title.dart';
 import '../../widgets/auth_app_bar_actions.dart';
 import '../../providers/auth_provider.dart';
 
-const Color learnerSeed = Color(0xFF1565C0);
+const Color learnerSeed = Color(0xFF170B48);
+const Color learnerAccent = Color(0xFF886AFF);
+const Color learnerCta = Color(0xFFFED100);
+const Color learnerMist = Color(0xFFF0EDFB);
+const Color learnerWash = Color(0xFFD2CAF3);
 const String dhanShantiPortalName = 'DhanShanti Portal';
-const String flexStreetName = 'Flex Street';
+const String flexStreetName = 'FlexStreet';
+const String flexStreetByline = 'by DhanShanti';
 const String flexStreetGloss = 'An investment challenge';
 const String flexStreetBlurb =
     'Virtual money, real stocks. Same starting cash. Leaderboard decides the Alpha.';
+const String flexStreetLogoAsset = 'assets/brand/flex_street_logo.png';
+
+/// FlexStreet "Make default" control. Hidden in the UI for now; keep wired.
+const bool showFlexStreetMakeDefault = false;
 
 final ThemeData learnerThemeData = ThemeData(
   colorScheme: ColorScheme.fromSeed(seedColor: learnerSeed),
@@ -28,7 +37,7 @@ final ThemeData learnerThemeData = ThemeData(
     ),
   ),
   cardTheme: CardThemeData(
-    color: const Color(0xFFE8F1FA),
+    color: learnerMist,
     elevation: 0,
     surfaceTintColor: Colors.transparent,
     shape: RoundedRectangleBorder(
@@ -63,6 +72,7 @@ Widget learnerBrandTitle(
   return AppBrandTitle(
     label,
     subtitle: subtitle,
+    logoAsset: flexStreetLogoAsset,
     onLogoTap: () => goToPortalDashboard(context),
     logoTooltip: '$flexStreetName home',
     trailing: trailing,
@@ -89,7 +99,7 @@ void showLearnerHelpDialog(BuildContext context) {
     context: context,
     builder: (ctx) => AlertDialog(
       title: const Text('Help on $flexStreetName'),
-      content: const SingleChildScrollView(
+      content: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
@@ -165,23 +175,25 @@ void showLearnerHelpDialog(BuildContext context) {
               'The clock starts when the challenge is created and ends after '
               'the duration you set. After that the challenge is view-only.',
             ),
-            SizedBox(height: 12),
-            Text(
-              'Default dashboard',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            Text(
-              'Use Make default in the top bar so the next login '
-              'opens this portal instead of $dhanShantiPortalName.',
-            ),
+            if (showFlexStreetMakeDefault) ...[
+              SizedBox(height: 12),
+              Text(
+                'Default dashboard',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              Text(
+                'Use Make default in the top bar so the next login '
+                'opens this portal instead of $dhanShantiPortalName.',
+              ),
+            ],
             SizedBox(height: 12),
             Text(
               'Back to $dhanShantiPortalName',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             Text(
-              'Tap the Dhan Shanti logo in the top bar to return to this '
-              'portal’s dashboard. Use the home icon to open your real '
+              'Tap the FlexStreet logo in the top bar to return to this '
+              'portal’s dashboard. Use the DhanShanti logo to open your real '
               'portfolio on $dhanShantiPortalName.',
             ),
           ],

@@ -68,7 +68,7 @@ func ValidFFAssetCategory(c string) bool {
 	}
 }
 
-// FFJobIncome is annual job/salary income with an expected end year.
+// FFJobIncome is annual job/salary income. End year is optional; 0 means ongoing.
 // Pension rows use preset_key "pension" and start_year instead of end_year.
 // Amount is always stored as annual INR; UI may edit monthly (= amount/12).
 type FFJobIncome struct {

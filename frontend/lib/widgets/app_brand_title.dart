@@ -5,6 +5,55 @@ void goToPortalDashboard(BuildContext context) {
   Navigator.of(context).popUntil((route) => route.isFirst);
 }
 
+/// Circular brand mark that stays readable on light and dark app bars.
+class BrandLogoMark extends StatelessWidget {
+  const BrandLogoMark({
+    super.key,
+    required this.asset,
+    this.size = 32,
+  });
+
+  final String asset;
+  final double size;
+
+  static const Color _plate = Color(0xFFFFF8E7);
+  static const Color _rim = Color(0xFFD4AF37);
+
+  @override
+  Widget build(BuildContext context) {
+    final inner = size - 4;
+    return Padding(
+      padding: const EdgeInsets.all(2),
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: _plate,
+          border: Border.all(color: _rim, width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.28),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        alignment: Alignment.center,
+        child: ClipOval(
+          child: Image.asset(
+            asset,
+            width: inner,
+            height: inner,
+            fit: BoxFit.cover,
+            filterQuality: FilterQuality.high,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// AppBar title with Dhan Shanti logo and [label] text.
 class AppBrandTitle extends StatelessWidget {
   const AppBrandTitle(
@@ -14,6 +63,7 @@ class AppBrandTitle extends StatelessWidget {
     this.onLogoTap,
     this.logoTooltip,
     this.trailing,
+    this.logoAsset = dhanShantiLogoAsset,
   });
 
   final String label;
@@ -21,20 +71,16 @@ class AppBrandTitle extends StatelessWidget {
   final VoidCallback? onLogoTap;
   final String? logoTooltip;
   final Widget? trailing;
+  final String logoAsset;
 
-  static const String logoAsset = 'assets/brand/dhan_shanti_logo.png';
+  static const String dhanShantiLogoAsset =
+      'assets/brand/dhan_shanti_logo.png';
+
+  static const double logoSize = 32;
 
   @override
   Widget build(BuildContext context) {
-    Widget logo = ClipOval(
-      child: Image.asset(
-        logoAsset,
-        width: 28,
-        height: 28,
-        fit: BoxFit.cover,
-        filterQuality: FilterQuality.medium,
-      ),
-    );
+    Widget logo = BrandLogoMark(asset: logoAsset, size: logoSize);
     logo = Tooltip(
       message: logoTooltip ?? 'Go to dashboard',
       child: MouseRegion(
@@ -55,7 +101,7 @@ class AppBrandTitle extends StatelessWidget {
         if (trailing != null) ...[
           const SizedBox(width: 6),
           SizedBox(
-            height: 28,
+            height: logoSize,
             child: Align(
               alignment: Alignment.topCenter,
               child: trailing!,

@@ -1,8 +1,10 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../learner/learner_theme.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
+import '../utils/auth_landing_style.dart';
 import '../widgets/app_brand_title.dart';
 import '../widgets/google_sign_in_button.dart';
 import '../widgets/turnstile_widget.dart';
@@ -11,7 +13,10 @@ final _usernameFormat = RegExp(r'^[a-zA-Z0-9_]{3,64}$');
 const _turnstileSiteKeyDefault = '0x4AAAAAAEE_unN60Se7PnnB';
 
 class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+  const RegisterScreen({super.key, this.flexStreet});
+
+  /// When null, detected from the browser URL.
+  final bool? flexStreet;
 
   @override
   State<RegisterScreen> createState() => _RegisterScreenState();
@@ -304,8 +309,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const AppBrandTitle('Create account')),
+    final style = AuthLandingStyle.resolve(flexStreet: widget.flexStreet);
+    final page = Scaffold(
+      appBar: AppBar(
+        title: AppBrandTitle(
+          style.registerTitle,
+          logoAsset: style.logoAsset,
+        ),
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -357,7 +368,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Username is enough. Email and mobile are optional.',
+                    style.registerSubtitle,
                     style: TextStyle(
                       fontSize: 14,
                       height: 1.35,
@@ -412,9 +423,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     const SizedBox(height: 12),
                     DecoratedBox(
                       decoration: BoxDecoration(
-                        color: const Color(0xFFE8F2EF),
+                        color: style.mist,
                         border: Border.all(
-                          color: const Color(0xFF0F5C56).withValues(alpha: 0.28),
+                          color: style.primary.withValues(alpha: 0.28),
                         ),
                         borderRadius: BorderRadius.circular(8),
                       ),
@@ -423,9 +434,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Icon(
+                            Icon(
                               Icons.lock_outline,
-                              color: Color(0xFF0F5C56),
+                              color: style.primary,
                               size: 20,
                             ),
                             const SizedBox(width: 8),
@@ -435,8 +446,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                                 'Add email or mobile for password reset and alerts. '
                                 'Without them, a forgotten password cannot be recovered.',
                                 style: TextStyle(
-                                  color: const Color(0xFF0F5C56)
-                                      .withValues(alpha: 0.9),
+                                  color: style.primary.withValues(alpha: 0.9),
                                   fontSize: 12,
                                   height: 1.35,
                                 ),
@@ -503,13 +513,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   const SizedBox(height: 24),
                   FilledButton(
                     onPressed: _canSubmit ? _submit : null,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: style.primary,
+                      foregroundColor: Colors.white,
+                    ),
                     child: _submitting
                         ? const SizedBox(
                             height: 20,
                             width: 20,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Text('Register'),
+                        : Text(style.flexStreet ? 'Join FlexStreet' : 'Register'),
                   ),
                 ],
               ),
@@ -518,5 +532,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         ),
       ),
     );
+    if (!style.flexStreet) return page;
+    return Theme(data: learnerThemeData, child: page);
   }
 }

@@ -130,6 +130,7 @@ class FFMetrics {
   final int? retirementYear;
   final int? yearsToRetire;
   final double? annualEnjoymentFund;
+  final double? liquidityForBreakMonths;
   final double termInsuranceNeed;
   final int currentYear;
 
@@ -140,6 +141,7 @@ class FFMetrics {
     this.retirementYear,
     this.yearsToRetire,
     this.annualEnjoymentFund,
+    this.liquidityForBreakMonths,
     required this.termInsuranceNeed,
     required this.currentYear,
   });
@@ -152,6 +154,7 @@ class FFMetrics {
       retirementYear: _asInt(json['retirement_year']),
       yearsToRetire: _asInt(json['years_to_retire']),
       annualEnjoymentFund: _asDouble(json['annual_enjoyment_fund']),
+      liquidityForBreakMonths: _asDouble(json['liquidity_for_break_months']),
       termInsuranceNeed: _asDouble(json['term_insurance_need']) ?? 0,
       currentYear: _asInt(json['current_year']) ?? DateTime.now().year,
     );
@@ -515,6 +518,11 @@ const List<FFJobPreset> ffJobPresets = [
 
 bool ffIsJobPension(FFJobIncome row) => row.presetKey == ffJobPensionPresetKey;
 
+int? ffJobDisplayEndYear(FFJobIncome? job) {
+  final y = job?.endYear ?? 0;
+  return y > 0 ? y : null;
+}
+
 FFJobIncome? ffJobForPreset(List<FFJobIncome> rows, String presetKey) {
   for (final r in rows) {
     if (r.presetKey == presetKey) return r;
@@ -754,7 +762,7 @@ const Map<String, String> ffExpenseCategoryLabels = {
   'emi': 'EMI (not linked to Asset) e.g. Education Loan',
 };
 
-bool ffExpenseRequiresEndYear(String category) => category == 'emi';
+bool ffExpenseShowsEndYear(String category) => category == 'emi';
 
 int? _asInt(dynamic v) {
   if (v == null) return null;

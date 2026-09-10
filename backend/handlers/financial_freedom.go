@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,24 +44,24 @@ func RegisterFinancialFreedomRoutes(g *gin.RouterGroup, h *Handler) {
 
 func ffAssetJSON(a models.FFAsset) gin.H {
 	return gin.H{
-		"id":                     a.ID,
-		"user_id":                a.UserID,
-		"category":               a.Category,
-		"preset_key":             a.PresetKey,
-		"name":                   a.Name,
-		"value":                  a.Value,
-		"is_liquid":              a.IsLiquid,
-		"linked_liability":       a.LinkedLiability,
-		"emi_amount":             a.EmiAmount,
-		"emi_installments_left":  a.EmiInstallmentsLeft,
-		"income_pct":             a.IncomePct,
-		"income_start_year":      a.IncomeStartYear,
-		"income_end_year":        a.IncomeEndYear,
-		"tax_pct":                a.TaxPct,
-		"calculated_income":      a.CalculatedIncome(),
-		"effective_income":       a.EffectiveIncome(),
-		"created_at":             a.CreatedAt,
-		"updated_at":             a.UpdatedAt,
+		"id":                    a.ID,
+		"user_id":               a.UserID,
+		"category":              a.Category,
+		"preset_key":            a.PresetKey,
+		"name":                  a.Name,
+		"value":                 a.Value,
+		"is_liquid":             a.IsLiquid,
+		"linked_liability":      a.LinkedLiability,
+		"emi_amount":            a.EmiAmount,
+		"emi_installments_left": a.EmiInstallmentsLeft,
+		"income_pct":            a.IncomePct,
+		"income_start_year":     a.IncomeStartYear,
+		"income_end_year":       a.IncomeEndYear,
+		"tax_pct":               a.TaxPct,
+		"calculated_income":     a.CalculatedIncome(),
+		"effective_income":      a.EffectiveIncome(),
+		"created_at":            a.CreatedAt,
+		"updated_at":            a.UpdatedAt,
 	}
 }
 
@@ -131,9 +132,10 @@ func ffJobIncome(jobs []models.FFJobIncome, year int) float64 {
 			}
 			continue
 		}
-		if year <= j.EndYear {
-			sum += j.Amount
+		if j.EndYear > 0 && year > j.EndYear {
+			continue
 		}
+		sum += j.Amount
 	}
 	return sum
 }
@@ -432,6 +434,77 @@ func ffLiquidNet(assets []models.FFAsset) float64 {
 	return sum
 }
 
+func ffAssetPresetKey(a models.FFAsset) string {
+	if a.PresetKey == nil {
+		return ""
+	}
+	return *a.PresetKey
+}
+
+// ffIsBreakLiquidAsset is the Liquidity For Break pool: liquid cash, market equity,
+// Digital Gold, and SGBs.
+func ffIsBreakLiquidAsset(a models.FFAsset) bool {
+	switch a.Category {
+	case models.FFAssetCatLiquidCash, models.FFAssetCatMarketEquity:
+		return true
+	}
+	switch ffAssetPresetKey(a) {
+	case "digital_gold", "sgb":
+		return true
+	}
+	return false
+}
+
+// ffSkipLiquidityExtraIncome is PF/bonds and physical gold — not extra income, not in the pool.
+func ffSkipLiquidityExtraIncome(a models.FFAsset) bool {
+	if a.Category == models.FFAssetCatPFBonds {
+		return true
+	}
+	return ffAssetPresetKey(a) == "physical_gold"
+}
+
+// ffLiquidBreakAssets sums the Liquidity For Break pool (gross value).
+func ffLiquidBreakAssets(assets []models.FFAsset) float64 {
+	var sum float64
+	for _, a := range assets {
+		if ffIsBreakLiquidAsset(a) {
+			sum += a.Value
+		}
+	}
+	return sum
+}
+
+// ffLiquidityExtraIncome is current-year passive income from investments outside
+// the break pool, excluding PF/bonds and physical gold (typically rental property).
+func ffLiquidityExtraIncome(assets []models.FFAsset, year int) float64 {
+	var sum float64
+	for _, a := range assets {
+		if ffIsBreakLiquidAsset(a) || ffSkipLiquidityExtraIncome(a) {
+			continue
+		}
+		if a.IncomeStartYear > year {
+			continue
+		}
+		if a.IncomeEndYear != nil && year > *a.IncomeEndYear {
+			continue
+		}
+		sum += a.EffectiveIncome()
+	}
+	return sum
+}
+
+// ffLiquidityForBreakMonths is how many months the liquid pool lasts if job income
+// is zero, covering regular expenses minus extra investment income.
+// Nil when net expenses are 0 or negative.
+func ffLiquidityForBreakMonths(assets []models.FFAsset, expenses []models.FFExpense, y0 int) *float64 {
+	net := ffRecurringExpenses(expenses, y0) - ffLiquidityExtraIncome(assets, y0)
+	if net <= 0 {
+		return nil
+	}
+	months := math.Floor(ffLiquidBreakAssets(assets) / (net / 12))
+	return &months
+}
+
 // ffLivingExpenses is recurring expenses excluding the EMI category (EMI is counted in debt).
 func ffLivingExpenses(expenses []models.FFExpense, year int) float64 {
 	var sum float64
@@ -490,7 +563,7 @@ func ffInvestmentsForTermCover(assets []models.FFAsset) float64 {
 
 func ffMaxJobEndYear(jobs []models.FFJobIncome) (max int, ok bool) {
 	for _, j := range jobs {
-		if models.IsFFJobPension(j) {
+		if models.IsFFJobPension(j) || j.EndYear <= 0 {
 			continue
 		}
 		if !ok || j.EndYear > max {
@@ -511,8 +584,9 @@ func ffRetireSimRowForYear(rows []ffRetireSimRow, year int) (*ffRetireSimRow, bo
 }
 
 const (
-	ffLiveWellScenarioAfterOT = "after_one_time"
-	ffLiveWellHalfDivisor     = 2.0
+	ffLiveWellScenarioAfterOT    = "after_one_time"
+	ffLiveWellScenarioAfterReady = "after_ready"
+	ffLiveWellHalfDivisor        = 2.0
 )
 
 // ffLiveWellYearRow is one year in the Live Well Fund savings breakdown.
@@ -568,33 +642,47 @@ func ffSurplusInTodayValue(surplus float64, simRows []ffRetireSimRow, y0, target
 	return surplus / factor, passivePct, discountYears
 }
 
-// ffLiveWellTargetYear is the first year after all scheduled one-time expenses (y0 if none).
-func ffLiveWellTargetYear(oneTime []models.FFOneTimeExpense, y0 int) int {
+// ffLiveWellTargetYear is the later of:
+//   - the first year after all scheduled one-time expenses (y0 if none)
+//   - the Ready to Retire year from the metrics card (retireYear)
+//
+// retireYear is the calendar year shown on the Ready to Retire card.
+func ffLiveWellTargetYear(oneTime []models.FFOneTimeExpense, y0 int, retireYear int) (target int, scenario, label string) {
+	target = y0
+	scenario = ffLiveWellScenarioAfterOT
+	label = "Current year (no one-time expenses scheduled)"
 	if lastOT := ffLastOneTimeYear(oneTime); lastOT > 0 {
-		return lastOT + 1
+		target = lastOT + 1
+		label = "Year after last one-time expense"
 	}
-	return y0
+	if retireYear > target {
+		target = retireYear
+		scenario = ffLiveWellScenarioAfterReady
+		label = "Ready to Retire year"
+	}
+	return target, scenario, label
 }
 
-// ffComputeLiveWellDetail: surplus in the target year after the last one-time expense,
-// discounted to today's money using P/Corpus % from the retire simulation, then ÷ 2.
+// ffComputeLiveWellDetail: surplus in the later of (year after last one-time expense)
+// and the Ready to Retire year. If Ready to Retire is not reachable, the fund is 0.
 func ffComputeLiveWellDetail(
 	oneTime []models.FFOneTimeExpense,
 	y0 int,
 	simRows []ffRetireSimRow,
+	retireYear *int,
 ) ffLiveWellDetail {
-	targetYear := ffLiveWellTargetYear(oneTime, y0)
 	lastOT := ffLastOneTimeYear(oneTime)
-	label := "Year after last one-time expense"
-	if lastOT == 0 {
-		label = "Current year (no one-time expenses scheduled)"
-	}
 	d := ffLiveWellDetail{
-		Scenario:        ffLiveWellScenarioAfterOT,
-		ScenarioLabel:   label,
-		TargetYear:      targetYear,
 		LastOneTimeYear: lastOT,
 	}
+	if retireYear == nil {
+		d.Message = "Ready to Retire is not reachable, so Live Well Fund is ₹0."
+		return d
+	}
+	targetYear, scenario, label := ffLiveWellTargetYear(oneTime, y0, *retireYear)
+	d.Scenario = scenario
+	d.ScenarioLabel = label
+	d.TargetYear = targetYear
 	row, ok := ffRetireSimRowForYear(simRows, targetYear)
 	if !ok {
 		d.Message = "No simulation row for the target year."
@@ -626,8 +714,9 @@ func ffLiveWellFund(
 	oneTime []models.FFOneTimeExpense,
 	y0 int,
 	simRows []ffRetireSimRow,
+	retireYear *int,
 ) float64 {
-	return ffComputeLiveWellDetail(oneTime, y0, simRows).Amount
+	return ffComputeLiveWellDetail(oneTime, y0, simRows, retireYear).Amount
 }
 
 // ffTermInsuranceNeed applies the 15/75 rule:
@@ -644,14 +733,15 @@ func ffTermInsuranceNeed(assets []models.FFAsset, expenses []models.FFExpense, y
 }
 
 type ffMetrics struct {
-	ActiveIncome        float64  `json:"active_income"`
-	PassiveIncome       float64  `json:"passive_income"`
-	RegularExpenses     float64  `json:"regular_expenses"`
-	RetirementYear      *int     `json:"retirement_year"`
-	YearsToRetire       *int     `json:"years_to_retire"`
-	AnnualEnjoymentFund *float64 `json:"annual_enjoyment_fund"`
-	TermInsuranceNeed   float64  `json:"term_insurance_need"`
-	CurrentYear         int      `json:"current_year"`
+	ActiveIncome            float64  `json:"active_income"`
+	PassiveIncome           float64  `json:"passive_income"`
+	RegularExpenses         float64  `json:"regular_expenses"`
+	RetirementYear          *int     `json:"retirement_year"`
+	YearsToRetire           *int     `json:"years_to_retire"`
+	AnnualEnjoymentFund     *float64 `json:"annual_enjoyment_fund"`
+	LiquidityForBreakMonths *float64 `json:"liquidity_for_break_months"`
+	TermInsuranceNeed       float64  `json:"term_insurance_need"`
+	CurrentYear             int      `json:"current_year"`
 }
 
 func computeFFMetrics(assets []models.FFAsset, jobs []models.FFJobIncome, expenses []models.FFExpense, oneTime []models.FFOneTimeExpense, y0 int) (ffMetrics, ffLiveWellDetail) {
@@ -668,8 +758,9 @@ func computeFFMetrics(assets []models.FFAsset, jobs []models.FFJobIncome, expens
 		m.RetirementYear = &ry
 		m.YearsToRetire = &n
 	}
-	liveWell := ffComputeLiveWellDetail(oneTime, y0, simRows)
+	liveWell := ffComputeLiveWellDetail(oneTime, y0, simRows, m.RetirementYear)
 	m.AnnualEnjoymentFund = &liveWell.Amount
+	m.LiquidityForBreakMonths = ffLiquidityForBreakMonths(assets, expenses, y0)
 
 	m.TermInsuranceNeed = ffTermInsuranceNeed(assets, expenses, y0)
 	return m, liveWell
@@ -696,13 +787,13 @@ func (h *Handler) GetFFSummary(c *gin.Context) {
 		assetJSON = append(assetJSON, ffAssetJSON(a))
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"assets":             assetJSON,
-		"job_income":         jobs,
-		"expenses":           expenses,
-		"one_time_expenses":  oneTime,
-		"metrics":            metrics,
-		"retire_simulation":  simRows,
-		"live_well_detail":   liveWell,
+		"assets":            assetJSON,
+		"job_income":        jobs,
+		"expenses":          expenses,
+		"one_time_expenses": oneTime,
+		"metrics":           metrics,
+		"retire_simulation": simRows,
+		"live_well_detail":  liveWell,
 	})
 }
 
@@ -937,9 +1028,6 @@ func validateFFJobIncome(req *ffJobIncomeRequest) string {
 		}
 		return ""
 	}
-	if req.EndYear == nil {
-		return "end_year is required"
-	}
 	return ""
 }
 
@@ -1006,8 +1094,10 @@ func (h *Handler) CreateFFJobIncome(c *gin.Context) {
 	if models.IsFFJobPensionPreset(req.PresetKey) {
 		row.StartYear = req.StartYear
 		row.EndYear = 0
-	} else {
+	} else if req.EndYear != nil {
 		row.EndYear = *req.EndYear
+	} else {
+		row.EndYear = 0
 	}
 	if err := h.DB.Create(&row).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create job income"})
@@ -1069,8 +1159,11 @@ func (h *Handler) UpdateFFJobIncome(c *gin.Context) {
 	if models.IsFFJobPensionPreset(req.PresetKey) {
 		row.StartYear = req.StartYear
 		row.EndYear = 0
-	} else {
+	} else if req.EndYear != nil {
 		row.EndYear = *req.EndYear
+		row.StartYear = nil
+	} else {
+		row.EndYear = 0
 		row.StartYear = nil
 	}
 	if err := h.DB.Model(&row).Select("preset_key", "label", "amount", "end_year", "start_year").Updates(&row).Error; err != nil {
@@ -1130,9 +1223,6 @@ func validateFFExpense(req *ffExpenseRequest) string {
 				return "category does not match preset"
 			}
 		}
-	}
-	if models.FFExpenseRequiresEndYear(req.Category) && req.EndYear == nil {
-		return "end_year is required for emi"
 	}
 	return ""
 }

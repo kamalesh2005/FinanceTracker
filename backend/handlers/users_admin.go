@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func (h *Handler) ListUsers(c *gin.Context) {
@@ -26,9 +27,13 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		cfgByUser[cfg.UserID] = cfg
 	}
 
+	stockCounts, challengeCounts := adminUserActivityCounts(h.DB)
+
 	out := make([]gin.H, 0, len(users))
 	for _, u := range users {
 		row := publicUser(u)
+		row["stock_count"] = stockCounts[u.ID]
+		row["inv_challenge_count"] = challengeCounts[u.ID]
 		cfg, ok := cfgByUser[u.ID]
 		if !ok {
 			row["recommendation_fluctuation_pct"] = nil
@@ -171,4 +176,64 @@ func (h *Handler) SetUserEnabled(c *gin.Context) {
 	}
 	user.Enabled = req.Enabled
 	c.JSON(http.StatusOK, publicUser(user))
+}
+
+// adminUserActivityCounts returns per-user DhanShanti stock holdings and
+// FlexStreet investment challenges (created or actively joined).
+func adminUserActivityCounts(db *gorm.DB) (stocks map[uint]int, challenges map[uint]int) {
+	stocks = map[uint]int{}
+	challenges = map[uint]int{}
+
+	type idCount struct {
+		UserID uint  `gorm:"column:user_id"`
+		Count  int64 `gorm:"column:count"`
+	}
+	var stockRows []idCount
+	_ = db.Model(&models.UserStock{}).
+		Select("user_id, COUNT(DISTINCT stock_id) AS count").
+		Where("quantity > ?", 0).
+		Group("user_id").
+		Scan(&stockRows).Error
+	for _, r := range stockRows {
+		stocks[r.UserID] = int(r.Count)
+	}
+
+	type userChallenge struct {
+		UserID      uint `gorm:"column:user_id"`
+		ChallengeID uint `gorm:"column:challenge_id"`
+	}
+	seen := map[uint]map[uint]struct{}{}
+	add := func(userID, challengeID uint) {
+		if userID == 0 || challengeID == 0 {
+			return
+		}
+		m, ok := seen[userID]
+		if !ok {
+			m = map[uint]struct{}{}
+			seen[userID] = m
+		}
+		m[challengeID] = struct{}{}
+	}
+
+	var members []userChallenge
+	_ = db.Model(&models.InvChMember{}).
+		Select("user_id, challenge_id").
+		Where("status = ? AND user_id IS NOT NULL", models.InvChMemberActive).
+		Scan(&members).Error
+	for _, r := range members {
+		add(r.UserID, r.ChallengeID)
+	}
+
+	var created []userChallenge
+	_ = db.Model(&models.InvChChallenge{}).
+		Select("creator_user_id AS user_id, id AS challenge_id").
+		Scan(&created).Error
+	for _, r := range created {
+		add(r.UserID, r.ChallengeID)
+	}
+
+	for userID, set := range seen {
+		challenges[userID] = len(set)
+	}
+	return stocks, challenges
 }

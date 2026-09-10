@@ -290,18 +290,19 @@ class _StocksScreenState extends State<StocksScreen> {
       case 'Symbol':
         return _symbolColumnWidth;
       case 'Qty':
-        return 72;
+        return 64;
       case 'Account':
         return 120;
       case 'Current Value':
-        return 120;
+        return 128;
       case 'Buy Price':
       case 'Current':
       case 'P/L':
       case 'High':
       case 'Low':
-      case 'Last Actioned':
         return 120;
+      case 'Last Actioned':
+        return 136;
       case 'Trend at Last Action':
         return 170;
       case 'P/L %':
@@ -1181,7 +1182,7 @@ class _StocksScreenState extends State<StocksScreen> {
               children: [
                 _buildCompactInfoColumn(
                   'Quantity',
-                  stock.quantity.toStringAsFixed(2),
+                  formatQty(stock.quantity),
                 ),
                 _buildCompactInfoColumn(
                   'Buy Price',
@@ -1194,6 +1195,8 @@ class _StocksScreenState extends State<StocksScreen> {
                 _buildCompactInfoColumn(
                   'Current Value',
                   formatInr(current),
+                  null,
+                  _currentValueBreakdown(stock),
                 ),
                 _buildCompactInfoColumn(
                   'P/L',
@@ -1868,14 +1871,30 @@ class _StocksScreenState extends State<StocksScreen> {
           ),
         );
       case 'Qty':
-        return Text(stock.quantity.toStringAsFixed(2));
+        return Text(formatQty(stock.quantity));
       case 'Account':
         return Text(
           stock.source.isNotEmpty ? stock.source : '-',
           overflow: TextOverflow.ellipsis,
         );
       case 'Current Value':
-        return Text(formatInr(stock.quantity * stock.currentPrice));
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(formatInr(stock.quantity * stock.currentPrice)),
+            Text(
+              _currentValueBreakdown(stock),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        );
       case 'Buy Price':
         return Text(formatInr(stock.buyPrice));
       case 'Last Actioned':
@@ -1896,17 +1915,12 @@ class _StocksScreenState extends State<StocksScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              label,
+              '$label @${formatInr(price)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontWeight: FontWeight.bold,
                 fontSize: 12,
-                color: color,
-              ),
-            ),
-            Text(
-              formatInr(price),
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
                 color: color,
               ),
             ),
@@ -2538,21 +2552,30 @@ class _StocksScreenState extends State<StocksScreen> {
     );
   }
 
-  Widget _buildCompactInfoColumn(String label, String value,
-      [Color? valueColor]) {
+  Widget _buildCompactInfoColumn(
+    String label,
+    String value, [
+    Color? valueColor,
+    String? subtitle,
+  ]) {
     return _infoColumn(
       label: label,
       value: value,
       valueColor: valueColor,
       compact: true,
+      subtitle: subtitle,
     );
   }
+
+  String _currentValueBreakdown(Stock stock) =>
+      '@${formatInr(stock.currentPrice)}*${formatQty(stock.quantity)}';
 
   Widget _infoColumn({
     required String label,
     required String value,
     Color? valueColor,
     bool compact = false,
+    String? subtitle,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2574,6 +2597,17 @@ class _StocksScreenState extends State<StocksScreen> {
             color: valueColor,
           ),
         ),
+        if (subtitle != null && subtitle.isNotEmpty)
+          Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: compact ? 9 : 11,
+              color: Colors.grey.shade600,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
       ],
     );
   }

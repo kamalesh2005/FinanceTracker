@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../models/user.dart';
 import '../../providers/auth_provider.dart';
 import '../../utils/currency_format.dart';
+import '../../widgets/app_brand_title.dart';
 import '../../widgets/make_default_dashboard_button.dart';
 import '../learner_provider.dart';
 import '../learner_theme.dart';
@@ -94,15 +95,20 @@ class _LearnerPortalScreenState extends State<LearnerPortalScreen> {
         title: learnerBrandTitle(
           context,
           flexStreetName,
-          subtitle: flexStreetGloss,
-          trailing: isLearnerDefault
-              ? null
-              : const MakeDefaultDashboardButton(portal: AppPortal.learner),
+          subtitle: flexStreetByline,
+          trailing: showFlexStreetMakeDefault && !isLearnerDefault
+              ? const MakeDefaultDashboardButton(portal: AppPortal.learner)
+              : null,
         ),
         actions: [
           IconButton(
-            tooltip: 'Main portal',
-            icon: const Icon(Icons.home_outlined),
+            tooltip: 'DhanShanti portal',
+            iconSize: 28,
+            padding: const EdgeInsets.all(8),
+            icon: const BrandLogoMark(
+              asset: AppBrandTitle.dhanShantiLogoAsset,
+              size: 28,
+            ),
             onPressed: () => goToMainPortal(context),
           ),
           ...learnerAppBarActions(context),

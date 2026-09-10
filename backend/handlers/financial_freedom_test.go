@@ -152,14 +152,14 @@ func TestResetFFAssetIncomeDefaults(t *testing.T) {
 	}
 }
 
-func TestFFExpenseRequiresEndYear(t *testing.T) {
+func TestFFExpenseEndYearOptional(t *testing.T) {
 	_, _, r := ffTestSetup(t)
 
 	w := ffDo(r, http.MethodPost, "/ff/expenses", map[string]any{
 		"category": "emi", "amount": 120000,
 	})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("emi without end_year status=%d", w.Code)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("emi without end_year status=%d body=%s", w.Code, w.Body.String())
 	}
 
 	end := time.Now().Year() + 5
@@ -175,6 +175,32 @@ func TestFFExpenseRequiresEndYear(t *testing.T) {
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("rent status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestFFJobIncomeEndYearOptional(t *testing.T) {
+	_, _, r := ffTestSetup(t)
+
+	w := ffDo(r, http.MethodPost, "/ff/job-income", map[string]any{
+		"label": "Salary", "amount": 1200000,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("job without end_year status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if created["end_year"].(float64) != 0 {
+		t.Fatalf("end_year=%v want 0", created["end_year"])
+	}
+	id := int(created["id"].(float64))
+
+	w = ffDo(r, http.MethodPut, "/ff/job-income/"+strconv.Itoa(id), map[string]any{
+		"label": "Salary", "amount": 1500000,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("update without end_year status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -494,6 +520,17 @@ func TestFfJobIncomePension(t *testing.T) {
 	if max, ok := ffMaxJobEndYear(jobs); !ok || max != 2030 {
 		t.Fatalf("maxJobEnd=%v ok=%v want 2030 true", max, ok)
 	}
+
+	ongoing := []models.FFJobIncome{{Label: "Salary", Amount: 800000, EndYear: 0}}
+	if got := ffJobIncome(ongoing, y0); got != 800000 {
+		t.Fatalf("ongoing y0=%v want 800000", got)
+	}
+	if got := ffJobIncome(ongoing, y0+40); got != 800000 {
+		t.Fatalf("ongoing later=%v want 800000", got)
+	}
+	if max, ok := ffMaxJobEndYear(ongoing); ok {
+		t.Fatalf("maxJobEnd=%v ok=%v want none", max, ok)
+	}
 }
 
 func TestFfLiveWellFund(t *testing.T) {
@@ -506,8 +543,27 @@ func TestFfLiveWellFund(t *testing.T) {
 		ex []models.FFExpense,
 		oneTime []models.FFOneTimeExpense,
 	) float64 {
-		_, _, rows := ffSimulateReadyToRetire(assets, jobs, ex, oneTime, y0)
-		return ffLiveWellFund(oneTime, y0, rows)
+		n, _, rows := ffSimulateReadyToRetire(assets, jobs, ex, oneTime, y0)
+		var ry *int
+		if n >= 0 {
+			v := y0 + n
+			ry = &v
+		}
+		return ffLiveWellFund(oneTime, y0, rows, ry)
+	}
+
+	targetYear := func(
+		oneTime []models.FFOneTimeExpense,
+		jobs []models.FFJobIncome,
+		assets []models.FFAsset,
+		ex []models.FFExpense,
+	) int {
+		n, _, _ := ffSimulateReadyToRetire(assets, jobs, ex, oneTime, y0)
+		if n < 0 {
+			t.Fatal("targetYear: ready is unreachable")
+		}
+		t, _, _ := ffLiveWellTargetYear(oneTime, y0, y0+n)
+		return t
 	}
 
 	surplusForYear := func(
@@ -544,11 +600,11 @@ func TestFfLiveWellFund(t *testing.T) {
 	})
 
 	t.Run("after last one-time year discounted then halved", func(t *testing.T) {
-		jobs := []models.FFJobIncome{{Label: "Salary", Amount: 2000000, EndYear: 2035}}
+		jobs := []models.FFJobIncome{{Label: "Salary", Amount: 2000000, EndYear: 0}}
 		oneTime := []models.FFOneTimeExpense{{
 			Name: "Trip", Amount: 1000000, ExpectedYear: 2030,
 		}}
-		target := ffLiveWellTargetYear(oneTime, y0)
+		target := targetYear(oneTime, jobs, nil, expenses)
 		if target != 2031 {
 			t.Fatalf("target=%d want 2031", target)
 		}
@@ -577,7 +633,7 @@ func TestFfLiveWellFund(t *testing.T) {
 		oneTime := []models.FFOneTimeExpense{{
 			Name: "Trip", Amount: 1000000, ExpectedYear: 2030,
 		}}
-		target := ffLiveWellTargetYear(oneTime, y0)
+		target := targetYear(oneTime, jobs, assets, expenses)
 		_, _, rows := ffSimulateReadyToRetire(assets, jobs, expenses, oneTime, y0)
 		row, ok := ffRetireSimRowForYear(rows, target)
 		if !ok {
@@ -607,11 +663,16 @@ func TestFfLiveWellFund(t *testing.T) {
 	})
 
 	t.Run("detail target year fields", func(t *testing.T) {
+		jobs := []models.FFJobIncome{{Label: "Salary", Amount: 2000000, EndYear: 0}}
 		oneTime := []models.FFOneTimeExpense{{
 			Name: "Trip", Amount: 500000, ExpectedYear: 2028,
 		}}
-		_, _, rows := ffSimulateReadyToRetire(nil, nil, expenses, oneTime, y0)
-		d := ffComputeLiveWellDetail(oneTime, y0, rows)
+		n, _, rows := ffSimulateReadyToRetire(nil, jobs, expenses, oneTime, y0)
+		if n < 0 {
+			t.Fatal("expected reachable ready year")
+		}
+		ry := y0 + n
+		d := ffComputeLiveWellDetail(oneTime, y0, rows, &ry)
 		if d.TargetYear != 2029 {
 			t.Fatalf("target=%d want 2029", d.TargetYear)
 		}
@@ -620,6 +681,67 @@ func TestFfLiveWellFund(t *testing.T) {
 		}
 		if d.Scenario != ffLiveWellScenarioAfterOT {
 			t.Fatalf("scenario=%q", d.Scenario)
+		}
+	})
+
+	t.Run("unreachable ready zeros live well", func(t *testing.T) {
+		oneTime := []models.FFOneTimeExpense{{
+			Name: "Trip", Amount: 500000, ExpectedYear: 2028,
+		}}
+		_, _, rows := ffSimulateReadyToRetire(nil, nil, expenses, oneTime, y0)
+		d := ffComputeLiveWellDetail(oneTime, y0, rows, nil)
+		if d.Amount != 0 {
+			t.Fatalf("fund=%v want 0 when ready is unreachable", d.Amount)
+		}
+		if d.Message == "" {
+			t.Fatal("expected unreachable message")
+		}
+		if liveWell(nil, nil, expenses, oneTime) != 0 {
+			t.Fatal("liveWell helper want 0 when unreachable")
+		}
+	})
+
+	t.Run("uses ready year when later than year after one-time", func(t *testing.T) {
+		assets := []models.FFAsset{{
+			Name: "Fund", Value: 5500000, IncomePct: 8, TaxPct: 0,
+			IncomeStartYear: y0, Category: models.FFAssetCatMarketEquity,
+		}}
+		pensionFrom := y0 + 5
+		jobs := []models.FFJobIncome{{
+			Label: "Pension", Amount: 500000, EndYear: 0,
+			PresetKey: strPtr(models.FFJobPensionPreset), StartYear: intPtr(pensionFrom),
+		}}
+		oneTime := []models.FFOneTimeExpense{{
+			Name: "Trip", Amount: 10000, ExpectedYear: y0,
+		}}
+		n, _, rows := ffSimulateReadyToRetire(assets, jobs, expenses, oneTime, y0)
+		if n != 5 {
+			t.Fatalf("years=%d want 5", n)
+		}
+		ry := y0 + n
+		target, scenario, label := ffLiveWellTargetYear(oneTime, y0, ry)
+		if target != ry {
+			t.Fatalf("target=%d want ready year %d (after OT would be %d)", target, ry, y0+1)
+		}
+		if scenario != ffLiveWellScenarioAfterReady {
+			t.Fatalf("scenario=%q want %q", scenario, ffLiveWellScenarioAfterReady)
+		}
+		if label != "Ready to Retire year" {
+			t.Fatalf("label=%q", label)
+		}
+		row, ok := ffRetireSimRowForYear(rows, target)
+		if !ok {
+			t.Fatal("missing target row")
+		}
+		surplus := row.EndIncome - row.TotalExpenses
+		today, _, _ := ffSurplusInTodayValue(surplus, rows, y0, target)
+		want := today / 2
+		if want < 0 {
+			want = 0
+		}
+		got := liveWell(assets, jobs, expenses, oneTime)
+		if got != want {
+			t.Fatalf("fund=%v want %v", got, want)
 		}
 	})
 }
@@ -674,4 +796,143 @@ func TestFFSummaryEndpoint(t *testing.T) {
 	if !ok || len(sim) < 1 {
 		t.Fatalf("retire_simulation=%v", payload["retire_simulation"])
 	}
+}
+
+func TestFfLiquidityForBreakMonths(t *testing.T) {
+	y0 := 2026
+
+	t.Run("liquid plus equity over monthly expenses", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 600, Category: models.FFAssetCatLiquidCash},
+			{Name: "Equity", Value: 1800, Category: models.FFAssetCatMarketEquity},
+			{Name: "PF", Value: 99999, Category: models.FFAssetCatPFBonds},
+			{Name: "House", Value: 99999, Category: models.FFAssetCatRealEstateGold},
+		}
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 1200}}
+		got := ffLiquidityForBreakMonths(assets, expenses, y0)
+		if got == nil {
+			t.Fatal("nil months")
+		}
+		if *got != 24 {
+			t.Fatalf("months=%v want 24", *got)
+		}
+	})
+
+	t.Run("includes digital gold and SGB in the pool", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 600, Category: models.FFAssetCatLiquidCash},
+			{Name: "Equity", Value: 600, Category: models.FFAssetCatMarketEquity},
+			{
+				Name: "Digital Gold", Value: 600, Category: models.FFAssetCatRealEstateGold,
+				PresetKey: strPtr("digital_gold"),
+			},
+			{
+				Name: "SGB", Value: 600, Category: models.FFAssetCatRealEstateGold,
+				PresetKey: strPtr("sgb"), IncomePct: 8, IncomeStartYear: y0,
+			},
+			{
+				Name: "Physical Gold", Value: 99999, Category: models.FFAssetCatRealEstateGold,
+				PresetKey: strPtr("physical_gold"), IncomePct: 6, IncomeStartYear: y0,
+			},
+		}
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 1200}}
+		got := ffLiquidityForBreakMonths(assets, expenses, y0)
+		if got == nil {
+			t.Fatal("nil months")
+		}
+		if *got != 24 {
+			t.Fatalf("months=%v want 24 (digital gold+SGB in pool; physical gold ignored)", *got)
+		}
+	})
+
+	t.Run("ignores PF and physical gold income", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 1200, Category: models.FFAssetCatLiquidCash, IncomeStartYear: y0},
+			{
+				Name: "PF", Value: 10000, IncomePct: 8, TaxPct: 0,
+				IncomeStartYear: y0, Category: models.FFAssetCatPFBonds,
+			},
+			{
+				Name: "Physical Gold", Value: 10000, IncomePct: 6, TaxPct: 0,
+				IncomeStartYear: y0, Category: models.FFAssetCatRealEstateGold,
+				PresetKey: strPtr("physical_gold"),
+			},
+		}
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 1200}}
+		got := ffLiquidityForBreakMonths(assets, expenses, y0)
+		if got == nil {
+			t.Fatal("nil months")
+		}
+		if *got != 12 {
+			t.Fatalf("months=%v want 12 (PF/physical gold income not extra)", *got)
+		}
+	})
+
+	t.Run("subtracts rental income from expenses", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 1200, Category: models.FFAssetCatLiquidCash, IncomeStartYear: y0},
+			{
+				Name: "Rental", Value: 10000, IncomePct: 2.5, TaxPct: 0,
+				IncomeStartYear: y0, Category: models.FFAssetCatRealEstateGold,
+				PresetKey: strPtr("commercial_property"),
+			},
+		}
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 1200}}
+		got := ffLiquidityForBreakMonths(assets, expenses, y0)
+		if got == nil {
+			t.Fatal("nil months")
+		}
+		// extra=250, net=950, months=floor(1200/(950/12))=15
+		if *got != 15 {
+			t.Fatalf("months=%v want 15", *got)
+		}
+	})
+
+	t.Run("nil when extra income covers expenses", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 100, Category: models.FFAssetCatLiquidCash, IncomeStartYear: y0},
+			{
+				Name: "Rental", Value: 50000, IncomePct: 2.5, TaxPct: 0,
+				IncomeStartYear: y0, Category: models.FFAssetCatRealEstateGold,
+				PresetKey: strPtr("commercial_property"),
+			},
+		}
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 100}}
+		got := ffLiquidityForBreakMonths(assets, expenses, y0)
+		if got != nil {
+			t.Fatalf("got %v want nil when extra income covers expenses", *got)
+		}
+	})
+
+	t.Run("floors to whole months", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 100, Category: models.FFAssetCatLiquidCash},
+		}
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 90}}
+		got := ffLiquidityForBreakMonths(assets, expenses, y0)
+		if got == nil {
+			t.Fatal("nil months")
+		}
+		if *got != 13 {
+			t.Fatalf("months=%v want 13", *got)
+		}
+	})
+
+	t.Run("zero expenses returns nil", func(t *testing.T) {
+		assets := []models.FFAsset{
+			{Name: "Cash", Value: 100, Category: models.FFAssetCatLiquidCash},
+		}
+		got := ffLiquidityForBreakMonths(assets, nil, y0)
+		if got != nil {
+			t.Fatalf("got %v want nil", *got)
+		}
+	})
+
+	t.Run("zero assets returns 0", func(t *testing.T) {
+		expenses := []models.FFExpense{{Category: models.FFExpenseRent, Amount: 120}}
+		got := ffLiquidityForBreakMonths(nil, expenses, y0)
+		if got == nil || *got != 0 {
+			t.Fatalf("got %v want 0", got)
+		}
+	})
 }

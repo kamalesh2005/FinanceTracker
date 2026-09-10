@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user.dart';
 import '../services/api_service.dart';
 import '../services/recommendation_engine.dart';
+import '../utils/flex_street_entry.dart';
 import '../utils/jwt_utils.dart';
 
 class AuthProvider extends ChangeNotifier {
@@ -308,6 +309,9 @@ class AuthProvider extends ChangeNotifier {
 
   void _syncActivePortalAfterAuth() {
     _activePortal = AppPortal.normalize(_user?.defaultPortal);
+    if (isFlexStreetEntry()) {
+      _activePortal = AppPortal.learner;
+    }
     final invite = Uri.base.queryParameters['learner_invite']?.trim();
     if (invite != null && invite.isNotEmpty) {
       _pendingLearnerInvite = invite;

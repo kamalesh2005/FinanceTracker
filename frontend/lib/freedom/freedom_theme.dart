@@ -8,7 +8,7 @@ import '../widgets/auth_app_bar_actions.dart';
 
 const Color freedomSeed = Color(0xFF1B5E20);
 const String horizonName = 'Horizon';
-const String horizonGloss = 'A way to financial freedom';
+const String horizonGloss = 'A path to financial freedom';
 const String horizonBlurb =
     'Assets, income, expenses. Ready to retire, live well, term cover.';
 
@@ -150,10 +150,19 @@ void showFreedomHelpDialog(BuildContext context) {
         'only (one-time excluded). If the last simulated year fails, retirement is not '
         'reachable; otherwise walk back to the latest NO year — ready is that year + 1 '
         '(now if every year passes). Corpus wipes to zero if a one-time exceeds assets.\n\n'
-        'Live Well Fund for the year: take end income minus total expenses in the '
-        'first year after the last scheduled one-time expense (current year if none). '
+        'Live Well Fund for the year: only calculated when Ready to Retire has a year '
+        '(not "Not reachable"). Take end income minus total expenses in the later of '
+        'the first year after the last scheduled one-time expense (current year if none) '
+        'and the Ready to Retire year from that card. '
         'Discount that surplus to today\'s money using each simulated year\'s P/Corpus % '
-        'from the Ready to Retire table, then divide by 2. Floored at zero.\n\n'
+        'from the Ready to Retire table, then divide by 2. Floored at zero. '
+        'If Ready to Retire is not reachable, Live Well Fund is ₹0.\n\n'
+        'When Live Well Fund is ₹0, that card becomes Liquidity For Break (months): '
+        'how long Liquid & Cash, Market & Equity, Digital Gold, and SGBs last if '
+        'salary/profession income is zero today. Months = those assets ÷ '
+        '((regular expenses − extra income) ÷ 12). Extra income is passive return from '
+        'other investments such as rental property — not PF/bonds or physical gold. '
+        'If net expenses are zero or extra income covers them, months cannot be calculated.\n\n'
         'Term Insurance Needs (15/75 Rule):\n'
         'Cover = Debt + 15 years of 75% of annual living expenses − Investments.\n'
         'Debt: remaining EMIs — asset EMI × months left, plus expense EMI × years left through end year.\n'

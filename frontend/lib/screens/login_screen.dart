@@ -3,12 +3,16 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
+import '../utils/auth_landing_style.dart';
 import '../widgets/google_sign_in_button.dart';
 import 'register_screen.dart';
 import 'forgot_password_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({super.key, this.flexStreet});
+
+  /// When null, detected from the browser URL.
+  final bool? flexStreet;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -19,6 +23,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _identifierController = TextEditingController();
   final _passwordController = TextEditingController();
   final _featuresKey = GlobalKey();
+  final _portalsKey = GlobalKey();
   final _howItWorksKey = GlobalKey();
   final _privacyKey = GlobalKey();
   bool _submitting = false;
@@ -26,12 +31,11 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _googleSubmitting = false;
   String? _googleClientId;
 
-  static const _teal = Color(0xFF0F5C56);
-  static const _gold = Color(0xFFC4A35A);
-  static const _mist = Color(0xFFE8F2EF);
-  static const _sage = Color(0xFFC5D9D0);
   static const _loginPanelWidth = 400.0;
   static const _contentMaxWidth = 1248.0; // 1040 + 20%
+
+  AuthLandingStyle get _style =>
+      AuthLandingStyle.resolve(flexStreet: widget.flexStreet);
 
   @override
   void initState() {
@@ -100,6 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Widget _loginPanel() {
     return _LoginPanel(
+      style: _style,
       formKey: _formKey,
       identifierController: _identifierController,
       passwordController: _passwordController,
@@ -118,24 +123,27 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final style = _style;
     return Scaffold(
       body: DecoratedBox(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
             colors: [
-              _mist,
-              Color(0xFFF4F8F6),
-              _sage,
+              style.mist,
+              const Color(0xFFF4F8F6),
+              style.wash,
             ],
-            stops: [0.0, 0.45, 1.0],
+            stops: const [0.0, 0.45, 1.0],
           ),
         ),
         child: Column(
           children: [
             _LandingHeader(
+              style: style,
               onFeatures: () => _scrollTo(_featuresKey),
+              onPortals: () => _scrollTo(_portalsKey),
               onHowItWorks: () => _scrollTo(_howItWorksKey),
               onPrivacy: () => _scrollTo(_privacyKey),
             ),
@@ -167,6 +175,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                         children: [
                                           Expanded(
                                             child: _BrandHero(
+                                              style: style,
                                               wide: true,
                                               onPrivacy: () =>
                                                   _scrollTo(_privacyKey),
@@ -186,6 +195,7 @@ class _LoginScreenState extends State<LoginScreen> {
                                             CrossAxisAlignment.stretch,
                                         children: [
                                           _BrandHero(
+                                            style: style,
                                             wide: false,
                                             onPrivacy: () =>
                                                 _scrollTo(_privacyKey),
@@ -209,19 +219,25 @@ class _LoginScreenState extends State<LoginScreen> {
                       SliverToBoxAdapter(
                         child: KeyedSubtree(
                           key: _featuresKey,
-                          child: const _FeaturesSection(),
+                          child: _FeaturesSection(style: style),
+                        ),
+                      ),
+                      SliverToBoxAdapter(
+                        child: KeyedSubtree(
+                          key: _portalsKey,
+                          child: _MidSection(style: style),
                         ),
                       ),
                       SliverToBoxAdapter(
                         child: KeyedSubtree(
                           key: _howItWorksKey,
-                          child: const _HowItWorksSection(),
+                          child: _HowItWorksSection(style: style),
                         ),
                       ),
                       SliverToBoxAdapter(
                         child: KeyedSubtree(
                           key: _privacyKey,
-                          child: const _PrivacySection(),
+                          child: _PrivacySection(style: style),
                         ),
                       ),
                     ],
@@ -238,12 +254,16 @@ class _LoginScreenState extends State<LoginScreen> {
 
 class _LandingHeader extends StatelessWidget {
   const _LandingHeader({
+    required this.style,
     required this.onFeatures,
+    required this.onPortals,
     required this.onHowItWorks,
     required this.onPrivacy,
   });
 
+  final AuthLandingStyle style;
   final VoidCallback onFeatures;
+  final VoidCallback onPortals;
   final VoidCallback onHowItWorks;
   final VoidCallback onPrivacy;
 
@@ -251,7 +271,7 @@ class _LandingHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
     return ColoredBox(
-      color: _LoginScreenState._teal,
+      color: style.primary,
       child: Padding(
         padding: EdgeInsets.only(top: topInset),
         child: LayoutBuilder(
@@ -279,6 +299,10 @@ class _LandingHeader extends StatelessWidget {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             _NavLink(label: 'Features', onTap: onFeatures),
+                            _NavLink(
+                              label: style.portalsNavLabel,
+                              onTap: onPortals,
+                            ),
                             _NavLink(
                               label: 'How it works',
                               onTap: onHowItWorks,
@@ -323,13 +347,24 @@ class _NavLink extends StatelessWidget {
 }
 
 class _BrandHero extends StatelessWidget {
-  const _BrandHero({required this.wide, required this.onPrivacy});
+  const _BrandHero({
+    required this.style,
+    required this.wide,
+    required this.onPrivacy,
+  });
 
+  final AuthLandingStyle style;
   final bool wide;
   final VoidCallback onPrivacy;
 
   @override
   Widget build(BuildContext context) {
+    final subStyle = GoogleFonts.outfit(
+      fontSize: 16,
+      height: 1.45,
+      color: style.primary.withValues(alpha: 0.78),
+    );
+    final align = wide ? TextAlign.start : TextAlign.center;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment:
@@ -337,7 +372,7 @@ class _BrandHero extends StatelessWidget {
       children: [
         ClipOval(
           child: Image.asset(
-            'assets/brand/dhan_shanti_logo.png',
+            style.logoAsset,
             width: wide ? 96 : 80,
             height: wide ? 96 : 80,
             fit: BoxFit.cover,
@@ -345,23 +380,36 @@ class _BrandHero extends StatelessWidget {
         ),
         SizedBox(height: wide ? 28 : 20),
         Text(
-          'Dhan Shanti',
+          style.heroTitle,
           textAlign: wide ? TextAlign.start : TextAlign.center,
           style: GoogleFonts.fraunces(
             fontSize: wide ? 52 : 40,
             fontWeight: FontWeight.w600,
-            color: _LoginScreenState._teal,
+            color: style.primary,
             height: 1.1,
           ),
         ),
+        if (style.heroByline != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            style.heroByline!,
+            textAlign: wide ? TextAlign.start : TextAlign.center,
+            style: GoogleFonts.outfit(
+              fontSize: wide ? 15 : 13,
+              fontWeight: FontWeight.w500,
+              color: style.accent,
+              letterSpacing: 0.4,
+            ),
+          ),
+        ],
         const SizedBox(height: 10),
         Text(
-          'Rules on. Noise off.',
+          style.heroTagline,
           textAlign: wide ? TextAlign.start : TextAlign.center,
           style: GoogleFonts.outfit(
             fontSize: wide ? 20 : 17,
             fontWeight: FontWeight.w500,
-            color: _LoginScreenState._gold,
+            color: style.accent,
             letterSpacing: 0.2,
           ),
         ),
@@ -370,20 +418,23 @@ class _BrandHero extends StatelessWidget {
           alignment: wide ? Alignment.centerLeft : Alignment.center,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
-            child: _AnonymousChip(onTap: onPrivacy),
+            child: _AnonymousChip(style: style, onTap: onPrivacy),
           ),
         ),
         const SizedBox(height: 16),
         ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
-          child: Text(
-            'Markets all day? Nah. Let rules watch. Show up only for the decisions that count.',
-            textAlign: wide ? TextAlign.start : TextAlign.center,
-            style: GoogleFonts.outfit(
-              fontSize: 16,
-              height: 1.45,
-              color: _LoginScreenState._teal.withValues(alpha: 0.78),
-            ),
+          child: Column(
+            crossAxisAlignment:
+                wide ? CrossAxisAlignment.start : CrossAxisAlignment.center,
+            children: [
+              for (final line in style.heroLines)
+                Text(
+                  line,
+                  textAlign: align,
+                  style: subStyle,
+                ),
+            ],
           ),
         ),
       ],
@@ -392,21 +443,22 @@ class _BrandHero extends StatelessWidget {
 }
 
 class _AnonymousChip extends StatelessWidget {
-  const _AnonymousChip({required this.onTap});
+  const _AnonymousChip({required this.style, required this.onTap});
 
+  final AuthLandingStyle style;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    const teal = _LoginScreenState._teal;
+    final primary = style.primary;
     return Semantics(
       button: true,
       label: 'Stay Anonymous. No personal information required. Jump to privacy.',
       child: Material(
-        color: teal.withValues(alpha: 0.08),
+        color: primary.withValues(alpha: 0.08),
         elevation: 0,
         shape: StadiumBorder(
-          side: BorderSide(color: teal.withValues(alpha: 0.18)),
+          side: BorderSide(color: primary.withValues(alpha: 0.18)),
         ),
         child: InkWell(
           customBorder: const StadiumBorder(),
@@ -416,10 +468,10 @@ class _AnonymousChip extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
+                Icon(
                   Icons.lock_outline,
                   size: 16,
-                  color: _LoginScreenState._gold,
+                  color: style.accent,
                 ),
                 const SizedBox(width: 8),
                 Flexible(
@@ -430,7 +482,7 @@ class _AnonymousChip extends StatelessWidget {
                     style: GoogleFonts.outfit(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
-                      color: teal,
+                      color: primary,
                     ),
                   ),
                 ),
@@ -445,6 +497,7 @@ class _AnonymousChip extends StatelessWidget {
 
 class _LoginPanel extends StatelessWidget {
   const _LoginPanel({
+    required this.style,
     required this.formKey,
     required this.identifierController,
     required this.passwordController,
@@ -458,6 +511,7 @@ class _LoginPanel extends StatelessWidget {
     this.onGoogleError,
   });
 
+  final AuthLandingStyle style;
   final GlobalKey<FormState> formKey;
   final TextEditingController identifierController;
   final TextEditingController passwordController;
@@ -472,13 +526,14 @@ class _LoginPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final primary = style.primary;
     return Material(
       color: Colors.white.withValues(alpha: 0.92),
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: _LoginScreenState._teal.withValues(alpha: 0.12),
+          color: primary.withValues(alpha: 0.12),
         ),
       ),
       child: Padding(
@@ -494,7 +549,7 @@ class _LoginPanel extends StatelessWidget {
                 style: GoogleFonts.outfit(
                   fontSize: 22,
                   fontWeight: FontWeight.w600,
-                  color: _LoginScreenState._teal,
+                  color: primary,
                 ),
               ),
               const SizedBox(height: 6),
@@ -513,9 +568,9 @@ class _LoginPanel extends StatelessWidget {
                   labelText: 'Email / Mobile / Username',
                   labelStyle: GoogleFonts.outfit(),
                   border: const OutlineInputBorder(),
-                  focusedBorder: const OutlineInputBorder(
+                  focusedBorder: OutlineInputBorder(
                     borderSide: BorderSide(
-                      color: _LoginScreenState._teal,
+                      color: primary,
                       width: 2,
                     ),
                   ),
@@ -532,16 +587,16 @@ class _LoginPanel extends StatelessWidget {
                   labelText: 'Password',
                   labelStyle: GoogleFonts.outfit(),
                   border: const OutlineInputBorder(),
-                  focusedBorder: const OutlineInputBorder(
+                  focusedBorder: OutlineInputBorder(
                     borderSide: BorderSide(
-                      color: _LoginScreenState._teal,
+                      color: primary,
                       width: 2,
                     ),
                   ),
                   suffixIcon: IconButton(
                     icon: Icon(
                       obscure ? Icons.visibility : Icons.visibility_off,
-                      color: _LoginScreenState._teal.withValues(alpha: 0.7),
+                      color: primary.withValues(alpha: 0.7),
                     ),
                     onPressed: onToggleObscure,
                   ),
@@ -558,14 +613,16 @@ class _LoginPanel extends StatelessWidget {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => const ForgotPasswordScreen(),
+                        builder: (_) => ForgotPasswordScreen(
+                          flexStreet: style.flexStreet,
+                        ),
                       ),
                     );
                   },
                   child: Text(
                     'Forgot password?',
                     style: GoogleFonts.outfit(
-                      color: _LoginScreenState._teal,
+                      color: primary,
                     ),
                   ),
                 ),
@@ -574,7 +631,7 @@ class _LoginPanel extends StatelessWidget {
               FilledButton(
                 onPressed: submitting ? null : onSubmit,
                 style: FilledButton.styleFrom(
-                  backgroundColor: _LoginScreenState._teal,
+                  backgroundColor: primary,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   textStyle: GoogleFonts.outfit(
@@ -635,14 +692,16 @@ class _LoginPanel extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => const RegisterScreen(),
+                      builder: (_) => RegisterScreen(
+                        flexStreet: style.flexStreet,
+                      ),
                     ),
                   );
                 },
                 child: Text(
-                  'Create an account',
+                  style.createAccountLabel,
                   style: GoogleFonts.outfit(
-                    color: _LoginScreenState._teal,
+                    color: primary,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
@@ -666,11 +725,13 @@ class _LoginPanel extends StatelessWidget {
 
 class _SectionShell extends StatelessWidget {
   const _SectionShell({
+    required this.style,
     required this.title,
     required this.subtitle,
     required this.child,
   });
 
+  final AuthLandingStyle style;
   final String title;
   final String subtitle;
   final Widget child;
@@ -690,7 +751,7 @@ class _SectionShell extends StatelessWidget {
                 style: GoogleFonts.fraunces(
                   fontSize: 28,
                   fontWeight: FontWeight.w600,
-                  color: _LoginScreenState._teal,
+                  color: style.primary,
                 ),
               ),
               const SizedBox(height: 8),
@@ -699,7 +760,7 @@ class _SectionShell extends StatelessWidget {
                 style: GoogleFonts.outfit(
                   fontSize: 15,
                   height: 1.4,
-                  color: _LoginScreenState._teal.withValues(alpha: 0.72),
+                  color: style.primary.withValues(alpha: 0.72),
                 ),
               ),
               const SizedBox(height: 28),
@@ -713,44 +774,18 @@ class _SectionShell extends StatelessWidget {
 }
 
 class _FeaturesSection extends StatelessWidget {
-  const _FeaturesSection();
+  const _FeaturesSection({required this.style});
 
-  static const _features = [
-    (
-      Icons.account_balance_wallet_outlined,
-      'Portfolio dashboard',
-      'Invested value, current value, and P/L for stocks and mutual funds.',
-    ),
-    (
-      Icons.trending_up,
-      'Live prices & trends',
-      'Quotes with moving averages and bullish or bearish cues.',
-    ),
-    (
-      Icons.upload_file_outlined,
-      'Broker imports',
-      'Bring holdings from CSV or Excel - ICICI, HDFC Sec, Zerodha, and more.',
-    ),
-    (
-      Icons.rule_folder_outlined,
-      'Custom signal rules',
-      'BUY, SELL, and Book Profit signals driven by rules and thresholds you define.',
-    ),
-    (
-      Icons.show_chart,
-      'Charts & news',
-      'Price history and publicly available stock recommendations by analysts, so decisions stay grounded in context.',
-    ),
-  ];
+  final AuthLandingStyle style;
 
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
       color: Colors.white.withValues(alpha: 0.45),
       child: _SectionShell(
-        title: 'Top features',
-        subtitle:
-            'Everything you need to calmly invest Indian equities and funds.',
+        style: style,
+        title: style.featuresTitle,
+        subtitle: style.featuresSubtitle,
         child: LayoutBuilder(
           builder: (context, constraints) {
             final cols = constraints.maxWidth >= 720
@@ -762,12 +797,13 @@ class _FeaturesSection extends StatelessWidget {
               spacing: 20,
               runSpacing: 20,
               children: [
-                for (final f in _features)
+                for (final f in style.features)
                   SizedBox(
                     width: cols == 1
                         ? constraints.maxWidth
                         : (constraints.maxWidth - (cols - 1) * 20) / cols,
                     child: _FeatureItem(
+                      style: style,
                       icon: f.$1,
                       title: f.$2,
                       body: f.$3,
@@ -784,11 +820,13 @@ class _FeaturesSection extends StatelessWidget {
 
 class _FeatureItem extends StatelessWidget {
   const _FeatureItem({
+    required this.style,
     required this.icon,
     required this.title,
     required this.body,
   });
 
+  final AuthLandingStyle style;
   final IconData icon;
   final String title;
   final String body;
@@ -798,14 +836,14 @@ class _FeatureItem extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, color: _LoginScreenState._gold, size: 28),
+        Icon(icon, color: style.accent, size: 28),
         const SizedBox(height: 12),
         Text(
           title,
           style: GoogleFonts.outfit(
             fontSize: 16,
             fontWeight: FontWeight.w600,
-            color: _LoginScreenState._teal,
+            color: style.primary,
           ),
         ),
         const SizedBox(height: 6),
@@ -822,38 +860,139 @@ class _FeatureItem extends StatelessWidget {
   }
 }
 
-class _HowItWorksSection extends StatelessWidget {
-  const _HowItWorksSection();
+class _MidSection extends StatelessWidget {
+  const _MidSection({required this.style});
 
-  static const _steps = [
-    (
-      '1',
-      'Stay anonymous',
-      'Pick a username. Skip email and phone if you want.',
-    ),
-    (
-      '2',
-      'Add holdings',
-      'Import from your broker or add stocks and funds - full portfolio or watch list.',
-    ),
-    (
-      '3',
-      'Set your rules',
-      'Define buy, sell, and hold thresholds that match how you invest.',
-    ),
-    (
-      '4',
-      'Review signals',
-      'See automated signals and act when it feels right.',
-    ),
-  ];
+  final AuthLandingStyle style;
 
   @override
   Widget build(BuildContext context) {
     return _SectionShell(
-      title: 'How it works',
-      subtitle:
-          'Four steps from an anonymous account to calm, rule-based guidance.',
+      style: style,
+      title: style.midTitle,
+      subtitle: style.midSubtitle,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final cards = [
+            for (final c in style.midCards)
+              _PortalIntroCard(
+                style: style,
+                icon: c.$1,
+                title: c.$2,
+                gloss: c.$3,
+                body: c.$4,
+              ),
+          ];
+          final wide = constraints.maxWidth >= 700 && cards.length > 1;
+          if (wide) {
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < cards.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 20),
+                  Expanded(child: cards[i]),
+                ],
+              ],
+            );
+          }
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < cards.length; i++) ...[
+                if (i > 0) const SizedBox(height: 20),
+                cards[i],
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _PortalIntroCard extends StatelessWidget {
+  const _PortalIntroCard({
+    required this.style,
+    required this.icon,
+    required this.title,
+    required this.gloss,
+    required this.body,
+  });
+
+  final AuthLandingStyle style;
+  final IconData icon;
+  final String title;
+  final String gloss;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white.withValues(alpha: 0.92),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: style.primary.withValues(alpha: 0.12),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(icon, color: style.accent, size: 28),
+            const SizedBox(height: 12),
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.end,
+              spacing: 8,
+              runSpacing: 2,
+              children: [
+                Text(
+                  title,
+                  style: GoogleFonts.outfit(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: style.primary,
+                  ),
+                ),
+                Text(
+                  gloss,
+                  style: GoogleFonts.outfit(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              body,
+              style: GoogleFonts.outfit(
+                fontSize: 14,
+                height: 1.4,
+                color: Colors.grey.shade800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HowItWorksSection extends StatelessWidget {
+  const _HowItWorksSection({required this.style});
+
+  final AuthLandingStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = style.howSteps;
+    return _SectionShell(
+      style: style,
+      title: style.howTitle,
+      subtitle: style.howSubtitle,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final wide = constraints.maxWidth >= 700;
@@ -861,13 +1000,14 @@ class _HowItWorksSection extends StatelessWidget {
             return Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (var i = 0; i < _steps.length; i++) ...[
+                for (var i = 0; i < steps.length; i++) ...[
                   if (i > 0) const SizedBox(width: 16),
                   Expanded(
                     child: _StepItem(
-                      number: _steps[i].$1,
-                      title: _steps[i].$2,
-                      body: _steps[i].$3,
+                      style: style,
+                      number: steps[i].$1,
+                      title: steps[i].$2,
+                      body: steps[i].$3,
                     ),
                   ),
                 ],
@@ -877,12 +1017,13 @@ class _HowItWorksSection extends StatelessWidget {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              for (var i = 0; i < _steps.length; i++) ...[
+              for (var i = 0; i < steps.length; i++) ...[
                 if (i > 0) const SizedBox(height: 20),
                 _StepItem(
-                  number: _steps[i].$1,
-                  title: _steps[i].$2,
-                  body: _steps[i].$3,
+                  style: style,
+                  number: steps[i].$1,
+                  title: steps[i].$2,
+                  body: steps[i].$3,
                 ),
               ],
             ],
@@ -895,11 +1036,13 @@ class _HowItWorksSection extends StatelessWidget {
 
 class _StepItem extends StatelessWidget {
   const _StepItem({
+    required this.style,
     required this.number,
     required this.title,
     required this.body,
   });
 
+  final AuthLandingStyle style;
   final String number;
   final String title;
   final String body;
@@ -914,7 +1057,7 @@ class _StepItem extends StatelessWidget {
           style: GoogleFonts.fraunces(
             fontSize: 32,
             fontWeight: FontWeight.w600,
-            color: _LoginScreenState._gold,
+            color: style.accent,
           ),
         ),
         const SizedBox(height: 8),
@@ -923,7 +1066,7 @@ class _StepItem extends StatelessWidget {
           style: GoogleFonts.outfit(
             fontSize: 16,
             fontWeight: FontWeight.w600,
-            color: _LoginScreenState._teal,
+            color: style.primary,
           ),
         ),
         const SizedBox(height: 6),
@@ -941,12 +1084,14 @@ class _StepItem extends StatelessWidget {
 }
 
 class _PrivacySection extends StatelessWidget {
-  const _PrivacySection();
+  const _PrivacySection({required this.style});
+
+  final AuthLandingStyle style;
 
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: _LoginScreenState._teal,
+      color: style.primary,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 48),
         child: Center(
@@ -956,7 +1101,7 @@ class _PrivacySection extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Stay anonymous. Your portfolio stays yours.',
+                  style.privacyTitle,
                   style: GoogleFonts.fraunces(
                     fontSize: 28,
                     fontWeight: FontWeight.w600,
@@ -965,9 +1110,7 @@ class _PrivacySection extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'Sign up with a username. Email and mobile are optional - we do '
-                  'not need your name, PAN, or broker login. Holdings and signal '
-                  'rules live in your account and are not shown to other users.',
+                  style.privacyBody,
                   style: GoogleFonts.outfit(
                     fontSize: 15,
                     height: 1.5,
@@ -976,9 +1119,7 @@ class _PrivacySection extends StatelessWidget {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'Want even less on screen? Watch List mode tracks equities '
-                  'without framing every symbol as a portfolio with quantities '
-                  'and value. Signal rules stay in-app, under thresholds you control.',
+                  style.privacyExtra,
                   style: GoogleFonts.outfit(
                     fontSize: 15,
                     height: 1.5,
@@ -988,9 +1129,9 @@ class _PrivacySection extends StatelessWidget {
                 const SizedBox(height: 20),
                 Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.lock_outline,
-                      color: _LoginScreenState._gold,
+                      color: style.cta,
                       size: 22,
                     ),
                     const SizedBox(width: 10),
@@ -1000,7 +1141,7 @@ class _PrivacySection extends StatelessWidget {
                         style: GoogleFonts.outfit(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: _LoginScreenState._gold,
+                          color: style.cta,
                         ),
                       ),
                     ),
@@ -1012,13 +1153,15 @@ class _PrivacySection extends StatelessWidget {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => const RegisterScreen(),
+                        builder: (_) => RegisterScreen(
+                          flexStreet: style.flexStreet,
+                        ),
                       ),
                     );
                   },
                   style: FilledButton.styleFrom(
-                    backgroundColor: _LoginScreenState._gold,
-                    foregroundColor: _LoginScreenState._teal,
+                    backgroundColor: style.cta,
+                    foregroundColor: style.primary,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 20,
                       vertical: 14,
@@ -1028,7 +1171,7 @@ class _PrivacySection extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  child: const Text('Create an anonymous account'),
+                  child: Text(style.privacyCta),
                 ),
               ],
             ),

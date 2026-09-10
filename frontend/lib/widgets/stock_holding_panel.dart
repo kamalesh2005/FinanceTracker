@@ -123,10 +123,15 @@ class StockHoldingPanel extends StatelessWidget {
                 _metricsBlock(
                   narrow: narrow,
                   children: [
-                    _compact('Quantity', stock.quantity.toStringAsFixed(2)),
+                    _compact('Quantity', formatQty(stock.quantity)),
                     _compact('Buy Price', formatInr(stock.buyPrice)),
                     _compact('Current', formatInr(stock.currentPrice)),
-                    _compact('Current Value', formatInr(current)),
+                    _compact(
+                      'Current Value',
+                      formatInr(current),
+                      null,
+                      '@${formatInr(stock.currentPrice)}*${formatQty(stock.quantity)}',
+                    ),
                     _compact(
                       'P/L',
                       formatInr(profitLoss),
@@ -376,7 +381,12 @@ class StockHoldingPanel extends StatelessWidget {
     );
   }
 
-  Widget _compact(String label, String value, [Color? valueColor]) {
+  Widget _compact(
+    String label,
+    String value, [
+    Color? valueColor,
+    String? subtitle,
+  ]) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -391,6 +401,17 @@ class StockHoldingPanel extends StatelessWidget {
             color: valueColor,
           ),
         ),
+        if (subtitle != null && subtitle.isNotEmpty)
+          Text(
+            subtitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 9,
+              color: Colors.grey.shade600,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
       ],
     );
   }

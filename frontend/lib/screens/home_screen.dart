@@ -439,7 +439,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildLearnerPortalCard() {
     return _buildPortalCard(
       icon: Icons.emoji_events,
-      iconColor: const Color(0xFF0F5C56),
+      iconColor: learnerSeed,
       title: flexStreetName,
       subtitle: flexStreetGloss,
       description: flexStreetBlurb,

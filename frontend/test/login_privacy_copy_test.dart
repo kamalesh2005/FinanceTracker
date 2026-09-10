@@ -25,7 +25,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider(
         create: (_) => AuthProvider(),
-        child: const MaterialApp(home: LoginScreen()),
+        child: const MaterialApp(home: LoginScreen(flexStreet: false)),
       ),
     );
     await tester.pump();
@@ -36,6 +36,7 @@ void main() {
       find.text('Prefer privacy? Create an account with just a username.'),
       findsOneWidget,
     );
+    expect(find.text('FlexStreet & Horizon'), findsOneWidget);
 
     await tester.tap(find.text('Stay Anonymous. No personal information required.'));
     await tester.pumpAndSettle();
@@ -50,6 +51,22 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('Create an anonymous account'), findsOneWidget);
+
+    await tester.tap(find.text('Features'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stock Research'), findsOneWidget);
+
+    await tester.tap(find.text('FlexStreet & Horizon'));
+    await tester.pumpAndSettle();
+    expect(find.text('More than a portfolio'), findsOneWidget);
+    expect(
+      find.text('Sign in, then open these from Home. Your live holdings stay separate.'),
+      findsOneWidget,
+    );
+    expect(find.text('FlexStreet'), findsOneWidget);
+    expect(find.text('Horizon'), findsOneWidget);
+    expect(find.text('An investment challenge'), findsOneWidget);
+    expect(find.text('A path to financial freedom'), findsOneWidget);
   });
 
   testWidgets('register screen treats username-only as the default path',
@@ -62,7 +79,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider(
         create: (_) => AuthProvider(),
-        child: const MaterialApp(home: RegisterScreen()),
+        child: const MaterialApp(home: RegisterScreen(flexStreet: false)),
       ),
     );
     await tester.pump();
@@ -89,7 +106,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider(
         create: (_) => AuthProvider(),
-        child: const MaterialApp(home: LoginScreen()),
+        child: const MaterialApp(home: LoginScreen(flexStreet: false)),
       ),
     );
     await tester.pump();
@@ -97,5 +114,78 @@ void main() {
 
     expect(find.text('Stay Anonymous. No personal information required.'), findsOneWidget);
     expect(find.text('Sign in'), findsWidgets);
+  });
+
+  testWidgets('Flex Street landing uses challenge copy and hides Horizon',
+      (tester) async {
+    tester.view.physicalSize = const Size(1280, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => AuthProvider(),
+        child: const MaterialApp(home: LoginScreen(flexStreet: true)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('FlexStreet'), findsWidgets);
+    expect(find.text('by DhanShanti'), findsOneWidget);
+    expect(find.text('An investment challenge'), findsWidgets);
+    expect(find.text('The challenge'), findsWidgets);
+    expect(find.text('Join FlexStreet'), findsWidgets);
+    expect(find.text('FlexStreet & Horizon'), findsNothing);
+    expect(find.text('Horizon'), findsNothing);
+    expect(find.text('Dhan Shanti'), findsNothing);
+
+    await tester.tap(find.text('Features'));
+    await tester.pumpAndSettle();
+    expect(find.text('Same starting cash'), findsOneWidget);
+    expect(find.text('Stock Research'), findsNothing);
+
+    await tester.tap(find.text('The challenge').first);
+    await tester.pumpAndSettle();
+    expect(
+      find.text(
+        'An investment challenge with virtual money and real stocks. Separate from your live portfolio.',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Privacy'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stay anonymous. Your challenge stays yours.'), findsOneWidget);
+    expect(find.text('Create an anonymous account'), findsNothing);
+  });
+
+  testWidgets('Flex Street register uses challenge title', (tester) async {
+    tester.view.physicalSize = const Size(800, 1400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => AuthProvider(),
+        child: const MaterialApp(home: RegisterScreen(flexStreet: true)),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('Join FlexStreet'), findsWidgets);
+    expect(
+      find.text(
+        'Username is enough to enter the challenge. Email and mobile are optional.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Username is enough. Email and mobile are optional.'),
+      findsNothing,
+    );
   });
 }

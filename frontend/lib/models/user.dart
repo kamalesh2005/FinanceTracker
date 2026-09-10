@@ -33,6 +33,8 @@ class AppUser {
   final bool stockReviewEmailEnabled;
   final bool stockReviewEmailAdminEnabled;
   final bool stockReviewEmailEffective;
+  final int stockCount;
+  final int invChallengeCount;
 
   AppUser({
     required this.id,
@@ -52,6 +54,8 @@ class AppUser {
     this.stockReviewEmailEnabled = true,
     this.stockReviewEmailAdminEnabled = false,
     this.stockReviewEmailEffective = false,
+    this.stockCount = 0,
+    this.invChallengeCount = 0,
   });
 
   bool get isAdmin => role == 'admin';
@@ -100,6 +104,8 @@ class AppUser {
     bool? stockReviewEmailEnabled,
     bool? stockReviewEmailAdminEnabled,
     bool? stockReviewEmailEffective,
+    int? stockCount,
+    int? invChallengeCount,
   }) {
     return AppUser(
       id: id ?? this.id,
@@ -125,6 +131,8 @@ class AppUser {
           stockReviewEmailAdminEnabled ?? this.stockReviewEmailAdminEnabled,
       stockReviewEmailEffective:
           stockReviewEmailEffective ?? this.stockReviewEmailEffective,
+      stockCount: stockCount ?? this.stockCount,
+      invChallengeCount: invChallengeCount ?? this.invChallengeCount,
     );
   }
 
@@ -165,6 +173,8 @@ class AppUser {
       stockReviewEmailAdminEnabled:
           json['stock_review_email_admin_enabled'] == true,
       stockReviewEmailEffective: json['stock_review_email_effective'] == true,
+      stockCount: (json['stock_count'] as num?)?.toInt() ?? 0,
+      invChallengeCount: (json['inv_challenge_count'] as num?)?.toInt() ?? 0,
     );
   }
 }

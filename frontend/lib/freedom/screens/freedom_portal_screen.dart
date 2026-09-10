@@ -43,6 +43,29 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
   bool _isPendingDelete(String key) => _pendingDeletes.containsKey(key);
 
   void _queueDeleteOrClear(String key, int? existingId) {
+    // Preset expenses cannot be deleted on the server; clear by upserting zeros.
+    if (key.startsWith('expense:preset:')) {
+      if (existingId == null) {
+        setState(() {
+          _pendingUpserts.remove(key);
+          _pendingDeletes.remove(key);
+          _recomputeDirty();
+        });
+        return;
+      }
+      final presetKey = key.substring('expense:preset:'.length);
+      _queueUpsert(
+        key,
+        {
+          'preset_key': presetKey,
+          'category': presetKey,
+          'amount': 0,
+          'end_year': null,
+        },
+        existingId: existingId,
+      );
+      return;
+    }
     setState(() {
       _pendingUpserts.remove(key);
       if (existingId != null) {
@@ -93,10 +116,6 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
       );
       return;
     }
-    if (endYear == null) {
-      _queueDeleteOrClear(key, existing?.id);
-      return;
-    }
     _queueUpsert(
       key,
       {
@@ -115,10 +134,6 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
     int? endYear,
   }) {
     final key = 'job:id:${job.id}';
-    if (endYear == null) {
-      _queueDeleteOrClear(key, job.id);
-      return;
-    }
     _queueUpsert(
       key,
       {
@@ -140,10 +155,6 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
     int? existingId,
   }) {
     final id = _isPendingDelete(key) ? null : existingId;
-    if (ffExpenseRequiresEndYear(category) && endYear == null) {
-      _queueDeleteOrClear(key, id);
-      return;
-    }
     _queueUpsert(
       key,
       {
@@ -166,6 +177,16 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
         if (key.startsWith('job:')) {
           await FreedomApi.deleteJobIncome(id);
         } else if (key.startsWith('expense:')) {
+          if (key.startsWith('expense:preset:')) {
+            final presetKey = key.substring('expense:preset:'.length);
+            await FreedomApi.updateExpense(id, {
+              'preset_key': presetKey,
+              'category': presetKey,
+              'amount': 0,
+              'end_year': null,
+            });
+            continue;
+          }
           await FreedomApi.deleteExpense(id);
         } else if (key.startsWith('onetime:')) {
           await FreedomApi.deleteOneTime(id);
@@ -207,6 +228,7 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
       _dirty = false;
       await _reload();
       if (mounted) {
+        setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Saved')),
         );
@@ -376,6 +398,8 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
                   const SizedBox(height: 20),
                   _LiveWellCalculationCard(
                     detail: provider.liveWellDetail,
+                    metrics: provider.metrics,
+                    assets: provider.assets,
                   ),
                   const SizedBox(height: 32),
                 ],
@@ -395,7 +419,7 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
       key: ValueKey('job-${preset.key}-${job?.id ?? 0}-$pending'),
       title: preset.label,
       annualAmount: job?.amount ?? 0,
-      endYear: job?.endYear,
+      endYear: ffJobDisplayEndYear(job),
       showEndYear: true,
       onChanged: (annual, {endYear, startYear}) => _onJobPresetChanged(
         preset: preset,
@@ -414,7 +438,7 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
       key: ValueKey('job-custom-${job.id}-$pending'),
       title: job.label,
       annualAmount: pending ? 0 : job.amount,
-      endYear: pending ? null : job.endYear,
+      endYear: pending ? null : ffJobDisplayEndYear(job),
       showEndYear: true,
       onChanged: (annual, {endYear, startYear}) =>
           _onCustomJobChanged(job: job, annual: annual, endYear: endYear),
@@ -463,8 +487,8 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
       title: preset.label,
       annualAmount: row?.amount ?? 0,
       endYear: row?.endYear,
-      showEndYear: ffExpenseRequiresEndYear(preset.category),
-      endYearRequired: ffExpenseRequiresEndYear(preset.category),
+      showEndYear: ffExpenseShowsEndYear(preset.category),
+      endYearRequired: false,
       onChanged: (annual, {endYear, startYear}) => _onExpenseRowChanged(
         key: key,
         category: preset.category,
@@ -485,8 +509,8 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
       title: ffExpenseCategoryLabels[e.category] ?? e.category,
       annualAmount: pending ? 0 : e.amount,
       endYear: pending ? null : e.endYear,
-      showEndYear: ffExpenseRequiresEndYear(e.category),
-      endYearRequired: ffExpenseRequiresEndYear(e.category),
+      showEndYear: ffExpenseShowsEndYear(e.category),
+      endYearRequired: false,
       onChanged: (annual, {endYear, startYear}) => _onExpenseRowChanged(
         key: key,
         category: e.category,
@@ -871,6 +895,42 @@ class _FreedomPortalScreenState extends State<FreedomPortalScreen> {
   }
 }
 
+/// Whole months, or "Y yr M mo" when longer than a year.
+String _formatBreakMonths(double? months) {
+  if (months == null) return '—';
+  final total = months.floor();
+  if (total <= 12) return '$total';
+  final years = total ~/ 12;
+  final rem = total % 12;
+  if (rem == 0) return '$years yr';
+  return '$years yr $rem mo';
+}
+
+String _formatBreakResult(double? months) {
+  if (months == null) return '—';
+  if (months.floor() <= 12) return '${months.floor()} months';
+  return _formatBreakMonths(months);
+}
+
+bool _isBreakLiquidAsset(FFAsset a) {
+  if (a.category == FFAssetCategory.liquidCash ||
+      a.category == FFAssetCategory.marketEquity) {
+    return true;
+  }
+  return a.presetKey == 'digital_gold' || a.presetKey == 'sgb';
+}
+
+bool _skipLiquidityExtraIncome(FFAsset a) {
+  if (a.category == FFAssetCategory.pfBonds) return true;
+  return a.presetKey == 'physical_gold';
+}
+
+bool _assetIncomeActive(FFAsset a, int year) {
+  if (a.incomeStartYear > year) return false;
+  if (a.incomeEndYear != null && year > a.incomeEndYear!) return false;
+  return true;
+}
+
 class _MetricsRow extends StatelessWidget {
   final FFMetrics? metrics;
 
@@ -886,6 +946,7 @@ class _MetricsRow extends StatelessWidget {
             : '${m.yearsToRetire} yr (${m.retirementYear})';
     final enjoy = formatInrK(m?.annualEnjoymentFund ?? 0);
     final term = formatInrK(m?.termInsuranceNeed ?? 0);
+    final liveWellZero = m != null && (m.annualEnjoymentFund ?? 0) <= 0;
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -912,12 +973,23 @@ class _MetricsRow extends StatelessWidget {
             subtitle:
                 'Adj. passive + active ≥ recurring + EMI at horizon end (simulated)',
           ),
-          _MetricCard(
-            title: 'Live Well Fund',
-            titleSuffix: 'for the year',
-            value: enjoy,
-            subtitle: 'Half of Surplus -> Enjoy it with loved ones',
-          ),
+          liveWellZero
+              ? _MetricCard(
+                  title: 'Liquidity For Break',
+                  titleSuffix:
+                      (m?.liquidityForBreakMonths?.floor() ?? 0) > 12
+                          ? null
+                          : 'months',
+                  value: _formatBreakMonths(m?.liquidityForBreakMonths),
+                  subtitle:
+                      'Liquid + market + digital gold + SGB last this many months if salary/profession income is zero',
+                )
+              : _MetricCard(
+                  title: 'Live Well Fund',
+                  titleSuffix: 'for the year',
+                  value: enjoy,
+                  subtitle: 'Half of Surplus -> Enjoy it with loved ones',
+                ),
           _MetricCard(
             title: 'Term Insurance Needs',
             value: term,
@@ -2048,9 +2120,8 @@ class _JobFormDialogState extends State<_JobFormDialog> {
       text: annual != 0 ? _trimNum(annual / 12) : '',
     );
     _endYear = TextEditingController(
-      text: e != null
-          ? e.endYear.toString()
-          : (DateTime.now().year + 10).toString(),
+      text: ffJobDisplayEndYear(e)?.toString() ??
+          (e == null ? (DateTime.now().year + 10).toString() : ''),
     );
   }
 
@@ -2132,7 +2203,6 @@ class _JobFormDialogState extends State<_JobFormDialog> {
         FilledButton(
           onPressed: () {
             final end = _parseIntOpt(_endYear.text);
-            if (end == null) return;
             Navigator.pop(context, {
               'preset_key': _presetKey,
               'label': _label.text.trim().isEmpty ? 'Salary' : _label.text.trim(),
@@ -2215,7 +2285,6 @@ class _ExpenseFormDialogState extends State<_ExpenseFormDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final needsEnd = ffExpenseRequiresEndYear(_category);
     final lockedCat = widget.preset != null ||
         (widget.existing?.presetKey != null &&
             widget.existing!.presetKey!.isNotEmpty);
@@ -2268,10 +2337,8 @@ class _ExpenseFormDialogState extends State<_ExpenseFormDialog> {
             ),
             TextField(
               controller: _endYear,
-              decoration: InputDecoration(
-                labelText: needsEnd
-                    ? 'End year (required)'
-                    : 'End year (optional)',
+              decoration: const InputDecoration(
+                labelText: 'End year (optional)',
               ),
               keyboardType: TextInputType.number,
               inputFormatters: ffYearFormatters,
@@ -2284,7 +2351,6 @@ class _ExpenseFormDialogState extends State<_ExpenseFormDialog> {
         FilledButton(
           onPressed: () {
             final end = _parseIntOpt(_endYear.text);
-            if (needsEnd && end == null) return;
             final category = customCategory
                 ? _categoryLabel.text.trim()
                 : _category;
@@ -2681,13 +2747,201 @@ class _RetireSimulationTable extends StatelessWidget {
 
 class _LiveWellCalculationCard extends StatelessWidget {
   final FFLiveWellDetail? detail;
+  final FFMetrics? metrics;
+  final List<FFAsset> assets;
 
   const _LiveWellCalculationCard({
     required this.detail,
+    this.metrics,
+    this.assets = const [],
   });
 
   @override
   Widget build(BuildContext context) {
+    if (metrics == null && detail == null) {
+      return const SizedBox.shrink();
+    }
+    final fund = metrics?.annualEnjoymentFund ?? detail?.amount ?? 0;
+    if (fund <= 0) {
+      return _buildLiquidityCard(context);
+    }
+    return _buildLiveWellCard(context);
+  }
+
+  Widget _buildLiquidityCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final year = metrics?.currentYear ?? DateTime.now().year;
+    var liquidCash = 0.0;
+    var marketEquity = 0.0;
+    var digitalGold = 0.0;
+    var sgb = 0.0;
+    var extraIncome = 0.0;
+    for (final a in assets) {
+      if (_isBreakLiquidAsset(a)) {
+        if (a.presetKey == 'digital_gold') {
+          digitalGold += a.value;
+        } else if (a.presetKey == 'sgb') {
+          sgb += a.value;
+        } else if (a.category == FFAssetCategory.liquidCash) {
+          liquidCash += a.value;
+        } else if (a.category == FFAssetCategory.marketEquity) {
+          marketEquity += a.value;
+        }
+      } else if (!_skipLiquidityExtraIncome(a) && _assetIncomeActive(a, year)) {
+        extraIncome += a.effectiveIncome;
+      }
+    }
+    final combined = liquidCash + marketEquity + digitalGold + sgb;
+    final annual = metrics?.regularExpenses ?? 0;
+    final netAnnual = annual - extraIncome;
+    final monthly = netAnnual / 12;
+    final months = metrics?.liquidityForBreakMonths;
+
+    String summary;
+    if (annual <= 0) {
+      summary =
+          'Regular expenses are ₹0, so months of cover cannot be calculated.';
+    } else if (netAnnual <= 0) {
+      summary =
+          'Other investment income covers regular expenses, so months of cover cannot be calculated.';
+    } else {
+      summary =
+          'Combined ${formatInrK(combined)} ÷ monthly ${formatInrK(monthly)} = ${_formatBreakResult(months)}';
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 4,
+              children: [
+                Text(
+                  'Liquidity For Break',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  'months',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                Text(
+                  '— calculation',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              detail?.message?.isNotEmpty == true
+                  ? '${detail!.message!} This card shows how long liquid + market + digital gold + SGB last if salary/profession income is zero.'
+                  : 'Live Well Fund is ₹0, so this shows how long liquid + market + digital gold + SGB last if salary/profession income is zero.',
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: freedomSeed,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Liquid assets = Liquid & Cash + Market & Equity + Digital Gold + SGB. '
+              'Months = liquid assets ÷ ((regular expenses − extra income) ÷ 12). '
+              'Extra income is rental and similar returns — not PF/bonds or physical gold.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                return SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                    child: DataTable(
+                      headingRowHeight: 40,
+                      dataRowMinHeight: 36,
+                      dataRowMaxHeight: 44,
+                      columnSpacing: 20,
+                      columns: const [
+                        DataColumn(label: Text('Item')),
+                        DataColumn(label: Text('Amount')),
+                      ],
+                      rows: [
+                        DataRow(cells: [
+                          const DataCell(Text('Liquid & Cash Assets')),
+                          DataCell(Text(formatInrK(liquidCash))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Market & Equity Investments')),
+                          DataCell(Text(formatInrK(marketEquity))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Digital Gold')),
+                          DataCell(Text(formatInrK(digitalGold))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Sovereign Gold Bonds')),
+                          DataCell(Text(formatInrK(sgb))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Combined liquid assets')),
+                          DataCell(Text(formatInrK(combined))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Regular expenses (annual)')),
+                          DataCell(Text(formatInrK(annual))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Extra income (other investments)')),
+                          DataCell(Text(formatInrK(extraIncome))),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Net expenses (annual)')),
+                          DataCell(Text(
+                            netAnnual <= 0 ? '—' : formatInrK(netAnnual),
+                          )),
+                        ]),
+                        DataRow(cells: [
+                          const DataCell(Text('Monthly net expenses')),
+                          DataCell(Text(
+                            netAnnual <= 0 ? '—' : formatInrK(monthly),
+                          )),
+                        ]),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+            Text(
+              summary,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Result: ${_formatBreakResult(months)}',
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: freedomSeed,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLiveWellCard(BuildContext context) {
     final theme = Theme.of(context);
     final d = detail;
     if (d == null) {

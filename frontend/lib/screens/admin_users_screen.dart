@@ -58,6 +58,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                           u.recommendationRulesIsOverride,
                       recommendationRulesCount: u.recommendationRulesCount,
                       recommendationRules: u.recommendationRules,
+                      stockCount: u.stockCount,
+                      invChallengeCount: u.invChallengeCount,
                     )
                   : u,
             )
@@ -331,6 +333,18 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                   DataColumn(label: Text('Role')),
                                   DataColumn(label: Text('Logins')),
                                   DataColumn(label: Text('Last login')),
+                                  DataColumn(
+                                    numeric: true,
+                                    tooltip:
+                                        'Distinct stocks currently held in DhanShanti',
+                                    label: Text('Stocks (DhanShanti)'),
+                                  ),
+                                  DataColumn(
+                                    numeric: true,
+                                    tooltip:
+                                        'Investment challenges created or joined in FlexStreet',
+                                    label: Text('Challenges (FlexStreet)'),
+                                  ),
                                   DataColumn(label: Text('Fluctuation')),
                                   DataColumn(label: Text('Signal Rules')),
                                   DataColumn(label: Text('Review email')),
@@ -349,6 +363,8 @@ class _AdminUsersScreenState extends State<AdminUsersScreen> {
                                       DataCell(
                                         Text(_formatLastLogin(user.lastLoginAt)),
                                       ),
+                                      DataCell(Text('${user.stockCount}')),
+                                      DataCell(Text('${user.invChallengeCount}')),
                                       DataCell(
                                         Text(_fluctuationLabel(user)),
                                       ),
